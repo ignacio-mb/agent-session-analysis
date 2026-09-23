@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+# exports written into the checkout by mistake
+claude-session-exports/
+.claude/launch.json
+.preview/
