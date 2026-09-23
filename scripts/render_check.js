@@ -43,11 +43,13 @@ Object.assign(globalThis, {
     getElementById: (id) => nodes[id], body: new El("body"), documentElement: new El("html") },
   window: { addEventListener() {}, innerWidth: 1280, innerHeight: 800 },
   requestAnimationFrame: (f) => f(), location: { hash: "" }, history: { replaceState() {} },
+  setTimeout: (f) => { pending.push(f); return 0; }, clearTimeout() {},
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   getComputedStyle: () => ({ getPropertyValue: () => "" }),
 });
 
 let charts = 0, tables = 0;
+const pending = [];
 vm.runInThisContext(scripts[0], { filename: "lib.js" });
 // Build every chart and its table twin as soon as a card is created.
 const realChartCard = globalThis.chartCard;
@@ -56,10 +58,12 @@ globalThis.chartCard = function (opts) {
   return realChartCard(opts);
 };
 vm.runInThisContext(scripts[1], { filename: "app.js" });
-const builders = ["buildOverview", "buildTimeline", "buildSkills", "buildTools", "buildCost", "buildTurns", "buildAgents",
-  "buildFiles", "buildShell", "buildErrors", "buildContext", "buildRaw", "overview", "sessions", "skillsTab", "toolsTab"]
-  .filter((n) => typeof globalThis[n] === "function");
+// Every tab builder the app defines: build*, *Tab, and the rollup's overview/sessions.
+const builders = Object.getOwnPropertyNames(globalThis).filter((n) => typeof globalThis[n] === "function" &&
+  (/^build[A-Z]/.test(n) || /Tab$/.test(n) || ["overview", "sessions"].includes(n)) && globalThis[n].length === 0);
 for (const n of builders) globalThis[n]();
+// Tabs open a run after a tick; run those deferred callbacks too.
+for (const f of pending.splice(0)) f();
 for (const host of Charts.hosts) host._render(640);
 if (typeof timelineChart === "function") { timelineChart(900, true, 1); timelineChart(900, false, 4); }
 console.log(`ok: ${builders.length} tabs, ${charts} charts, ${tables} table views, ${Charts.hosts.length} chart hosts rendered`);

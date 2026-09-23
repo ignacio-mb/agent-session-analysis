@@ -593,3 +593,193 @@ function downloadLink(label, filename, getText, type = "application/json") {
   });
   return a;
 }
+
+/* ------------------------------------------------------------------ status marks (symbol + text, never colour alone) */
+
+const STATUS_MARK = { pass: ["✓", "good"], ok: ["✓", "good"], fail: ["✗", "critical"], error: ["✗", "critical"],
+  denied: ["⊘", "serious"], interrupted: ["‖", "warning"], "n/a": ["–", "muted"], pending: ["…", "muted"] };
+
+function statusMark(status, withText = true) {
+  const [sym, tone] = STATUS_MARK[status] || ["?", "muted"];
+  return h("span", { class: `smark ${tone}`, title: status }, h("b", null, sym), withText ? " " + status : null);
+}
+
+/* ------------------------------------------------------------------ strip plot: one dot per run, grouped */
+
+function stripPlot(width, groups, { value, fmt = F.num, tip, height = 170 } = {}) {
+  /* groups: [{label, items: [run...]}]; one hue — the x position carries identity */
+  const m = { l: 56, r: 10, t: 10, b: 34 };
+  const W = width, H = height, pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const svg = sv("svg", { class: "chart", width: W, height: H, role: "img" });
+  const all = groups.flatMap((g) => g.items.map(value)).filter((v) => v !== null && v !== undefined);
+  const ticks = niceTicks(Math.max(...all, 0), 3);
+  const top = ticks[ticks.length - 1] || 1;
+  const y = (v) => m.t + ph - (v / top) * ph;
+  const grid = sv("g", { class: "grid" });
+  for (const tk of ticks) {
+    grid.appendChild(sv("line", { x1: m.l, x2: W - m.r, y1: y(tk), y2: y(tk) }));
+    svg.appendChild(sv("text", { x: m.l - 6, y: y(tk) + 3.5, "text-anchor": "end" }, fmt(tk)));
+  }
+  svg.insertBefore(grid, svg.firstChild);
+  const bw = pw / Math.max(1, groups.length);
+  groups.forEach((g, gi) => {
+    const cx = m.l + gi * bw + bw / 2;
+    svg.appendChild(sv("text", { x: cx, y: H - 18, "text-anchor": "middle" }, F.short(g.label, Math.max(6, Math.floor(bw / 7)))));
+    svg.appendChild(sv("text", { x: cx, y: H - 5, "text-anchor": "middle" }, `n=${g.items.length}`));
+    const vals = g.items.map(value).filter((v) => v !== null && v !== undefined).sort((a, b) => a - b);
+    if (vals.length) {
+      const mid = vals.length >> 1;
+      const med = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+      svg.appendChild(sv("line", { x1: cx - Math.min(28, bw / 3), x2: cx + Math.min(28, bw / 3), y1: y(med), y2: y(med),
+        stroke: "var(--ink)", "stroke-width": 2, "stroke-linecap": "round" }));
+    }
+    g.items.forEach((it, i) => {
+      const v = value(it);
+      if (v === null || v === undefined) return;
+      const jitter = g.items.length > 1 ? ((i % 7) - 3) * Math.min(6, bw / 16) : 0;
+      const dot = sv("circle", { class: "dot", cx: cx + jitter, cy: y(v), r: 5, tabindex: "0" });
+      Tip.bind(dot, () => (tip ? tip(it, v) : { title: g.label, rows: [[fmt(v), ""]] }));
+      svg.appendChild(dot);
+    });
+  });
+  svg.appendChild(sv("line", { x1: m.l, x2: W - m.r, y1: m.t + ph, y2: m.t + ph, stroke: "var(--axis)" }));
+  return svg;
+}
+
+/* ------------------------------------------------------------------ trace view */
+
+const KIND_LABEL = { prompt: "you", request: "claude", tool: "tool", skill: "skill", event: "event" };
+
+function traceView(steps, { limit = 400, showScope = true } = {}) {
+  const state = { q: "", kind: "", status: "", errorsOnly: false, show: limit };
+  const root = h("div", { class: "trace" });
+  const tools = h("div", { class: "tbl-tools" });
+  const q = h("input", { type: "search", placeholder: "Filter steps…", "aria-label": "Filter steps" });
+  q.addEventListener("input", () => { state.q = q.value.trim().toLowerCase(); state.show = limit; draw(); });
+  const kind = h("select", { "aria-label": "Step kind" }, h("option", { value: "" }, "All steps"),
+    ["prompt", "request", "tool", "skill", "event"].map((k) => h("option", { value: k }, k === "request" ? "Claude API requests" : k === "prompt" ? "your prompts" : k + "s")));
+  kind.addEventListener("change", () => { state.kind = kind.value; state.show = limit; draw(); });
+  const errs = h("label", { class: "tbl-count" }, h("input", { type: "checkbox" }), " problems only");
+  errs.firstChild.addEventListener("change", (e) => { state.errorsOnly = e.target.checked; state.show = limit; draw(); });
+  const count = h("span", { class: "tbl-count" });
+  tools.append(q, kind, errs, count);
+  const list = h("div", { class: "trace-list" });
+  const more = h("div", { class: "more" });
+  root.append(tools, list, more);
+
+  const text = (st) => [st.text, st.input, st.result, st.name, st.model, (st.sigs || []).join(" "), (st.res || []).join(" "), st.what, st.args]
+    .filter(Boolean).join(" ").toLowerCase();
+  const problem = (st) => ["error", "denied", "interrupted"].includes(st.status) || st.what === "api_error" || st.what === "interrupt" || st.ok === false;
+
+  function row(st) {
+    const k = st.k;
+    const main = h("div", { class: "tr-main" });
+    const meta = h("div", { class: "tr-meta" });
+    let detail = null;
+    if (k === "prompt") {
+      main.append(h("span", { class: "tr-text" }, st.text || "(empty)"));
+      meta.append(h("span", { class: "chip" }, st.trigger));
+    } else if (k === "request") {
+      main.append(h("span", { class: "tr-text" }, st.text || (st.tools && st.tools.length ? "→ " + st.tools.join(", ") : `thinking ${F.num(st.think || 0)} chars`)));
+      meta.append(h("span", { class: "chip" }, (st.model || "").replace("claude-", "")), h("span", { class: "chip" }, `ctx ${F.tok(st.ctx)}`),
+        h("span", { class: "chip" }, `out ${F.tok(st.out)}`), h("span", { class: "chip" }, F.dur(st.dur)), h("span", { class: "chip" }, F.usd(st.usd)));
+      if (st.miss) meta.append(h("span", { class: "chip" }, `cache miss: ${st.miss}`));
+      if (st.text && st.text.length > 160) detail = st.text;
+    } else if (k === "tool") {
+      main.append(statusMark(st.status || "pending", false), h("b", null, " " + st.name + " "), h("span", { class: "tr-text mono" }, st.input || ""));
+      meta.append(h("span", { class: "chip" }, F.dur(st.dur)));
+      for (const sgn of st.sigs || []) meta.append(h("span", { class: "chip strong" }, sgn));
+      for (const r of st.res || []) meta.append(h("span", { class: "chip" }, "reads " + r.split(":").slice(1).join(":")));
+      if (st.batch > 1) meta.append(h("span", { class: "chip" }, `parallel ×${st.batch}`));
+      if (st.denial) meta.append(h("span", { class: "chip" }, st.denial));
+      detail = [st.input, st.result ? "→ " + st.result : ""].filter(Boolean).join("\n\n");
+    } else if (k === "skill") {
+      main.append(h("b", null, st.name), " ", modeBadge(st.mode), st.args ? h("span", { class: "tr-text" }, " " + st.args) : null);
+      if (st.version) meta.append(h("span", { class: "chip" }, "v " + st.version.slice(0, 8)));
+      if (st.ok === false) meta.append(statusMark("fail"));
+    } else {
+      main.append(h("span", { class: "tr-text" }, st.text || st.what));
+      meta.append(h("span", { class: "chip" }, st.what));
+    }
+    if (showScope && st.scope && st.scope !== "main") meta.append(h("span", { class: "chip" }, `${st.scope} ${(st.agent || "").slice(0, 8)}`));
+    if (st.inherited) meta.append(h("span", { class: "chip" }, "inherited"));
+    const body = h("div", { class: "tr-body" }, main, meta);
+    const r = h("div", { class: `tr-row k-${k}` + (problem(st) ? " problem" : ""), tabindex: "0" },
+      h("span", { class: "tr-time mono" }, F.time(st.t)), h("span", { class: `tr-kind k-${k}` }, KIND_LABEL[k] || k), body);
+    if (detail) {
+      const box = h("pre", { class: "tr-detail", hidden: true }, detail);
+      body.appendChild(box);
+      r.addEventListener("click", () => { box.hidden = !box.hidden; });
+      r.classList.add("expandable");
+    }
+    return r;
+  }
+
+  function draw() {
+    let data = steps;
+    if (state.kind) data = data.filter((s) => s.k === state.kind);
+    if (state.errorsOnly) data = data.filter(problem);
+    if (state.q) data = data.filter((s) => text(s).includes(state.q));
+    list.replaceChildren(...data.slice(0, state.show).map(row));
+    count.textContent = `${data.length.toLocaleString()} of ${steps.length.toLocaleString()} steps`;
+    more.replaceChildren();
+    if (data.length > state.show) {
+      const b = h("button", { class: "linkbtn", type: "button" }, `Show ${Math.min(limit, data.length - state.show)} more`);
+      b.addEventListener("click", () => { state.show += limit; draw(); });
+      more.appendChild(b);
+    }
+  }
+  draw();
+  return root;
+}
+
+/* ------------------------------------------------------------------ one skill run, in detail */
+
+function runDetail(run, steps) {
+  const v = run.version || {};
+  const checks = run.checks || [];
+  const head = kv([
+    ["Run", `${run.run_id} · ${run.skill} invoked by ${run.mode === "model" ? "Claude (Skill tool)" : run.mode === "user" ? "you (/slash)" : "Claude Code"}`],
+    ["Version", v.status === "commit" ? `${v.commit} · ${v.subject} (${F.datetime(v.date)})` : v.label],
+    ["Asked", run.prompt || run.args || "—"],
+    ["Ran", `${F.datetime(run.start_ms)} · ${F.dur(run.duration_ms)} · ${run.turn_count} turns (${run.follow_up_turns} follow-up) · ended: ${run.end_reason}`],
+    ["Work", `${run.requests} Claude requests (${run.attributed_requests} attributed) · ${run.tool_calls} tool calls · ${run.tool_errors} errors · ${run.cli_calls} CLI calls · ${run.help_lookups} help lookups · ${run.retries_after_error} retries after an error`],
+    ["Cost", `${F.usd(run.cost_usd)} · context ${F.tok(run.context_start)} → ${F.tok(run.context_end)} (peak ${F.tok(run.context_peak)}) · cache hit ${F.pct(run.cache_hit_ratio)}`],
+    ["Questions", `${run.question_calls} AskUserQuestion calls (${run.questions_asked} questions)`],
+    ["Created", run.objects_created ? `${run.objects_created} objects` : "nothing reported"],
+  ]);
+  const checkList = checks.length ? h("div", { class: "checks" }, checks.map((c) =>
+    h("div", { class: "check-row" }, statusMark(c.status), h("span", null, " " + (c.desc || c.id)), c.detail ? h("span", { class: "muted" }, " — " + c.detail) : null)))
+    : h("div", { class: "empty" }, "No checks defined for this skill (add checks/<skill>.json).");
+  const resources = (run.resources || []).length ? dataTable({ search: false, limit: 60, rows: run.resources, columns: [
+    { key: "t", label: "When", fmt: F.time }, { key: "path", label: "Skill file", cls: "code" }, { key: "kind", label: "Kind" },
+    { key: "via", label: "Via" }, { key: "chars", label: "Chars", num: true, fmt: F.tok }, { key: "status", label: "Status", render: (r) => statusMark(r.status, false) }] })
+    : h("div", { class: "empty" }, "The run read none of the skill's own files.");
+  const expected = h("div", { class: "note" },
+    (run.missing_expected || []).length ? `Named by a playbook's "Read first" but never read: ${run.missing_expected.join(", ")}. ` : "",
+    (run.not_named_by_playbooks || []).length ? `Read without a playbook naming it: ${run.not_named_by_playbooks.join(", ")}.` : "");
+  const cli = (run.cli || []).length ? dataTable({ search: false, limit: 40, rows: run.cli, columns: [
+    { key: "signature", label: "Command", cls: "code" }, { key: "calls", label: "Calls", num: true }, { key: "errors", label: "Errors", num: true },
+    { key: "help", label: "--help", num: true }] }) : h("div", { class: "empty" }, "No CLI subcommands.");
+  const questions = (run.questions || []).length ? dataTable({ search: false, rows: run.questions, columns: [
+    { key: "t", label: "When", fmt: F.time }, { key: "header", label: "Topic" }, { key: "question", label: "Question", cls: "wrap" },
+    { key: "answer", label: "Answer", cls: "wrap" }] }) : h("div", { class: "empty" }, "No questions asked.");
+  const objects = (run.objects || []).length ? dataTable({ search: false, rows: run.objects, columns: [
+    { key: "t", label: "When", fmt: F.time }, { key: "verb", label: "Verb" }, { key: "type", label: "Type" }, { key: "id", label: "Id" },
+    { key: "name", label: "Name", cls: "wrap" }] }) : h("div", { class: "empty" }, "No objects reported by CLI output.");
+  const errors = (run.errors || []).length ? dataTable({ search: false, rows: run.errors, columns: [
+    { key: "t", label: "When", fmt: F.time }, { key: "tool", label: "Tool" }, { key: "category", label: "Category" },
+    { key: "input", label: "Input", cls: "code" }, { key: "message", label: "Message", cls: "code" }] }) : h("div", { class: "empty" }, "No errors.");
+  const actionsList = (run.actions || []).length ? h("ol", { class: "actions" }, run.actions.map((a) =>
+    h("li", { class: a.action.includes("✗") ? "problem" : null }, a.action + (a.times > 1 ? `  ×${a.times}` : "")))) : null;
+  return h("div", { class: "grid" },
+    card({ title: "Run", span: 7 }, head, run.final_message ? h("details", { class: "raw", open: true }, h("summary", null, "Final hand-back"), h("pre", { class: "tr-detail" }, run.final_message)) : null),
+    card({ title: `Checks (${run.checks_passed || 0} passed, ${run.checks_failed || 0} failed)`, span: 5 }, checkList),
+    card({ title: "Skill files read", sub: "In order, with how they were read", span: 6 }, resources, expected),
+    card({ title: "CLI commands", span: 6 }, cli),
+    card({ title: "Questions asked", span: 6 }, questions),
+    card({ title: "Objects the CLI reported", span: 6 }, objects),
+    card({ title: "Errors", span: 12 }, errors),
+    actionsList ? card({ title: "What it did", sub: "Actions in order (repeats collapsed) — the sequence the compare view diffs", span: 12 }, actionsList) : null,
+    card({ title: "Trace", sub: "Every prompt, Claude API request and tool call in the run — click a row for its input and output", span: 12 }, traceView(steps)));
+}

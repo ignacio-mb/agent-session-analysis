@@ -3,6 +3,8 @@
     session-analytics export [SESSION]      current | latest | <id or prefix> | <path.jsonl>
     session-analytics list                  recent sessions for this project (or --all)
     session-analytics rollup --since 7d     aggregate many sessions
+    session-analytics skill rde             every run of a skill across sessions, by version, with checks
+    session-analytics compare A B           two skill runs side by side (run ids like b3734789:1)
     session-analytics schema [SESSION]      event-type inventory; flags what this version does not know
     session-analytics pricing               the price table used for estimates
 """
@@ -43,6 +45,10 @@ def build_parser():
     e.add_argument("--no-redact", action="store_true", help="do not mask secret-looking strings")
     e.add_argument("--own-only", action="store_true",
                    help="leave out history copied from an earlier session when this one was resumed/continued")
+    e.add_argument("--checks", action="append", default=[], metavar="FILE",
+                   help="skill checks to evaluate on each skill run (default: checks/<skill>.json in this repo)")
+    e.add_argument("--source", action="append", default=[], metavar="DIR",
+                   help="a skill's source directory or repo, to label runs with the git commit that ran")
     e.add_argument("--open", action="store_true", help="open the HTML dashboard when done")
     e.add_argument("--json", action="store_true", help="print a JSON result (paths, totals, insights) instead of Markdown")
     e.add_argument("--quiet", action="store_true", help="print only the output directory")
@@ -66,6 +72,31 @@ def build_parser():
     r.add_argument("--open", action="store_true")
     r.add_argument("--json", action="store_true")
     _common(r)
+
+    sk = sub.add_parser("skill", help="every run of one skill across sessions, grouped by the version that ran")
+    sk.add_argument("name", help="skill name, e.g. rde")
+    sk.add_argument("--since", default="30d", help="7d, 24h, 2w, all, or a date (YYYY-MM-DD); default 30d")
+    sk.add_argument("--project", help="only sessions of this project directory (default: every project)")
+    sk.add_argument("--limit", type=int, default=1000, help="at most this many transcripts (newest first)")
+    sk.add_argument("--checks", action="append", default=[], metavar="FILE",
+                    help="checks to evaluate on each run (default: checks/<name>.json in this repo)")
+    sk.add_argument("--source", action="append", default=[], metavar="DIR",
+                    help="the skill's source directory or repo (default: found under ~/dev and friends)")
+    sk.add_argument("--out", help="output directory (default: ~/claude-session-exports/_skills/...)")
+    sk.add_argument("--format", default="all", help="comma list of json, md, html, csv (default: all)")
+    sk.add_argument("--no-redact", action="store_true")
+    sk.add_argument("--open", action="store_true")
+    sk.add_argument("--json", action="store_true")
+    _common(sk)
+
+    cp = sub.add_parser("compare", help="compare two skill runs side by side (run ids like b3734789:1)")
+    cp.add_argument("run_a")
+    cp.add_argument("run_b")
+    cp.add_argument("--checks", action="append", default=[], metavar="FILE")
+    cp.add_argument("--source", action="append", default=[], metavar="DIR")
+    cp.add_argument("--out", help="also write the comparison to this Markdown file")
+    cp.add_argument("--no-redact", action="store_true")
+    _common(cp)
 
     sc = sub.add_parser("schema", help="inventory event types; flag ones this version does not recognise")
     sc.add_argument("session", nargs="?", help="a session (default: every transcript)")
@@ -102,7 +133,8 @@ def cmd_export(args):
         return 2
     cur = locate.current_session_id(args.current_session)
     res = export_session(path, out_dir=args.out, formats=formats, full=args.full, redact=not args.no_redact,
-                         pricing=pricing, current_id=cur, own_only=args.own_only)
+                         pricing=pricing, current_id=cur, own_only=args.own_only, checks=args.checks,
+                         skill_sources=args.source)
     if args.open and "dashboard" in res["paths"]:
         _open(res["paths"]["dashboard"])
     if args.quiet:
@@ -156,6 +188,46 @@ def cmd_rollup(args):
     return 0
 
 
+def cmd_skill(args):
+    from .skillreport import run_skill_report
+    try:
+        formats = parse_formats(args.format)
+        res = run_skill_report(args.name, claude_dir=args.claude_dir, project=args.project, since=args.since,
+                               limit=args.limit, out_dir=args.out, formats=formats, redact=not args.no_redact,
+                               pricing=Pricing(args.pricing), check_files=args.checks, sources=args.source)
+    except ValueError as exc:
+        print(f"session-analytics: {exc}", file=sys.stderr)
+        return 2
+    if args.open and "dashboard" in res["paths"]:
+        _open(res["paths"]["dashboard"])
+    if args.json:
+        rep = res["report"]
+        print(json.dumps({"out_dir": res["out_dir"], "paths": res["paths"], "totals": rep["totals"],
+                          "insights": rep["insights"],
+                          "versions": [{k: v[k] for k in ("label", "runs", "median")} for v in rep["versions"]]},
+                         indent=2, default=str))
+    else:
+        print(res["summary"])
+    return 0
+
+
+def cmd_compare(args):
+    from .skillreport import compare_runs, load_run, render_compare
+    pricing = Pricing(args.pricing)
+    try:
+        a = load_run(args.run_a, args.claude_dir, not args.no_redact, pricing, args.checks, args.source)
+        b = load_run(args.run_b, args.claude_dir, not args.no_redact, pricing, args.checks, args.source)
+    except (ValueError, locate.SessionNotFound) as exc:
+        print(f"session-analytics: {exc}", file=sys.stderr)
+        return 2
+    text = render_compare(a, b, compare_runs(a, b))
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    print(text)
+    return 0
+
+
 def cmd_schema(args):
     from .schema_scan import scan
     cdir = locate.claude_dir(args.claude_dir)
@@ -204,8 +276,8 @@ def main(argv=None):
     if not args.cmd:
         args = build_parser().parse_args(["export"] + list(argv or sys.argv[1:]))
     started = time.time()
-    code = {"export": cmd_export, "list": cmd_list, "rollup": cmd_rollup, "schema": cmd_schema,
-            "pricing": cmd_pricing}[args.cmd](args)
+    code = {"export": cmd_export, "list": cmd_list, "rollup": cmd_rollup, "skill": cmd_skill, "compare": cmd_compare,
+            "schema": cmd_schema, "pricing": cmd_pricing}[args.cmd](args)
     if os.environ.get("SESSION_ANALYTICS_TIMING"):
         print(f"({time.time() - started:.2f}s)", file=sys.stderr)
     return code

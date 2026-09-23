@@ -22,6 +22,8 @@ Arguments the user gave: `$ARGUMENTS`
 | another session: an id, a prefix, `latest`, or a transcript path | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" export <that reference>` |
 | to find a session first ("my sessions", "yesterday's session") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" list` (`--all` for every project), then export the one they mean |
 | several sessions: "this week", "last 30 days", "across projects" | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" rollup --since 7d` (`--all` for every project; `--since` takes 24h, 7d, 2w, or a date) |
+| how one skill behaves across sessions and versions ("how is rde doing", "did my change to <skill> work", "which version of <skill> fails more") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" skill <name> --since 30d` |
+| two runs of a skill side by side ("compare run X with run Y") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" compare <session>:<n> <session>:<n>` (run ids come from the reports) |
 
 Pass through any flags the user asked for:
 
@@ -51,10 +53,24 @@ open `report.md` or `session.json` just to repeat them. Lead with what the user 
 Keep it short; the files hold the detail. For a live session (the current one), say it is a snapshot
 that includes this export.
 
+### Skill development
+
+`skill <name>` finds every run of the skill (a run is the invocation plus the follow-up turns it steered) and
+labels each with the git commit of the skill that ran, by matching the injected SKILL.md against the skill's
+source repo (found under ~/dev and similar, or `--source <dir>`). It evaluates the checks in
+`checks/<name>.json` of the convo-analysis repo (or `--checks <file>`) on every run. Report per version: the
+median cost, tool calls, errors, questions and help lookups, the check pass rates, the skill files read, the
+CLI commands and their failures, and the git changes since the previous version. Lead with what changed
+between the latest two versions, and name the checks that moved. For "did my change work?", compare the
+check pass rates and medians of the versions before and after the commit, and say how many runs each has:
+one or two runs per version is anecdote, not a trend.
+
 ## 3. Show the dashboard
 
-`report.html` (or `rollup.html`) is a self-contained, offline page: timeline, tool and skill breakdowns, cost
-and context charts, sortable tables, light and dark themes.
+`report.html` (or `rollup.html`, `skill.html`) is a self-contained, offline page: timeline, step-by-step trace
+of every Claude API request and tool call, skill runs with their checks, tool and skill breakdowns, cost and
+context charts, sortable tables, light and dark themes. `skill.html` adds per-version strip plots, the checks
+matrix and a compare view.
 
 - If a tool that sends a file to the user is available (`SendUserFile`), send the HTML with display
   `render`.
@@ -66,9 +82,11 @@ them anywhere unless the user asks.
 ## 4. Follow-up questions
 
 Answer from `session.json` (or the CSVs in `csv/`) with a short `python3 -c` or `jq` query instead of
-re-running the export. Useful keys: `totals`, `insights`, `skills.invocations`, `skills.per_skill`,
-`tools.by_tool`, `tools.rows`, `turns.rows`, `requests.rows`, `subagents.rows`, `cost`, `reported`,
-`lineage`, `errors`, `timing`, `files.rows`, `git`. `docs/metrics.md` in the project describes every field.
+re-running the export. Useful keys: `totals`, `insights`, `skill_runs` (per run: version, checks, resources,
+cli, questions, objects, errors, final_message), `trace.steps`, `skills.invocations`, `skills.per_skill`,
+`tools.by_tool`, `tools.rows`, `shell.signatures`, `turns.rows`, `requests.rows`, `subagents.rows`, `cost`,
+`reported`, `lineage`, `errors`, `timing`, `files.rows`, `git`. For a skill report, `skill.json` has
+`versions`, `runs`, `details.<run_id>` and `failures`. `docs/metrics.md` in the project describes every field.
 
 After a Claude Code upgrade, `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" schema` lists transcript event types this version does
 not recognise yet.

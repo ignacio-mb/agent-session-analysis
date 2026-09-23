@@ -118,6 +118,14 @@ def ratio(num, den):
     return (num / den) if den else None
 
 
+_SYS_BLOCK = re.compile(r"<system-reminder>[\s\S]*?</system-reminder>\s*", re.I)
+
+
+def clean_prompt(text):
+    """What the user typed: without the <system-reminder> blocks the harness wraps around a prompt."""
+    return _SYS_BLOCK.sub("", text or "").strip()
+
+
 def text_of(content):
     """Plain text of a message `content`: a string, or the `text` blocks of a block list."""
     if isinstance(content, str):

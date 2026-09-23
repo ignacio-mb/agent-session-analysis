@@ -82,6 +82,35 @@ built-in slash commands (`/model`, `/compact`…), and skills re-injected after 
 
 `docs/metrics.md` describes every field.
 
+### Developing a skill
+
+For anyone building a skill (it was built around RDE), `skill` follows one skill across every session:
+
+```bash
+session-analytics skill rde --since 30d            # every rde run, grouped by the version that ran
+session-analytics compare b3734789:1 d085f38b:1    # two runs side by side, with a diff of what each did
+```
+
+- **Runs, not turns.** Claude Code attributes work to a skill only until the turn ends, but the skill keeps
+  steering your follow-up turns, so a run lasts until another skill takes over or the session ends. Both
+  views are kept: `attributed` and the whole run.
+- **Versions.** Each run is labelled with the git commit of the skill that ran, by matching the SKILL.md body
+  Claude Code injected against every commit of the skill's source (found under `~/dev/*/skills/<name>`, or
+  `--source`). The report shows what changed in git between consecutive versions.
+- **What a run did.** The skill's own files it read, in order, against what each playbook's "Read first:" line
+  names; every CLI call by subcommand (`mb transform create`), `--help` lookups, retries after a failure;
+  the questions it asked and your answers; the objects the CLI reported creating; cost, context and the
+  final hand-back; and a step-by-step trace of every Claude API request and tool call.
+- **Checks.** `checks/<skill>.json` declares what the skill should do, and every run is checked against it.
+  `checks/rde.json` encodes RDE's own rules: state first, `mb --version` and `mb auth list` before work,
+  a playbook before building, ask before creating anything, `--json`/`--profile` on every `mb` call, bodies
+  from `.scratch` files, update rather than delete and recreate. Check types: `first`, `before`, `count`,
+  `count_before`, `never`, `every` (see `src/session_analytics/checks.py`).
+
+The skill report has per-version strip plots (one dot per run), check pass rates by version, a run × check
+matrix, drill-down into any run, the skill files each version read, CLI calls and grouped failures, and a
+compare view. Single-session exports gain a **Skill runs** tab and a **Trace** tab.
+
 ### Several sessions
 
 ```bash

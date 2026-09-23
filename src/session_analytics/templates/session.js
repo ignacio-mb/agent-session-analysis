@@ -703,6 +703,37 @@ function buildRaw() {
       h("details", { class: "raw", style: "margin-top:12px" }, h("summary", null, "Totals as JSON"), h("pre", { class: "json" }, JSON.stringify(D.totals, null, 2)))));
 }
 
+
+/* ------------------------------------------------------------------ skill runs & trace */
+
+function buildSkillRuns() {
+  const runs = D.skill_runs || [];
+  if (!runs.length) return h("div", { class: "empty" }, "No skill was invoked in this session.");
+  const steps = D.trace.steps;
+  const panel = h("div");
+  const open = (id) => {
+    const run = runs.find((r) => r.run_id === id);
+    panel.replaceChildren(h("h2", { style: "font-size:15px;margin:18px 0 10px" }, `Run ${id} · ${run.skill}`), runDetail(run, run.steps.map((i) => steps[i])));
+    requestAnimationFrame(() => Charts.renderVisible());
+  };
+  const table = dataTable({ search: false, rows: runs, sortKey: "start_ms", sortDir: "asc", columns: [
+    { key: "run_id", label: "Run", render: (r) => { const b = h("button", { class: "linkbtn", type: "button" }, r.run_id); b.addEventListener("click", () => open(r.run_id)); return b; } },
+    { key: "skill", label: "Skill" }, { key: "mode", label: "Invoked by", render: (r) => modeBadge(r.mode) },
+    { key: "version", label: "Version", fmt: (v) => (v.status === "commit" ? v.commit : v.label) },
+    { key: "start_ms", label: "Started", fmt: F.time }, { key: "turn_count", label: "Turns", num: true },
+    { key: "tool_calls", label: "Tools", num: true }, { key: "tool_errors", label: "Errors", num: true }, { key: "cli_calls", label: "CLI", num: true },
+    { key: "question_calls", label: "Asked", num: true }, { key: "objects_created", label: "Created", num: true },
+    { key: "cost_usd", label: "Cost", num: true, fmt: F.usd }, { key: "checks_failed", label: "Checks ✗", num: true },
+    { key: "end_reason", label: "Ended" }] });
+  setTimeout(() => open(runs[0].run_id), 0);
+  return h("div", null, card({ title: "Skill runs", sub: "A run lasts from the invocation until another skill takes over or the session ends, follow-up turns included", span: 12 }, table), panel);
+}
+
+function buildTrace() {
+  return h("div", { class: "grid" }, card({ title: "Trace", sub: "Every prompt, Claude API request, tool call and notable event in order — click a row for its input and output", span: 12 },
+    traceView(D.trace.steps)));
+}
+
 /* ------------------------------------------------------------------ mount */
 
 (function mount() {
@@ -710,7 +741,9 @@ function buildRaw() {
   const t = tabs([
     { id: "overview", label: "Overview", build: buildOverview },
     { id: "timeline", label: "Timeline", build: buildTimeline },
+    { id: "trace", label: "Trace", count: D.trace.count, build: buildTrace },
     { id: "skills", label: "Skills", count: T.skills_invoked, build: buildSkills },
+    { id: "runs", label: "Skill runs", count: (D.skill_runs || []).length, build: buildSkillRuns },
     { id: "tools", label: "Tools", count: T.tool_calls, build: buildTools },
     { id: "cost", label: "Tokens & cost", build: buildCost },
     { id: "turns", label: "Turns", count: T.turns, build: buildTurns },

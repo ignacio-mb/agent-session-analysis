@@ -1,0 +1,147 @@
+{
+  "skill": "rde",
+  "about": "Rules from skills/rde/SKILL.md, checked on every rde run. Edit freely: see src/session_analytics/checks.py for the check types.",
+  "checks": [
+    {
+      "id": "state-first",
+      "desc": "Before any work: reads ./.scratch/STATE.md first",
+      "type": "first",
+      "match": {
+        "bash": "STATE\\.md"
+      }
+    },
+    {
+      "id": "cli-verified",
+      "desc": "Before any work: `mb --version` runs before any other mb command",
+      "type": "before",
+      "a": {
+        "bash": "\\bmb\\s+--version"
+      },
+      "b": {
+        "bash": "\\bmb\\s+[a-z]"
+      }
+    },
+    {
+      "id": "profile-listed",
+      "desc": "Before any work: `mb auth list` runs before touching the instance",
+      "type": "before",
+      "a": {
+        "bash": "\\bmb\\s+auth\\s+list"
+      },
+      "b": {
+        "bash": "\\bmb\\s+(db|table|card|transform|query|dashboard|collection)\\b"
+      }
+    },
+    {
+      "id": "contract-read",
+      "desc": "Reads references/collaboration-contract.md once per job",
+      "type": "count",
+      "match": {
+        "resource": "references/collaboration-contract\\.md"
+      },
+      "distinct": true,
+      "min": 1,
+      "max": 1
+    },
+    {
+      "id": "playbook-loaded",
+      "desc": "Loads a playbook (the route picks one per stage)",
+      "type": "count",
+      "match": {
+        "resource": "^playbooks/"
+      },
+      "distinct": true,
+      "min": 1
+    },
+    {
+      "id": "playbook-before-build",
+      "desc": "Reads a playbook before creating anything",
+      "type": "before",
+      "a": {
+        "resource": "^playbooks/"
+      },
+      "b": {
+        "bash": "\\bmb\\s+(transform|card|dashboard|collection|segment|measure|metric)\\s+create\\b(?![^\\n]*--help)"
+      }
+    },
+    {
+      "id": "ask-before-any-create",
+      "desc": "Stops and asks (AskUserQuestion) before creating anything in Metabase",
+      "type": "before",
+      "a": {
+        "tool": "^AskUserQuestion$"
+      },
+      "b": {
+        "bash": "\\bmb\\s+(transform|card|dashboard|collection|segment|measure|metric)\\s+create\\b(?![^\\n]*--help)"
+      }
+    },
+    {
+      "id": "gate-before-create",
+      "desc": "Pre-create gate: an AskUserQuestion comes before the first `mb transform create`",
+      "type": "before",
+      "a": {
+        "tool": "^AskUserQuestion$"
+      },
+      "b": {
+        "bash": "\\bmb\\s+transform\\s+create\\b(?![^\\n]*--help)"
+      }
+    },
+    {
+      "id": "single-gate",
+      "desc": "Pre-create gate: exactly one AskUserQuestion before the first `mb transform create`",
+      "type": "count_before",
+      "match": {
+        "tool": "^AskUserQuestion$"
+      },
+      "until": {
+        "bash": "\\bmb\\s+transform\\s+create\\b(?![^\\n]*--help)"
+      },
+      "min": 1,
+      "max": 1
+    },
+    {
+      "id": "json-everywhere",
+      "desc": "mb conventions: --json on every mb command",
+      "type": "every",
+      "segments": true,
+      "match": {
+        "bash": "^\\s*mb\\s+(?!--version\\b|skills\\b)[a-z][\\w-]*\\s+[a-z]"
+      },
+      "require": {
+        "bash": "--json|--help|-h\\b"
+      }
+    },
+    {
+      "id": "profile-everywhere",
+      "desc": "mb conventions: --profile on every mb command",
+      "type": "every",
+      "segments": true,
+      "match": {
+        "bash": "^\\s*mb\\s+(?!--version\\b|auth\\b|skills\\b)[a-z][\\w-]*\\s+[a-z]"
+      },
+      "require": {
+        "bash": "--profile|--help|-h\\b"
+      }
+    },
+    {
+      "id": "update-not-recreate",
+      "desc": "mb conventions: iterate with update, never delete and create",
+      "type": "never",
+      "match": {
+        "bash": "\\bmb\\s+(card|dashboard|transform|segment|measure|metric|collection)\\s+delete\\b"
+      }
+    },
+    {
+      "id": "bodies-from-scratch",
+      "desc": "mb conventions: create/update bodies come from a file in ./.scratch (--file)",
+      "type": "every",
+      "segments": true,
+      "match": {
+        "bash": "^\\s*mb\\s+[a-z][\\w-]*\\s+(create|update)\\b(?!.*--help)"
+      },
+      "require": {
+        "bash": "--file[ =]\\S*\\.scratch/"
+      }
+    }
+  ]
+}

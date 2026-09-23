@@ -286,3 +286,55 @@ transcripts, only inside the window; `duplicate_requests_removed`), `sessions` (
 attributed requests, tool calls and cost), `slash_commands`, `agent_types`, `error_categories`, `programs`,
 `mcp_servers`, `heatmap` (requests by weekday × hour), `entrypoints`, `claude_code_versions`,
 `cost_components`, `insights`.
+
+## `trace`
+
+`steps`: every prompt, skill invocation, Claude API request, tool call and notable event, in time order.
+Each step has `i`, `t` (epoch ms), `k` (`prompt`, `skill`, `request`, `tool`, `event`), `turn`, `scope`,
+`agent`, and by kind:
+
+- `prompt`: `trigger`, `text`
+- `skill`: `name`, `mode`, `via`, `args`, `ok`, `version` (fingerprint)
+- `request`: `model`, `in`, `out`, `cr` (cache read), `cw` (cache write), `ctx` (context sent), `think`
+  (thinking characters), `text` (what the model said), `tools`, `usd`, `lat` (latency to first block), `dur`,
+  `stop`, `skill` (attributed), `miss` (cache-miss reason)
+- `tool`: `name`, `id`, `status`, `dur`, `input`, `result`, `sigs` (CLI signatures), `prog` (main program),
+  `res` (skill files read, `skill:path`), `skill`, `batch`, `denial`
+- `event`: `what` (`compaction`, `api_error`, `interrupt`), `text`
+
+## `skill_runs`
+
+One entry per skill run (an invocation plus the follow-up turns it steered, until another skill takes over):
+
+| Field | Meaning |
+|---|---|
+| `run_id`, `skill`, `canonical`, `mode`, `via`, `scope`, `agent_id`, `inherited` | Which run, and how it was invoked |
+| `args`, `prompt` | What the run was asked |
+| `version` | `{status: commit|working-tree|installed|unknown, commit, sha, date, subject, source, label}`; `fingerprint` is the hash of the injected SKILL.md body |
+| `start_ms`, `end_ms`, `end_reason`, `duration_ms`, `active_ms` | Span, and why it ended |
+| `turns`, `turn_count`, `follow_up_turns`, `nested_skills`, `failed_invocations` | Turns covered (each `attributed` or follow-up) and skills invoked inside it |
+| `requests`, `attributed_requests`, token fields, `cost_usd`, `attributed_cost_usd`, `cache_hit_ratio` | Claude API usage |
+| `context_start`, `context_end`, `context_peak`, `latency_p50_ms`, `models` | Context and latency |
+| `tool_calls`, `main_tool_calls`, `tools`, `tool_errors`, `error_rate`, `error_categories`, `errors`, `denials`, `interrupted`, `subagents` | Tool usage and failures |
+| `cli`, `cli_calls`, `help_lookups`, `retries_after_error` | CLI subcommands (`mb transform create`) with calls, errors and `--help` lookups |
+| `resources`, `resources_read`, `playbooks`, `references` | The skill's own files read, in order, with how (`Read` or a shell command) |
+| `expected_by_playbooks`, `missing_expected`, `not_named_by_playbooks` | Files the playbooks' "Read first:" lines name, which of them were never read, and which were read without being named |
+| `questions`, `questions_asked`, `question_calls` | AskUserQuestion calls, with your answers |
+| `objects`, `objects_created`, `files_written` | Objects the CLI reported (`{id, name, type, verb}`), files written |
+| `final_message`, `last_stop_reason` | The run's hand-back |
+| `checks`, `checks_passed`, `checks_failed` | `{id, desc, status: pass|fail|n/a|error, detail}` per declared check |
+| `steps` | Indices into `trace.steps` |
+
+## `shell.signatures`
+
+Per CLI signature (`mb card create`, `git commit`, `gh pr view`…): `calls` (Bash calls using it), `uses`
+(occurrences), `errors`, `error_rate`, `help_lookups`, `p50_ms`, `max_ms`. `shell.help_lookups` is the total.
+
+## Skill report (`skill.json`)
+
+Schema `convo-analysis/skill-v1`: `skill`, `scope`, `totals`, `checks` (ids and descriptions), `versions`
+(per version: `label`, `commit`, `date`, `subject`, `runs`, `median` and `mean` of the run metrics, `checks`
+pass/fail/n.a. and `rate`, `resources` read, `cli` per signature with `per_run`, `error_categories`,
+`changes` = commits and files changed since the previous version), `runs` (one row per run),
+`details.<run_id>` (resources, cli, questions, objects, final message, errors, checks, turns, actions,
+steps), `failures` (tool errors grouped by what the message says), `insights`.
