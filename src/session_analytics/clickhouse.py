@@ -1,15 +1,25 @@
 """Load the session warehouse into ClickHouse, over its HTTP interface (no driver: urllib).
 
-    session-analytics warehouse --clickhouse       the connection string: CLICKHOUSE_URL in this checkout's .env
-    make clickhouse                                the same, then the check against the raw transcripts
+    session-analytics warehouse --clickhouse       every session on this machine (make clickhouse, with --check)
+    session-analytics warehouse --clickhouse=auto --session-queue DIR      the SessionEnd hook: the ended session(s)
 
 The same tables as the Postgres warehouse (warehouse.TABLES, same rows) and the same views, written in ClickHouse
-SQL — shared: many people load into one database, each from their own machines. Every row carries `source` (which
-machine and Claude config directory loaded it: a hash, see source_id) and `person` (whose sessions), and the tables
-are partitioned by source. A load replaces its own partition and nothing else: rows go into a staging table, the
-count is checked, and ALTER TABLE … REPLACE PARTITION swaps them in atomically, so a dashboard reading mid-load sees
-the old rows or the new ones, and nobody else's rows are touched. The taxonomy tables (de_topics, de_layers) are the
-same for everyone and are replaced whole. The target database must already exist: this never creates or drops one.
+SQL — shared: many people sync into one database, each from their own machines. Every row carries `source` (which
+machine and Claude config directory it came from: a hash, see source_id) and `person` (whose sessions), and the
+tables are partitioned by source. Only sessions that ran one of CLICKHOUSE_SKILLS (default: rde) are shared — a
+session is shared whole, every turn of it, once the skill ran in it.
+
+sync() is the one way rows change: for the sessions just read, it writes those that qualify and takes out those
+that no longer do; it also takes out any shared session whose own warehouse rows show it does not qualify (what an
+older version shared); every other session — one not read this time, because its transcript is gone or it is
+outside --since — stays. Per table, this source's partition is rebuilt in a staging table (its rows minus those of
+the sessions touched, plus their new rows), the counts checked, and swapped in with ALTER TABLE … REPLACE PARTITION,
+atomically: a dashboard reading meanwhile sees the old partition or the new one, and no other source's partition is
+touched. The taxonomy tables (de_topics, de_layers) are the same for everyone and rewritten only when this version's
+differ. Syncs on one machine hold a lock from reading the transcripts to the last write. Only the ids of sessions
+written or taken out are sent; a hook pass whose sessions never ran the skill, and were never shared (by the local
+record in ~/.config/convo-analysis/shared), makes no request. The target database must already exist: this never
+creates or drops one.
 
 Everything this writes carries a comment starting with MARK. A table or view of the same name without it
 belongs to something else, and stops the load before anything is written; objects with other names are never
@@ -23,6 +33,7 @@ point this load at someone else's cluster.
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import gzip
 import hashlib
@@ -33,22 +44,39 @@ import re
 import socket
 import ssl
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 
-from . import util
-from .warehouse import BIG, BOOL, INT, NUM, TABLES, TEXT, TS, VIEW_COMMENTS, _cell
+from . import __version__, util
+from .warehouse import (
+    BIG,
+    BOOL,
+    DEFAULT_SKILLS,
+    INT,
+    NUM,
+    TABLES,
+    TEXT,
+    TS,
+    VIEW_COMMENTS,
+    _cell,
+    only_sessions,
+    qualifies,
+)
 
 MARK = "convo-analysis"
 DEFAULT_DATABASE = "sessions"
-ENV_KEYS = ("CLICKHOUSE_URL", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_DATABASE", "CLICKHOUSE_PERSON")
+ENV_KEYS = ("CLICKHOUSE_URL", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_DATABASE", "CLICKHOUSE_PERSON", "CLICKHOUSE_SKILLS")
 GLOBAL = ("de_topics", "de_layers")  # the taxonomy: the same for everyone, replaced whole
 CHUNK_BYTES = 8 << 20  # uncompressed JSONEachRow per INSERT
 TYPES = {TEXT: "String", INT: "Int64", BIG: "Int64", NUM: "Float64", TS: "DateTime64(3, 'UTC')", BOOL: "Bool"}
 INSERT_SETTINGS = {"date_time_input_format": "best_effort", "input_format_null_as_default": "1"}
+# A read that a write follows (read-modify-write of a partition): on ClickHouse Cloud each HTTP request can land on a
+# different replica, and without this one could still be catching up on the previous load's parts.
+CONSISTENT = {"select_sequential_consistency": "1"}
 
 
 class ClickHouseError(RuntimeError):
@@ -166,6 +194,14 @@ class Target:
         return f"{self.user}@{self.host}:{self.port}/{self.database}"
 
 
+def skills_setting(env_file=None, override=None):
+    """Which sessions go to the shared warehouse: those that invoked one of these skills (CLICKHOUSE_SKILLS, comma
+    separated; default rde), or every session with `*`."""
+    raw = override if override is not None else settings(env_file)[0]["CLICKHOUSE_SKILLS"]
+    names = {x.strip() for x in (raw or "").split(",") if x.strip()}
+    return tuple(sorted(names)) or DEFAULT_SKILLS
+
+
 def target_from_settings(env_file=None):
     s, path = settings(env_file)
     if not s["CLICKHOUSE_URL"]:
@@ -276,10 +312,10 @@ class Client:
         except urllib.error.URLError as exc:
             raise ClickHouseError(f"cannot reach ClickHouse at {self.t.host}:{self.t.port}: {exc.reason}") from None
 
-    def rows(self, sql, params=None):
+    def rows(self, sql, params=None, settings=None):
         """A SELECT's rows, as dicts (JSONEachRow)."""
         out = self.run(sql.rstrip().rstrip(";") + " FORMAT JSONEachRow", params=params,
-                       settings={"output_format_json_quote_64bit_integers": "0"})
+                       settings={"output_format_json_quote_64bit_integers": "0", **(settings or {})})
         return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
@@ -316,7 +352,7 @@ def table_ddl(db, name, as_name=None):
     body = ",\n".join(f"  {ident(c)} {t}" + (f" COMMENT {lit(d)}" if d else "") for c, t, d in columns(name))
     part = "" if name in GLOBAL else "PARTITION BY source\n"
     return (f"CREATE TABLE {qualified(db, as_name or name)} (\n{body}\n)\nENGINE = MergeTree\n{part}"
-            f"ORDER BY ({', '.join(ident(c) for c in pk)})\nCOMMENT {lit(f'{MARK} · {comment}')}")
+            f"ORDER BY ({', '.join(ident(c) for c in pk)})\nCOMMENT {lit(f'{MARK} {__version__} · {comment}')}")
 
 
 def view_ddl(db, name):
@@ -392,7 +428,7 @@ def _insert(client, db, table, name, rows, extra):
     for chunk in json_lines(name, rows, extra):
         client.run(f"INSERT INTO {qualified(db, table)} FORMAT JSONEachRow", data=chunk, settings=INSERT_SETTINGS,
                    compress=True)
-    got = int(client.rows(f"SELECT count() AS n FROM {qualified(db, table)}")[0]["n"])
+    got = int(client.rows(f"SELECT count() AS n FROM {qualified(db, table)}", settings=CONSISTENT)[0]["n"])
     if got != len(rows):
         raise ClickHouseError(f"{db}.{table}: {got} rows arrived of {len(rows)} sent; the live table is untouched")
     return got
@@ -411,10 +447,7 @@ def _replace_own_rows(client, db, name, rows, ident_, existing):
         client.run(f"DROP TABLE IF EXISTS {qualified(db, live)} SYNC")
         client.run(table_ddl(db, name, as_name=live))
     else:
-        for c, t, d in columns(name):  # a newer version's columns: added, never dropped
-            if c not in cols:
-                client.run(f"ALTER TABLE {qualified(db, name)} ADD COLUMN IF NOT EXISTS {ident(c)} {t}"
-                           + (f" COMMENT {lit(d)}" if d else ""))
+        _add_missing_columns(client, db, name, cols)
     stage = f"{name}__load_{ident_.source}"
     client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
     client.run(f"CREATE TABLE {qualified(db, stage)} AS {qualified(db, live)}")  # same structure: REPLACE needs it
@@ -449,34 +482,349 @@ def _replace_whole(client, db, name, rows, ident_, existing):
     return got
 
 
+_lock_depth = 0
+
+
+@contextlib.contextmanager
+def machine_lock():
+    """One ClickHouse sync at a time on this machine: a sync reads this source's partition and writes it back, and
+    run_warehouse holds it from reading the transcripts to the last write, so the hook and a manual run never
+    interleave. Re-entrant within a process. flock where there is one (released even when the process dies), else
+    an exclusive lock file that goes stale after 30 minutes."""
+    global _lock_depth
+    if _lock_depth:
+        _lock_depth += 1
+        try:
+            yield
+        finally:
+            _lock_depth -= 1
+        return
+    path = config_dir() / "clickhouse.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        fh = open(path, "a")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+    else:
+        import time as _t
+        while True:
+            try:
+                fd = os.open(f"{path}.held", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                break
+            except FileExistsError:
+                try:
+                    if _t.time() - os.path.getmtime(f"{path}.held") > 1800:
+                        os.unlink(f"{path}.held")
+                        continue
+                except OSError:
+                    pass
+                _t.sleep(1)
+    _lock_depth = 1
+    try:
+        yield
+    finally:
+        _lock_depth = 0
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
+        else:
+            with contextlib.suppress(OSError):
+                os.unlink(f"{path}.held")
+
+
 def load(tables, target, ident_, log=print):
-    """Replace this source's rows in every table, then (re)create the views. Returns {table: rows}."""
+    """Replace this source's whole partition with `tables` — only to rebuild tables from before per-source loads
+    (sync does everything else). Returns {table: rows}."""
     client = Client(target)
     db = target.database
-    existing = preflight(client, db)
-    counts = {}
-    for name in TABLES:
-        rows = tables.get(name, ())
-        swap = _replace_whole if name in GLOBAL else _replace_own_rows
-        counts[name] = swap(client, db, name, rows, ident_, existing)
-        if log and len(rows) >= 10000:
-            log(f"  {name}: {counts[name]:,} rows")
-    for name in VIEWS:
-        client.run(view_ddl(db, name))
+    with machine_lock():
+        existing = preflight(client, db)
+        counts = {}
+        for name in TABLES:
+            rows = tables.get(name, ())
+            swap = _replace_whole if name in GLOBAL else _replace_own_rows
+            counts[name] = swap(client, db, name, rows, ident_, existing)
+            if log and len(rows) >= 10000:
+                log(f"  {name}: {counts[name]:,} rows")
+        for name in VIEWS:
+            client.run(view_ddl(db, name))
     return counts
 
 
-def forget(target, ident_):
-    """Take this source's rows out of every table (the other sources' stay). Returns the tables it dropped them from."""
+def _array(values):
+    """An Array(String) query parameter."""
+    return "[" + ",".join("'" + v.replace("\\", "\\\\").replace("'", "\\'") + "'" for v in values) + "]"
+
+
+def _add_missing_columns(client, db, name, cols):
+    for c, t, d in columns(name):  # a newer version's columns: added, never dropped
+        if c not in cols:
+            client.run(f"ALTER TABLE {qualified(db, name)} ADD COLUMN IF NOT EXISTS {ident(c)} {t}"
+                       + (f" COMMENT {lit(d)}" if d else ""))
+
+
+def _count(client, db, table, where="", params=None):
+    return int(client.rows(f"SELECT count() AS n FROM {qualified(db, table)} {where}", params, CONSISTENT)[0]["n"])
+
+
+def _merge_sessions(client, db, name, rows, ident_, existing, ids):
+    """This source's partition of one table again: its rows minus those of the sessions in `ids`, plus `rows` (their
+    new rows), swapped in with REPLACE PARTITION — this machine's other sessions and every other source's rows are
+    untouched. The ids go in the statement's body (a take-out after an upgrade can name thousands: too long for a
+    URL). Every count is read consistently, and the swap itself is counted afterwards."""
+    if name in existing:
+        _add_missing_columns(client, db, name, existing[name])
+    else:
+        client.run(table_ddl(db, name).replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))
+    stage = f"{name}__load_{ident_.source}"
+    src = {"src": ident_.source}
+    mine = "WHERE source = {src:String}"
+    keep = mine + " AND NOT has(" + _array(sorted(ids)) + ", session_id)"
+    client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    client.run(f"CREATE TABLE {qualified(db, stage)} AS {qualified(db, name)}")
+    try:
+        client.run(f"INSERT INTO {qualified(db, stage)} SELECT * FROM {qualified(db, name)} {keep}", params=src,
+                   settings=CONSISTENT)
+        kept = _count(client, db, stage)
+        live = _count(client, db, name, keep, src)
+        if kept != live:  # the copy missed rows the live table has: never swap a short partition in
+            raise ClickHouseError(f"{db}.{stage}: copied {kept} rows of {live}; the live table is untouched")
+        for chunk in json_lines(name, rows, ident_.columns(name)):
+            client.run(f"INSERT INTO {qualified(db, stage)} FORMAT JSONEachRow", data=chunk, settings=INSERT_SETTINGS,
+                       compress=True)
+        got = _count(client, db, stage)
+        if got != kept + len(rows):
+            raise ClickHouseError(f"{db}.{stage}: {got} rows, expected {kept} kept + {len(rows)} new; the live table "
+                                  f"is untouched")
+        swap = (f"ALTER TABLE {qualified(db, name)} REPLACE PARTITION {lit(ident_.source)} FROM {qualified(db, stage)}"
+                if got else f"ALTER TABLE {qualified(db, name)} DROP PARTITION {lit(ident_.source)}")
+        for _attempt in range(2):  # the staging table is still whole: a swap that came up short is done again
+            client.run(swap)
+            if _count(client, db, name, mine, src) == got:
+                break
+        else:
+            raise ClickHouseError(f"{db}.{name}: this source's partition does not hold the {got} rows swapped in")
+    finally:
+        client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    return len(rows)
+
+
+def _per_source(existing):
+    return [n for n in TABLES if n not in GLOBAL and n != "warehouse_load" and "source" in existing.get(n, ())]
+
+
+def _held_ids(client, db, existing, source):
+    """Every session this source has rows of, in any table: rows a write interrupted part-way left behind count too."""
+    tables = _per_source(existing)
+    if not tables:
+        return set()
+    union = " UNION ALL ".join(f"SELECT session_id FROM {qualified(db, n)} WHERE source = {{src:String}}"
+                               for n in tables)
+    return {r["session_id"] for r in client.rows(f"SELECT DISTINCT session_id FROM ({union})", {"src": source},
+                                                 CONSISTENT) if r["session_id"]}
+
+
+def _shared(client, db, existing, source):
+    """What this source holds now: {session: [its skill invocations]}, and the scope its last sync recorded."""
+    held = {sid: [] for sid in _held_ids(client, db, existing, source)}
+    if held and "source" in existing.get("skill_invocations", ()):
+        for r in client.rows(f"SELECT session_id, skill, canonical, success, status FROM "
+                             f"{qualified(db, 'skill_invocations')} WHERE source = {{src:String}}", {"src": source},
+                             CONSISTENT):
+            if r["session_id"] in held:
+                held[r["session_id"]].append(r)
+    scope = None
+    if "skills" in existing.get("warehouse_load", ()):
+        got = client.rows(f"SELECT skills FROM {qualified(db, 'warehouse_load')} WHERE source = {{src:String}}",
+                          {"src": source}, CONSISTENT)
+        scope = got[0]["skills"] if got else None
+    return held, scope
+
+
+def _version(text):
+    m = re.search(rf"{MARK} (\d+(?:\.\d+)*)", text or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def _taxonomy_is_current(client, db, name, rows):
+    """Whether a taxonomy table can be left as it is: it holds these rows already, or a newer version wrote it (one
+    machine on an older version must not take a newer taxonomy away from everyone)."""
+    got = client.rows("SELECT comment FROM system.tables WHERE database = {db:String} AND name = {t:String}",
+                      {"db": db, "t": name})
+    if not got:
+        return False
+    if _version(got[0]["comment"]) > _version(f"{MARK} {__version__}"):
+        return True
+    cols = [(c, t) for c, t, _ in TABLES[name][1]]
+    have = client.rows(f"SELECT {', '.join(ident(c) for c, _ in cols)} FROM {qualified(db, name)}", settings=CONSISTENT)
+    want = [{c: json_value(r.get(c), t) for c, t in cols} for r in rows]
+    key = lambda r: json.dumps(r, sort_keys=True, default=str)  # noqa: E731
+    return sorted(map(key, have)) == sorted(map(key, want))
+
+
+def _write_load_row(client, db, ident_, row, held, scope, since):
+    """warehouse_load: one row per source saying what it holds; none once it holds nothing (no trace of who loaded)."""
+    rows = [dict(row or {}, loaded_at=util.iso(time.time() * 1000), transcripts=len(held), sessions=len(held),
+                 since=since, generator_version=__version__, skills=scope)] if held else []
+    return _replace_own_rows(client, db, "warehouse_load", rows, ident_, preflight(client, db))
+
+
+# ---------------------------------------------------------------- what this machine has shared, kept locally
+def _cache_path(target, source):
+    key = hashlib.sha256(f"{target.host}|{target.port}|{target.database}|{source}".encode()).hexdigest()[:16]
+    return config_dir() / "shared" / f"{key}.json"
+
+
+def read_cache(target, source):
+    """This machine's record for one source on one target: `ids` shared, `withdrawn` (taken out with
+    --clickhouse-forget: never shared again unless named), `skills`, `swept_ms`, `synced` ({id: transcript mtime})."""
+    try:
+        return json.loads(_cache_path(target, source).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def write_cache(target, source, **fields):
+    path = _cache_path(target, source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = dict(read_cache(target, source) or {}, **fields)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
+    tmp.replace(path)
+
+
+def reshare(target, source, session_ids):
+    """Named explicitly again (--clickhouse --session): no longer withdrawn."""
+    cache = read_cache(target, source) or {}
+    write_cache(target, source, withdrawn=sorted(set(cache.get("withdrawn") or ()) - set(session_ids)))
+
+
+def needs_sync(target, ident_, read_ids, qualifying, skills):
+    """Whether a hook pass has anything to say to ClickHouse. Not when none of the sessions it read qualifies (or those
+    that do were withdrawn) and, by this machine's record, none of them was shared: a session that never ran rde then
+    costs no request — its id, and the time it ended, never leave the machine. With no record yet (the first pass
+    after installing, or a wiped ~/.config), one request learns what this machine has shared (only the source hash
+    is sent)."""
+    cache = read_cache(target, ident_.source)
+    if cache is None or "ids" not in cache:
+        return True
+    if set(qualifying) - set(cache.get("withdrawn") or ()):
+        return True
+    return bool(set(read_ids) & set(cache.get("ids") or ()))
+
+
+def sync(tables, target, ident_, read_ids, skills, since="all", full=False, rescope=False, log=print):
+    """Bring this source's rows in line with the transcripts just read (`read_ids`: sessions, `tables`: their rows).
+      - a session read that ran one of `skills` is written (added, or its rows replaced) — unless it was withdrawn;
+      - a session read that did not is taken out, if it was there;
+      - a shared session whose own rows in the warehouse show it does not qualify is taken out, read or not (what an
+        older version shared), and so is a withdrawn one (put back by an older version's hook);
+      - every other session stays: one whose transcript Claude Code has since deleted, or that was outside --since.
+    When CLICKHOUSE_SKILLS changed since the last sync, nothing is taken out for the new scope's sake until
+    `rescope` (a typo there would otherwise delete history for good): `scope_pending` says how many would go.
+    Only the ids of sessions written or taken out are sent."""
     client = Client(target)
     db = target.database
-    existing = preflight(client, db)
-    done = []
-    for name in TABLES:
-        if name not in GLOBAL and "source" in existing.get(name, ()):
-            client.run(f"ALTER TABLE {qualified(db, name)} DROP PARTITION {lit(ident_.source)}")
-            done.append(name)
-    return done
+    scope = ",".join(sorted(skills))
+    read_ids = set(read_ids)
+    cache = read_cache(target, ident_.source) or {}
+    withdrawn = set(cache.get("withdrawn") or ())
+    with machine_lock():
+        existing = preflight(client, db)
+        legacy = sorted(n for n, cols in existing.items() if n not in GLOBAL and "source" not in cols)
+        if legacy:
+            if not full:
+                raise ClickHouseError(f"{', '.join(legacy)} predate per-source loads: run a full load first "
+                                      f"(make clickhouse)")
+            if log:
+                log(f"Rebuilding {', '.join(legacy)} (from before per-source loads)…")
+            keep = (_qualifying(tables, skills) & read_ids) - withdrawn
+            rebuilt = only_sessions(tables, keep, skills)
+            if not keep:
+                rebuilt["warehouse_load"] = []  # a machine with nothing to share leaves no row saying who it is
+            load(rebuilt, target, ident_, log=log)
+            existing = preflight(client, db)
+        held, recorded = _shared(client, db, existing, ident_.source)
+        write = (_qualifying(tables, skills) & read_ids) - withdrawn
+        out_of_scope = {sid for sid, invs in held.items() if sid not in read_ids and not qualifies(invs, skills)}
+        no_longer = (read_ids - write) & set(held)
+        scope_changed = recorded is not None and recorded != scope
+        pending = None
+        if scope_changed and not rescope:
+            # judged by a new scope: wait for --rescope; only what the old scope also rejects (or withdrawn) goes
+            old = tuple(x for x in recorded.split(",") if x)
+            pending = {"from": recorded, "to": scope,
+                       "would_take_out": len(out_of_scope | no_longer)}
+            out_of_scope = {sid for sid in out_of_scope if not qualifies(held[sid], old)}
+            no_longer = {sid for sid in no_longer if sid in withdrawn or not qualifies(
+                [r for r in tables.get("skill_invocations", ()) if r.get("session_id") == sid], old)}
+        remove = no_longer | out_of_scope | (withdrawn & set(held))
+        touch = write | remove
+        counts = {}
+        if touch:
+            rows = only_sessions(tables, write, skills)
+            # `sessions` last: a take-out interrupted part-way still shows the session as shared, so a retry finds it
+            order = [n for n in TABLES if n not in GLOBAL and n not in ("sessions", "warehouse_load")] + ["sessions"]
+            for name in order:
+                counts[name] = _merge_sessions(client, db, name, rows.get(name, ()), ident_, existing, touch)
+            for name in GLOBAL:
+                if not _taxonomy_is_current(client, db, name, tables.get(name, ())):
+                    counts[name] = _replace_whole(client, db, name, tables.get(name, ()), ident_, existing)
+        mark = recorded if pending else scope
+        if touch or (held and recorded != mark):
+            now_held = sorted(_held_ids(client, db, preflight(client, db), ident_.source))
+            counts["warehouse_load"] = _write_load_row(client, db, ident_, (tables.get("warehouse_load") or [{}])[0],
+                                                       now_held, mark, since)
+            for name in VIEWS:
+                client.run(view_ddl(db, name))
+        else:
+            now_held = sorted(held)  # nothing to write — and with nothing shared, nothing is written at all
+        write_cache(target, ident_.source, skills=scope, ids=now_held)
+    return {"written": sorted(write), "removed": sorted(remove), "stale": sorted(out_of_scope), "held": len(now_held),
+            "counts": counts, "scope_pending": pending,
+            "withheld": sorted((_qualifying(tables, skills) & read_ids) & withdrawn)}
+
+
+def _qualifying(tables, skills):
+    from .warehouse import sessions_with_skill
+    return sessions_with_skill(tables, skills)
+
+
+def forget(target, ident_, session_ids=None):
+    """Take this source's rows out — all of them, or only `session_ids`' (a session whose transcript is gone included)
+    — and remember them as withdrawn, so no later sync (the hook, its catch-up, make clickhouse) shares them again
+    until one is named with --clickhouse --session. The other sources' rows stay. Returns (taken out, not held)."""
+    client = Client(target)
+    db = target.database
+    cache = read_cache(target, ident_.source) or {}
+    with machine_lock():
+        existing = preflight(client, db)
+        held, recorded = _shared(client, db, existing, ident_.source)
+        wanted = set(held) if session_ids is None else set(session_ids)
+        gone = wanted & set(held)
+        if gone:
+            # `sessions` last, as in sync: interrupted, the rest still shows the session as held
+            for name in [n for n in _per_source(existing) if n != "sessions"] + \
+                    [n for n in _per_source(existing) if n == "sessions"]:
+                if session_ids is None:
+                    client.run(f"ALTER TABLE {qualified(db, name)} DROP PARTITION {lit(ident_.source)}")
+                else:
+                    _merge_sessions(client, db, name, (), ident_, existing, gone)
+            now_held = sorted(_held_ids(client, db, existing, ident_.source))
+            load_row = (client.rows(f"SELECT * FROM {qualified(db, 'warehouse_load')} WHERE source = {{src:String}}",
+                                    {"src": ident_.source}, CONSISTENT) or [{}])[0] \
+                if "warehouse_load" in existing else {}
+            load_row = {k: v for k, v in load_row.items() if k not in ("source", "person", "machine")}
+            _write_load_row(client, db, ident_, load_row, now_held, recorded, "forget")
+        else:
+            now_held = sorted(held)
+        write_cache(target, ident_.source, ids=now_held,
+                    withdrawn=sorted(set(cache.get("withdrawn") or ()) | wanted))
+    return sorted(gone), sorted(wanted - gone)
 
 
 # ---------------------------------------------------------------- the views, in ClickHouse SQL

@@ -1,5 +1,5 @@
 {
-  "description": "Reload the session warehouse when a session ends: the local Postgres if it is running, the shared ClickHouse if ~/.config/convo-analysis/.env has a CLICKHOUSE_URL (this machine's rows only). Does nothing until one of them is set up; runs in the background.",
+  "description": "When a session ends, share it to the team's ClickHouse if the rde skill ran in it and ~/.config/convo-analysis/.env has a CLICKHOUSE_URL (only this machine's rows change), and reload the local Postgres if it is running. Does nothing until one of them is set up; runs in the background.",
   "hooks": {
     "SessionEnd": [
       {

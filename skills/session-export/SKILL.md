@@ -30,19 +30,29 @@ Arguments the user gave: `$ARGUMENTS`
 
 ### The shared warehouse
 
-Many people load into one ClickHouse database, each from their own machines. Every row carries `source` (this
-machine and Claude config directory, hashed) and `person` (`CLICKHOUSE_PERSON`, else the git email), and a load
-replaces only its own source's rows — never anyone else's — so it is safe to run as often as wanted.
+Many people sync into one ClickHouse database, each from their own machines. Only sessions in which the rde skill
+ran go there (`CLICKHOUSE_SKILLS` in the env file, default `rde`; `*` for every session), and such a session is
+shared whole — every turn, tool call, file path and error in it, not just the rde run. Sessions that never ran rde
+stay on the machine. Every row carries `source` (this machine and Claude config directory, hashed) and `person`
+(`CLICKHOUSE_PERSON`, else the git email); a sync changes only its own source's rows (plus the shared topic and
+layer lists when its version is newer), never anyone else's, and never takes out a session just because its
+transcript is gone — so it is safe to run as often as wanted.
+`--clickhouse --check` syncs every session on this machine; `--clickhouse --session "${CLAUDE_SESSION_ID}"` just
+this one ("push this session").
 
 - **The connection string is the user's to enter.** It lives in `~/.config/convo-analysis/.env` (outside the
   plugin, so an update keeps it). When the command says `CLICKHOUSE_URL is not set`, run
   `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --init-env`, which creates that file from the
   template, and ask the user to fill in `CLICKHOUSE_URL` there themselves (the JDBC string from the ClickHouse Cloud
   console works as it is). Never ask for it in chat, and never read, print or edit that file.
-- **It reloads itself.** The plugin's SessionEnd hook loads the shared warehouse in the background whenever a session
-  ends, once `CLICKHOUSE_URL` is set; until then it does nothing.
-- **Say what gets shared** before a first load: prompt previews, questions and answers, command summaries, error
-  messages and file paths, readable by anyone who can read that database. Secret-looking strings are masked.
+- **It shares by itself once set up.** The plugin's SessionEnd hook syncs each session that ends — only if rde ran
+  in it — in the background, as soon as `CLICKHOUSE_URL` is set; until then it does nothing. So say what gets
+  shared when helping someone set it up: the whole of every session that ran rde (prompt previews, questions and
+  answers, command summaries, error messages, file paths), readable by anyone who can read that database; secret-
+  looking strings are masked. `--clickhouse-forget` takes this machine's sessions out (`--session <id>` for one,
+  even one whose transcript is gone) and keeps them out; `--clickhouse --session <id>` shares one again. To stop
+  sharing, empty `CLICKHOUSE_URL`. If a sync reports that `CLICKHOUSE_SKILLS` changed, say how many sessions
+  `--rescope` would take out and run it only if the user wants that.
 
 Pass through any flags the user asked for:
 
