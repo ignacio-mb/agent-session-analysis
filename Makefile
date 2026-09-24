@@ -1,6 +1,6 @@
 PY39 := /usr/bin/python3
 
-.PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-up warehouse-down warehouse-psql
+.PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-check warehouse-up warehouse-down warehouse-psql
 
 test: test39
 	uv run --no-project --with pytest python -m pytest -q
@@ -28,7 +28,11 @@ uninstall:
 
 # Every session into the local Postgres (docker-compose.yml): tables and views for SQL and Metabase.
 warehouse:
-	PYTHONPATH=src python3 -m session_analytics warehouse --up --load
+	PYTHONPATH=src python3 -m session_analytics warehouse --up --load --check
+
+# Recount every session from its raw transcript and compare with what the warehouse holds.
+warehouse-check:
+	PYTHONPATH=src python3 -m session_analytics warehouse --check
 
 warehouse-up:
 	docker compose up -d --wait

@@ -139,6 +139,9 @@ TABLES = {
         ("session_id", TEXT, None), ("path", TEXT, None), ("reads", INT, None), ("edits", INT, None), ("writes", INT, None),
         ("creates", INT, None), ("lines_added", INT, None), ("lines_removed", INT, None), ("errors", INT, None)],
         ["session_id", "path"]),
+    "warehouse_load": ("The load that produced these tables: when, and from how many transcripts.", [
+        ("loaded_at", TS, None), ("transcripts", INT, None), ("sessions", INT, None), ("since", TEXT, None),
+        ("generator_version", TEXT, None)], ["loaded_at"]),
     "tool_errors": ("One row per failed tool call, with what it said.", [
         ("session_id", TEXT, None), ("error_no", INT, None), ("at", TS, None), ("turn", INT, None), ("tool", TEXT, None),
         ("scope", TEXT, None), ("category", TEXT, None), ("input", TEXT, None), ("message", TEXT, None)],
@@ -164,6 +167,8 @@ SELECT skill, version, min(version_date) AS version_date, max(version_subject) A
        percentile_cont(0.5) WITHIN GROUP (ORDER BY help_lookups) AS median_help_lookups,
        percentile_cont(0.5) WITHIN GROUP (ORDER BY active_ms) / 60000.0 AS median_active_minutes,
        sum(questions_asked) AS questions_asked, sum(prose_questions) AS prose_questions,
+       round(avg(questions_asked), 1) AS avg_questions_asked, round(avg(prose_questions), 1) AS avg_prose_questions,
+       round(avg(question_rounds), 1) AS avg_question_rounds,
        sum(recommended_taken) AS recommended_taken, sum(recommended_offered) AS recommended_offered,
        round(sum(recommended_taken)::numeric / nullif(sum(recommended_offered), 0), 3) AS recommended_rate,
        sum(typed_answers) AS typed_answers,
@@ -473,6 +478,7 @@ def _cell(v):
 
 
 def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, pricing=None, now_ms=None, log=None):
+    from . import __version__
     """Analyze every transcript in scope: ({table: rows}, meta)."""
     now = now_ms if now_ms is not None else time.time() * 1000
     cutoff = parse_since(since, now)
@@ -501,6 +507,8 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
             failed.append({"transcript": str(f), "error": f"{type(exc).__name__}: {exc}"})
         if log and n % 25 == 0:
             log(f"  {n}/{len(files)} transcripts")
+    tables["warehouse_load"] = [{"loaded_at": util.iso(now), "transcripts": len(files),
+                                  "sessions": len(tables["sessions"]), "since": since, "generator_version": __version__}]
     return tables, {"transcripts": len(files), "failed": failed, "cutoff": cutoff, "now": now}
 
 

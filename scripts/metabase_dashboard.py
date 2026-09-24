@@ -84,19 +84,21 @@ CARDS = [
     # ---------------------------------------------------------------- Overview
     ("sessions30", "Overview", "Sessions, last 30 days", "scalar",
      "SELECT count(*) AS sessions FROM sessions WHERE start_at >= now() - interval '30 days'",
-     {"scalar.field": "sessions"}, False, (0, 0, 6, 3)),
+     {"scalar.field": "sessions"}, False, (0, 0, 5, 3)),
     ("cost30", "Overview", "Estimated cost, last 30 days", "scalar",
      "SELECT round(sum(cost_usd), 2) AS cost_usd FROM sessions WHERE start_at >= now() - interval '30 days'",
      {"scalar.field": "cost_usd", "column_settings": {'["name","cost_usd"]': {"number_style": "currency", "currency": "USD"}}},
-     False, (6, 0, 6, 3)),
+     False, (5, 0, 5, 3)),
     ("hours30", "Overview", "Active hours, last 30 days", "scalar",
      "SELECT round(sum(active_ms) / 3600000.0, 1) AS active_hours FROM sessions WHERE start_at >= now() - interval '30 days'",
-     {"scalar.field": "active_hours"}, False, (12, 0, 6, 3)),
+     {"scalar.field": "active_hours"}, False, (10, 0, 5, 3)),
     ("err30", "Overview", "Tool calls that failed, last 30 days", "scalar",
      "SELECT sum(tool_errors)::numeric / nullif(sum(tool_calls), 0) AS error_rate FROM sessions "
      "WHERE start_at >= now() - interval '30 days'",
      {"scalar.field": "error_rate", "column_settings": {'["name","error_rate"]': {"number_style": "percent", "decimals": 1}}},
-     False, (18, 0, 6, 3)),
+     False, (15, 0, 5, 3)),
+    ("loaded", "Overview", "Data as of", "scalar",
+     "SELECT max(loaded_at) AS loaded_at FROM warehouse_load", {"scalar.field": "loaded_at"}, False, (20, 0, 4, 3)),
     ("costday", "Overview", "Estimated cost per day", "bar",
      "SELECT day, cost_usd FROM v_daily WHERE day >= current_date - 60 ORDER BY day",
      {"graph.dimensions": ["day"], "graph.metrics": ["cost_usd"],
@@ -116,8 +118,8 @@ CARDS = [
     # ---------------------------------------------------------------- Skill versions
     ("versions", "Skill versions", "Versions compared", "table",
      f"SELECT version, subject, version_date, runs, median_cost_usd, median_tool_calls, median_tool_errors, "
-     f"round(median_active_minutes::numeric, 1) AS median_active_minutes, median_help_lookups, questions_asked, "
-     f"prose_questions, recommended_rate, typed_answers, median_docs_read, checks_failed "
+     f"round(median_active_minutes::numeric, 1) AS median_active_minutes, median_help_lookups, avg_questions_asked, "
+     f"avg_prose_questions, avg_question_rounds, recommended_rate, typed_answers, median_docs_read, checks_failed "
      f"FROM v_skill_versions WHERE skill = {SKILL} {BUILD_VERSION_ORDER}",
      {"column_settings": {'["name","median_cost_usd"]': {"number_style": "currency", "currency": "USD"},
                           '["name","recommended_rate"]': {"number_style": "percent", "decimals": 0}}}, True, (0, 0, 24, 6)),
@@ -172,11 +174,12 @@ CARDS = [
      f"GROUP BY 1, 2 ORDER BY 1",
      {"graph.dimensions": ["topic_label", "outcome"], "graph.metrics": ["questions"], "stackable.stack_type": "stacked"},
      True, (0, 3, 12, 10)),
-    ("qchannel", "Interview", "Questions per version: AskUserQuestion or prose", "bar",
-     f"SELECT q.version, CASE WHEN q.channel = 'ask' THEN 'AskUserQuestion' ELSE 'in prose' END AS channel, count(*) AS questions "
-     f"FROM questions q JOIN (SELECT version, version_date FROM v_skill_versions WHERE skill = {SKILL}) v USING (version) "
-     f"WHERE q.skill = {SKILL} GROUP BY 1, 2 ORDER BY min(v.version_date), 2",
-     {"graph.dimensions": ["version", "channel"], "graph.metrics": ["questions"], "stackable.stack_type": "stacked"},
+    ("qchannel", "Interview", "Questions per run, on average, by version", "bar",
+     f"SELECT version, avg_questions_asked AS askuserquestion, avg_prose_questions AS in_prose FROM v_skill_versions "
+     f"WHERE skill = {SKILL} {BUILD_VERSION_ORDER}",
+     {"graph.dimensions": ["version"], "graph.metrics": ["askuserquestion", "in_prose"], "stackable.stack_type": "stacked",
+      "graph.show_values": True, "series_settings": {"askuserquestion": {"title": "AskUserQuestion"},
+                                                      "in_prose": {"title": "in prose"}}},
      True, (12, 3, 12, 10)),
     ("qtopictable", "Interview", "Topics by version", "table",
      f"SELECT version, topic_label, asked, in_prose, runs, recommended_taken, recommended_offered, typed, came_back_empty, "

@@ -105,6 +105,8 @@ def build_parser():
     wh.add_argument("--out", help="where to write the CSVs and SQL (default: ~/claude-session-exports/_warehouse/<time>/)")
     wh.add_argument("--up", action="store_true", help="start the Postgres in docker-compose.yml first")
     wh.add_argument("--load", action="store_true", help="load the tables into Postgres (default: only write files)")
+    wh.add_argument("--check", action="store_true",
+                    help="recount every session from its raw transcript and compare with the warehouse (after --load)")
     wh.add_argument("--container", default="convo-analysis-pg", help="the Postgres container to load through")
     wh.add_argument("--dsn", help="load with a local psql to this DSN instead of the container")
     wh.add_argument("--no-redact", action="store_true")
@@ -242,8 +244,16 @@ def cmd_compare(args):
 
 
 def cmd_warehouse(args):
-    from . import warehouse
+    from . import reconcile, warehouse
     log = (lambda *_: None) if args.json else (lambda m: print(m, file=sys.stderr))
+    if args.check and not args.load:
+        try:
+            res = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn), args.claude_dir)
+        except (RuntimeError, OSError) as exc:
+            print(f"session-analytics: warehouse --check: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(res, indent=1, default=str) if args.json else reconcile.render(res))
+        return 0 if res["ok"] else 1
     try:
         res = warehouse.run_warehouse(args.claude_dir, args.project, args.since, args.out, do_load=args.load,
                                       start=args.up, container=args.container, dsn=args.dsn,
@@ -269,6 +279,10 @@ def cmd_warehouse(args):
               "v_question_topics, v_question_outcomes, v_typed_answers, v_question_flags, v_skill_files, "
               "v_cli_signatures, v_tools, v_models.")
     print(f"\nFiles: {res['out_dir']} (schema.sql, views.sql, one CSV per table)")
+    if args.check and res["loaded"]:
+        chk = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn), args.claude_dir)
+        print("\n" + reconcile.render(chk))
+        return 0 if chk["ok"] else 1
     return 0
 
 

@@ -162,7 +162,14 @@ of a skill compared), `v_check_rates`, `v_question_topics`, `v_question_outcomes
 `v_question_flags`, `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`, `v_daily`. Tables and columns
 carry comments, which Metabase shows as descriptions. A Metabase running in Docker reaches it at
 `host.docker.internal:55432`. Each fact belongs to one session (transcripts are read own-only), and every load
-drops and recreates the tables. `make warehouse-psql` opens a shell.
+drops and recreates the tables; `warehouse_load` records when, and the dashboard shows it as "Data as of".
+`make warehouse` checks every load: each session is recounted straight from its raw JSONL (plain `json`, none of
+the parser's code) and compared with the warehouse — API requests, tokens, tool calls, failures, questions, skill
+calls — so a difference is a bug, not a rounding (`make warehouse-check` runs it alone; sessions written after the
+load are reported apart). `make warehouse-psql` opens a shell.
+
+Nothing refreshes it on its own: Claude Code only appends to its transcripts, and the warehouse (and every
+dashboard on it) holds what the last `make warehouse` read.
 
 `scripts/metabase_dashboard.py` builds a Metabase dashboard on it — Overview, Skill versions, Interview, Skill
 files & CLI, with a Skill filter — once the warehouse is added to that Metabase as a database:

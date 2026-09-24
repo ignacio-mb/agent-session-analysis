@@ -45,3 +45,21 @@ def test_bundle_and_sql(claude_dir, skill_dir, checks_file, tmp_path):  # noqa: 
     assert sql.count("CREATE TABLE") == len(warehouse.TABLES) and "COMMENT ON TABLE questions" in sql
     assert warehouse.views_sql().count("CREATE VIEW") == len(warehouse.VIEW_COMMENTS)
     assert warehouse._cell(True) == "true" and warehouse._cell(None) == "" and warehouse._cell(3.0) == "3"
+
+
+def test_raw_recount_matches_what_the_warehouse_loads(claude_dir, skill_dir, checks_file):  # noqa: F811
+    from session_analytics import reconcile
+    p = interview_session(claude_dir, skill_dir)
+    sid, raw = reconcile.raw_counts(p)
+    s = parse_session(p, own_only=True)
+    rows = warehouse.session_rows(analyze(s, Pricing(), checks=[checks_file]), s)
+    assert sid == s.session_id
+    assert raw["api_requests"] == len(rows["api_requests"])
+    assert raw["output_tokens"] == sum(r["output_tokens"] for r in rows["api_requests"])
+    assert raw["tool_calls"] == len(rows["tool_calls"])
+    assert raw["tool_errors"] == sum(1 for r in rows["tool_calls"] if r["status"] in ("error", "denied", "interrupted"))
+    assert raw["ask_questions"] == sum(1 for q in rows["questions"] if q["channel"] == "ask") == 7
+    assert raw["skill_calls"] == 1
+    tables, _ = warehouse.build(claude_dir=claude_dir, since="all")
+    (load,) = tables["warehouse_load"]
+    assert load["sessions"] == 1 and load["transcripts"] == 1

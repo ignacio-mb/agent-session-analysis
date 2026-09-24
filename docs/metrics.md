@@ -441,7 +441,10 @@ Keys: `sessions.session_id`; `turns (session_id, turn)`; `api_requests (session_
 with `signature` and `is_help`; `skill_invocations (session_id, invocation_no)`; `skill_runs.run_id` with
 `version`; `skill_run_checks (run_id, check_id)`; `skill_run_files (run_id, owner, path)`; `questions.qid`
 (`<session8>:<qid>`); `question_options (qid, option_no)`; `subagents (session_id, agent_id)`;
-`files_touched (session_id, path)`; `tool_errors (session_id, error_no)`. Views: `v_daily`, `v_skill_versions`,
+`files_touched (session_id, path)`; `tool_errors (session_id, error_no)`; `warehouse_load` (the load that produced
+the tables: `loaded_at`, `transcripts`, `sessions`, `since`, `generator_version`). `v_skill_versions` carries
+per-run averages (`avg_questions_asked`, `avg_prose_questions`, `avg_question_rounds`) beside the totals.
+`warehouse --check` (reconcile.py) recounts every session from its raw JSONL and compares. Views: `v_daily`, `v_skill_versions`,
 `v_check_rates`, `v_question_topics`, `v_question_outcomes`, `v_typed_answers`, `v_question_flags`,
 `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`.
 
