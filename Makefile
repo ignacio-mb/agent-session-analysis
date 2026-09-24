@@ -66,6 +66,8 @@ clickhouse-dev-test: clickhouse-dev
 	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse --env-file .preview/clickhouse-dev.env --check \
 		--out .preview/clickhouse-dev
 	python3 scripts/metabase_dashboard.py --test --clickhouse --env-file .preview/clickhouse-dev.env
+	CONVO_CLICKHOUSE_TEST_URL=http://convo:convo@127.0.0.1:18123 uv run --no-project --with pytest python -m pytest -q \
+		tests/test_clickhouse_live.py
 
 # Only the throwaway ClickHouse: `down` would take the Postgres warehouse's container with it.
 clickhouse-dev-down:

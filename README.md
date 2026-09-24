@@ -187,9 +187,10 @@ load — the main transcript or any of its subagent and workflow transcripts —
 `make warehouse-psql` opens a shell.
 
 Nothing refreshes it on its own: Claude Code only appends to its transcripts, and the warehouse (and every
-dashboard on it) holds what the last load read. `scripts/warehouse_hook.sh` is a SessionEnd hook that reloads
-whatever is set up — the local Postgres when its container is running (`--load=auto`), the shared ClickHouse
-(below) when `CLICKHOUSE_URL` is set (`--clickhouse=auto`) — and, with neither, exits before reading a transcript.
+dashboard on it) holds what the last load read. `scripts/warehouse_hook.sh` is a SessionEnd hook that updates
+whatever is set up — the local Postgres, every session, when its container is running (`--load=auto`); the shared
+ClickHouse (below), only the session that ended and only if it invoked rde, when `CLICKHOUSE_URL` is set
+(`--clickhouse=auto --session-queue`) — and, with neither, exits before reading a transcript.
 It runs in the background (closing a session is never held up), one load at a time (a session that ends mid-load
 gets one more pass after it), logs to `~/claude-session-exports/_warehouse/hook.log` and overwrites
 `_warehouse/latest` instead of adding a folder per load. The plugin installs it (`hooks/hooks.json`); from a
@@ -204,21 +205,44 @@ checkout, add it to `~/.claude/settings.json` instead — not both, or every ses
 
 ```bash
 make env                # creates ~/.config/convo-analysis/.env from .env.example: fill in CLICKHOUSE_URL
-make clickhouse         # this machine's sessions into it (its own rows only), then the check
-make clickhouse-forget  # take this machine's rows out again
+make clickhouse         # every rde session on this machine into it (its own rows only), then the check
+make clickhouse-forget  # take this machine's sessions out, and keep them out (--session <id> for one)
 ```
 
 (Without a checkout, through the plugin: `session_export.py warehouse --init-env`, `--clickhouse --check`,
 `--clickhouse-forget`.)
 
-Many people load into one database, each from their own machines, and nobody's load touches anyone else's rows.
-Every row carries `source` — this machine and Claude config directory, as a hash: derived from the hardware id,
-so it survives a wiped config, and never the id itself — and `person` (`CLICKHOUSE_PERSON`, else the git email).
-The tables are partitioned by `source`: a load writes its rows to a staging table, checks the count, and swaps
-them in with `ALTER TABLE … REPLACE PARTITION`, atomically, so a dashboard reading mid-load sees that machine's
-old rows or its new ones, and every other machine's rows are untouched. The taxonomy tables (`de_topics`,
-`de_layers`) are the same for everyone and are replaced whole. A second machine, or a second Claude config
-directory, is a second source; a session copied between machines is counted once per machine that loads it.
+**What is shared: the sessions that ran the rde skill, whole.** `CLICKHOUSE_SKILLS` (default `rde`; comma
+separated; a plugin's `…:rde` counts, and `agent-skills:rde` means only that plugin's; `*` for every session). Only
+a Skill call that completed counts: rejected, failed, or still waiting at the permission prompt, it did not run the
+skill. Once rde ran in a session, all of that session goes: every turn and prompt preview, tool call, file path and
+error, other skills' runs, subagents — before and after the rde run. Sessions that never ran rde stay on the
+machine: not their rows, not their ids. Once `CLICKHOUSE_URL` is set, the SessionEnd hook shares each qualifying
+session as it ends, automatically; one that never ran rde makes no request either — except the very first pass on a
+machine (or after `~/.config` was wiped), which asks the cluster, with this machine's source hash only, what the
+machine has shared before.
+
+**How it stays right.** Every change goes through one sync. For the sessions it just read, it writes those that
+qualify and takes out those that no longer do; it also takes out any shared session whose own rows in the warehouse
+show it never ran rde (what an earlier version shared, rows a sync interrupted part-way left behind). Every other
+session stays: one whose transcript Claude Code has since deleted (it prunes old ones), or that was outside
+`--since`. The hook reads only the session that ended, plus any transcript that changed since its last pass and has
+been quiet for five minutes (a session whose end it missed; one already synced at its current state is not read
+again); `make clickhouse` reads them all. Syncs on one machine hold a lock from reading to the last write.
+`--clickhouse-forget` takes sessions out and remembers them as withdrawn, so no later sync — the hook, its catch-up,
+`make clickhouse` — shares them again; `--clickhouse --session <id>` shares one again. A session whose transcript is
+gone can still be forgotten by its id. When `CLICKHOUSE_SKILLS` changes, the sessions the new scope no longer
+covers are only reported until `--rescope` (a typo there would otherwise delete history that cannot come back).
+
+**Nobody's sync touches anyone else's rows.** Many people sync into one database, each from their own machines.
+Every row carries `source` — this machine and Claude config directory, as a hash: derived from the hardware id, so
+it survives a wiped config, and never the id itself — and `person` (`CLICKHOUSE_PERSON`, else the git email). The
+tables are partitioned by `source`: per table, a sync rebuilds its own partition in a staging table (its rows minus
+the touched sessions', plus their new rows), checks the counts, and swaps it in with `ALTER TABLE … REPLACE
+PARTITION`, atomically, so a dashboard reading meanwhile sees the old partition or the new one. The taxonomy tables
+(`de_topics`, `de_layers`) are the only shared ones: the same for everyone, rewritten when a sync's version of them
+differs — never by an older version than the one that wrote them. A second machine, or a second Claude config directory, is a second source; a session copied between
+machines is counted once per machine that syncs it. To stop sharing altogether, empty `CLICKHOUSE_URL`.
 
 `CLICKHOUSE_URL` is the cluster's HTTPS endpoint with a user and password and the database at the end
 (`https://<user>:<password>@<host>:8443/sessions`) — or the JDBC string the ClickHouse Cloud console gives,

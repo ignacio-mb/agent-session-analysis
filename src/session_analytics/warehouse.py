@@ -16,6 +16,7 @@ or into a local `psql` when one is installed and a DSN is given.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import shutil
@@ -151,7 +152,9 @@ TABLES = {
         ["session_id", "path"]),
     "warehouse_load": ("The load that produced these tables: when, and from how many transcripts.", [
         ("loaded_at", TS, None), ("transcripts", INT, None), ("sessions", INT, None), ("since", TEXT, None),
-        ("generator_version", TEXT, None)], ["loaded_at"]),
+        ("generator_version", TEXT, None),
+        ("skills", TEXT, "Which sessions it holds: those that invoked these skills, or * for every session")],
+        ["loaded_at"]),
     "tool_errors": ("One row per failed tool call, with what it said.", [
         ("session_id", TEXT, None), ("error_no", INT, None), ("at", TS, None), ("turn", INT, None), ("tool", TEXT, None),
         ("scope", TEXT, None), ("category", TEXT, None), ("input", TEXT, None), ("message", TEXT, None)],
@@ -537,22 +540,28 @@ def _cell(v):
     return str(v).replace("\x00", "")
 
 
-def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, pricing=None, now_ms=None, log=None):
+def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, pricing=None, now_ms=None, log=None,
+          transcripts=None):
+    """Analyze every transcript in scope — or only `transcripts` (main transcript paths): ({table: rows}, meta)."""
     from . import __version__
-    """Analyze every transcript in scope: ({table: rows}, meta)."""
     now = now_ms if now_ms is not None else time.time() * 1000
     cutoff = parse_since(since, now)
     cdir = locate.claude_dir(claude_dir)
-    files = [f for f in locate.iter_transcripts(cdir, project=project) if f.stat().st_mtime * 1000 >= cutoff][:limit]
+    if transcripts is not None:
+        files = [Path(t) for t in transcripts if Path(t).is_file()]
+    else:
+        files = [f for f in locate.iter_transcripts(cdir, project=project) if f.stat().st_mtime * 1000 >= cutoff][:limit]
     pricing = pricing or Pricing()
     R = Redactor(redact)
     tables = {k: [] for k in TABLES}
     seen_keys = {k: set() for k in TABLES}
     failed = []
+    read = set()  # the sessions whose transcripts read cleanly, empty ones included
     for n, f in enumerate(files, 1):
         try:
             s = parse_session(f, own_only=True)
             if not s.requests and not s.turns:
+                read.add(s.session_id)
                 continue
             a = analyze(s, pricing, redactor=R, now_ms=now)
             for k, rs in session_rows(a, s).items():
@@ -563,14 +572,60 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
                         continue  # a session file seen twice (a relocated copy): keep the first
                     seen_keys[k].add(key)
                     tables[k].append(r)
+            read.add(s.session_id)
         except Exception as exc:  # one unreadable transcript must not sink the warehouse
             failed.append({"transcript": str(f), "error": f"{type(exc).__name__}: {exc}"})
         if log and n % 25 == 0:
             log(f"  {n}/{len(files)} transcripts")
     tables["de_topics"], tables["de_layers"] = semantics.load().dimensions()
     tables["warehouse_load"] = [{"loaded_at": util.iso(now), "transcripts": len(files),
-                                  "sessions": len(tables["sessions"]), "since": since, "generator_version": __version__}]
-    return tables, {"transcripts": len(files), "failed": failed, "cutoff": cutoff, "now": now}
+                                  "sessions": len(tables["sessions"]), "since": since, "generator_version": __version__,
+                                  "skills": "*"}]
+    return tables, {"transcripts": len(files), "failed": failed, "cutoff": cutoff, "now": now, "read": read,
+                    "files": files}
+
+
+DEFAULT_SKILLS = ("rde",)  # the shared warehouse's scope when nothing else is set: sessions that ran the rde skill
+
+
+def _skill_matches(name, skills):
+    """An invocation's name against the wanted skills: `rde` matches rde and any plugin's `…:rde`; a wanted name with
+    a plugin prefix (`agent-skills:rde`) matches only that."""
+    if not name:
+        return False
+    return any(name == w or (":" not in w and name.rsplit(":", 1)[-1] == w) for w in skills)
+
+
+def qualifies(invocations, skills):
+    """Whether a session's skill invocations put it in scope: one of `skills` ran — the call completed and succeeded.
+    A Skill call the user rejected, one that failed, and one still waiting at the permission prompt (no result yet:
+    success is NULL) never ran the skill. `*` takes every session."""
+    if "*" in skills:
+        return True
+    return any(inv.get("success") is True and (inv.get("status") or "ok") in ("ok", "forked")
+               and (_skill_matches(inv.get("skill"), skills) or _skill_matches(inv.get("canonical"), skills))
+               for inv in invocations)
+
+
+def sessions_with_skill(tables, skills):
+    """The sessions that ran one of `skills` (invoked by the model, the user or Claude Code); `*`: every session."""
+    by_session = {}
+    for r in tables["skill_invocations"]:
+        by_session.setdefault(r["session_id"], []).append(r)
+    return {r["session_id"] for r in tables["sessions"] if qualifies(by_session.get(r["session_id"], ()), skills)}
+
+
+GLOBAL_TABLES = ("de_topics", "de_layers", "warehouse_load")
+
+
+def only_sessions(tables, ids, skills="*"):
+    """The same tables holding only the sessions in `ids`; the taxonomy stays, and warehouse_load says what it holds."""
+    out = {k: (rows if k in GLOBAL_TABLES else [r for r in rows if r.get("session_id") in ids])
+           for k, rows in tables.items()}
+    # what it holds, not how much else the machine has: the count of all transcripts would say that
+    out["warehouse_load"] = [dict(r, transcripts=len(out["sessions"]), sessions=len(out["sessions"]),
+                                  skills=",".join(sorted(skills)) or "*") for r in tables.get("warehouse_load", ())]
+    return out
 
 
 def write_bundle(tables, out_dir):
@@ -603,7 +658,11 @@ def running(container=CONTAINER):
     """Whether the local Postgres container is up (for --load=auto: the hook loads it only when it is)."""
     if not shutil.which("docker"):
         return False
-    res = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", container], capture_output=True, text=True)
+    try:
+        res = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", container], capture_output=True,
+                             text=True, timeout=15)
+    except subprocess.TimeoutExpired:  # a Docker that does not answer is not a running Postgres
+        return False
     return res.returncode == 0 and res.stdout.strip() == "true"
 
 
@@ -634,33 +693,59 @@ def load(out_dir, psql):
 
 def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_load=False, start=False,
                   container=CONTAINER, dsn=None, redact=True, pricing=None, log=print, clickhouse_target=None,
-                  clickhouse_identity=None):
-    """Analyze once; write the files; load Postgres (do_load) and/or ClickHouse (clickhouse_target, as
-    clickhouse_identity: only that source's rows are replaced). A target that fails does not stop the other: its
-    error is in `errors`."""
+                  clickhouse_identity=None, sessions=None, skills=DEFAULT_SKILLS, rescope=False, write_files=True):
+    """Analyze once; write the files; load Postgres (do_load: every session) and/or sync ClickHouse
+    (clickhouse_target, as clickhouse_identity: see clickhouse.sync — sessions that ran one of `skills` are shared,
+    and only that source's rows change). `sessions` (main transcript paths: the SessionEnd hook) limits what is read
+    for ClickHouse to those; without, every transcript in scope is read. A target that fails does not stop the
+    other: its error is in `errors`."""
     out = Path(out_dir) if out_dir else default_root() / "_warehouse" / datetime.now().strftime("%Y-%m-%d_%H%M")
     if start:
         log("Starting Postgres (docker compose up -d --wait)…")
         up()
-    log("Analyzing transcripts…")
-    tables, meta = build(claude_dir, project, since, redact=redact, pricing=pricing, log=log)
-    counts = write_bundle(tables, out)
-    res = {"out_dir": str(out), "counts": counts, "meta": meta, "loaded": False, "clickhouse": None, "errors": {},
-           "connection": {"host": "127.0.0.1", "port": PORT, "database": DATABASE, "user": USER,
-                          "from_docker": {"host": "host.docker.internal", "port": PORT}}}
-    if do_load:
-        log("Loading Postgres…")
-        try:
-            load(out, psql_command(container=container, dsn=dsn))
-            res["loaded"] = True
-        except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
-            res["errors"]["postgres"] = (getattr(exc, "stderr", None) or str(exc)).strip()
+    ch = None
     if clickhouse_target is not None:
-        from . import clickhouse
-        log(f"Loading ClickHouse ({clickhouse_target!r}) as {clickhouse_identity!r}…")
-        try:
-            res["clickhouse"] = {"target": repr(clickhouse_target), "identity": repr(clickhouse_identity),
-                                 "counts": clickhouse.load(tables, clickhouse_target, clickhouse_identity, log=log)}
-        except (clickhouse.ClickHouseError, OSError) as exc:
-            res["errors"]["clickhouse"] = str(exc)
+        from . import clickhouse as ch
+    # From reading the transcripts to the last ClickHouse write: a sync that read an older transcript than the one
+    # another process just shared would put the older rows back.
+    with ch.machine_lock() if ch else contextlib.nullcontext():
+        log("Analyzing transcripts…")
+        # Postgres always gets every session; ClickHouse alone, per session, needs only those transcripts read.
+        only = sessions if sessions is not None and not do_load else None
+        tables, meta = build(claude_dir, project, since, redact=redact, pricing=pricing, log=log, transcripts=only)
+        counts = write_bundle(tables, out) if write_files else {k: len(v) for k, v in tables.items()}
+        res = {"out_dir": str(out), "counts": counts, "meta": meta, "loaded": False, "clickhouse": None, "errors": {},
+               "connection": {"host": "127.0.0.1", "port": PORT, "database": DATABASE, "user": USER,
+                              "from_docker": {"host": "host.docker.internal", "port": PORT}}}
+        if do_load:
+            log("Loading Postgres…")
+            try:
+                load(out, psql_command(container=container, dsn=dsn))
+                res["loaded"] = True
+            except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
+                res["errors"]["postgres"] = (getattr(exc, "stderr", None) or str(exc)).strip()
+        if ch is not None:
+            full = sessions is None
+            requested = None if full else {Path(t).stem for t in sessions}
+            read = set(meta["read"]) if full else set(meta["read"]) & requested
+            # Asked for but not read: never "no longer qualifies" — a transcript that failed to read stays queued, one
+            # that does not exist is dropped; either way its shared rows are left as they are.
+            failed = {Path(f["transcript"]).stem for f in meta["failed"]}
+            unread = set() if full else requested - read
+            qualifying = sessions_with_skill(tables, skills) & read
+            scope = ",".join(sorted(skills))
+            info = {"target": repr(clickhouse_target), "identity": repr(clickhouse_identity), "skills": scope,
+                    "mode": "all" if full else "sessions", "read": len(read), "qualifying": len(qualifying),
+                    "unread": sorted(unread & failed), "missing": sorted(unread - failed)}
+            try:
+                if not full and not ch.needs_sync(clickhouse_target, clickhouse_identity, read, qualifying, skills):
+                    res["clickhouse"] = dict(info, written=[], removed=[], stale=[], held=None, counts={}, quiet=True)
+                else:
+                    log(f"Syncing ClickHouse ({clickhouse_target!r}) as {clickhouse_identity!r}: {len(read)} session(s) "
+                        f"read, {len(qualifying)} ran {scope}…")
+                    res["clickhouse"] = dict(info, **ch.sync(tables, clickhouse_target, clickhouse_identity, read, skills,
+                                                            since=since if full else "hook", full=full,
+                                                            rescope=rescope, log=log))
+            except (ch.ClickHouseError, OSError) as exc:
+                res["errors"]["clickhouse"] = str(exc)
     return res

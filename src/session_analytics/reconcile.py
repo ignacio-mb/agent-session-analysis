@@ -135,13 +135,16 @@ def warehouse_counts(source):
     return rows, (float(loaded) if loaded else None)
 
 
-def check(source, claude_dir=None):
+def check(source, claude_dir=None, only=None):
     """Every session in scope, recounted from its transcript and compared with the warehouse (a psql command, or a
-    (clickhouse.Client, source id) pair)."""
+    (clickhouse.Client, source id) pair). `only`: the session ids the warehouse is meant to hold (a ClickHouse load
+    shares the sessions that invoked its skills); the others are not looked at."""
     wh, loaded_ms = warehouse_counts(source)
     out = {"loaded_ms": loaded_ms, "checked": 0, "matched": 0, "live": [], "differ": [], "missing": [],
            "raw": dict.fromkeys(FIELDS, 0), "warehouse": dict.fromkeys(FIELDS, 0)}
     for p in locate.iter_transcripts(locate.claude_dir(claude_dir)):
+        if only is not None and p.stem not in only:
+            continue
         sid, raw = raw_counts(p)
         if sid not in wh:
             if raw["api_requests"] or raw["tool_calls"]:
