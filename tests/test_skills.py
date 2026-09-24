@@ -13,7 +13,7 @@ from session_analytics.analyze import analyze, cli_calls
 from session_analytics.parse import parse_session, skill_fingerprint
 from session_analytics.pricing import Pricing
 from session_analytics.skillreport import compare_runs, render_compare, run_skill_report
-from session_analytics.skillruns import read_first
+from session_analytics.skillruns import prompt_key, read_first
 
 FRONT = "---\nname: demo\ndescription: test skill\n---\n"
 BODY_V1 = "# demo\n\nRead the playbook at ${CLAUDE_SKILL_DIR}/playbooks/build.md, then build.\n"
@@ -185,3 +185,25 @@ def test_check_types_and_bad_checks(tmp_path):
 def test_rde_checks_file_is_valid():
     loaded = checks_mod.load(skill="rde")
     assert len(loaded) >= 10 and all(c["type"] in checks_mod.VALID_TYPES for c in loaded)
+
+
+def test_prompt_key_groups_repeats_of_one_prompt():
+    first = ("I want to use Sample database data to create meaningul reports. living in "
+             "http://localhost:13004/browse/databases/1-sample-database. use /rde skill")
+    again = "I want to use Sample database data to create meaningful reports. living in http://localhost:3100/."
+    assert prompt_key(first) == prompt_key(again) == "i want to use sample database data to"
+    assert prompt_key("/rde http://localhost:13004 build the revenue model") == "build the revenue model"
+    assert prompt_key('@"/Users/x/Downloads/fct_arr_test.json" @notes.md /rde You are a data engineer. Build a '
+                      "self-contained Stripe star schema") == "you are a data engineer build a self"
+    assert prompt_key("/rde") is None and prompt_key(None) is None
+
+
+def test_rde_tests_are_written_before_the_first_transform_run():
+    check = next(c for c in checks_mod.load(skill="rde") if c["id"] == "tests-before-first-run")
+    ev = lambda cmd: {"tool": "Bash", "command": cmd, "segments": [cmd], "resources": [], "input": "", "status": "ok"}  # noqa: E731
+    create, test, run = (ev("mb transform create --file .scratch/t.json --json"),
+                         ev("mb transform-test create --file .scratch/tt.json --json"), ev("mb transform run 7 --sync --json"))
+    assert checks_mod.evaluate(check, [create, test, run])["status"] == "pass"
+    assert checks_mod.evaluate(check, [create, run, test])["status"] == "fail"
+    assert checks_mod.evaluate(check, [create, ev("mb transform-test create --help"), run])["status"] == "fail"
+    assert checks_mod.evaluate(check, [create, test])["status"] == "n/a"

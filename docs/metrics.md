@@ -311,6 +311,7 @@ One entry per skill run (an invocation plus the follow-up turns it steered, unti
 |---|---|
 | `run_id`, `skill`, `canonical`, `mode`, `via`, `scope`, `agent_id`, `inherited` | Which run, and how it was invoked |
 | `args`, `prompt` | What the run was asked |
+| `prompt_key` | The prompt's first eight words, lowercased, without the slash command, URLs and punctuation: repeats of one prompt (another instance, a typo further on) share it, so versions compare on the same task |
 | `version` | `{status: commit|working-tree|installed|unknown, commit, sha, date, subject, source, label}`; `fingerprint` is the hash of the injected SKILL.md body |
 | `start_ms`, `end_ms`, `end_reason`, `duration_ms`, `active_ms` | Span, and why it ended |
 | `turns`, `turn_count`, `follow_up_turns`, `nested_skills`, `failed_invocations` | Turns covered (each `attributed` or follow-up) and skills invoked inside it |
@@ -397,7 +398,8 @@ setup, data handling, preference).
 - What a question is about in data-engineering terms (`semantics.py`, rules in `semantics/questions.json`):
   `de_topic` / `de_topic_label` (`privacy`, `ownership`, `time`, `quality`, `delivery`, `business-logic`,
   `sources`, `modeling`, `platform`, `operations`, `workflow`, `requirements`, `other`) and `layer` /
-  `layer_label` (`presentation`, `semantic`, `modeling`, `staging`, `source`, `platform`, `cross-cutting`).
+  `layer_label` (`presentation`, `semantic`, `tests` — transform tests —, `modeling`, `staging`, `source`,
+  `platform`, `cross-cutting`).
   Each rule list is tried on the header (the agent's own label), then the question text; the first match
   wins, and a question neither matches takes its interview topic's `fallback`. `semantics_by` says what
   decided each half, `<topic>/<layer>`: `header`, `question` or `fallback`.

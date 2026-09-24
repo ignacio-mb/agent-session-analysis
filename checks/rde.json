@@ -1,6 +1,6 @@
 {
   "skill": "rde",
-  "about": "Rules from skills/rde/SKILL.md and references/collaboration-contract.md, checked on every rde run; \"interview\" names the topics of rde's questions. Edit freely: see src/session_analytics/checks.py for the check types and src/session_analytics/questions.py for the interview.",
+  "about": "Rules from skills/rde/SKILL.md, references/collaboration-contract.md and references/transform-tests.md, checked on every rde run; \"interview\" names the topics of rde's questions. Edit freely: see src/session_analytics/checks.py for the check types and src/session_analytics/questions.py for the interview.",
   "checks": [
     {
       "id": "state-first",
@@ -98,6 +98,17 @@
       },
       "min": 1,
       "max": 1
+    },
+    {
+      "id": "tests-before-first-run",
+      "desc": "Transform tests: a `mb transform-test create` comes before the first `mb transform run` (transform-tests.md: write the tests after create, before the first run)",
+      "type": "before",
+      "a": {
+        "bash": "\\bmb\\s+transform-test\\s+create\\b(?![^\\n]*--help)"
+      },
+      "b": {
+        "bash": "\\bmb\\s+transform\\s+run\\b(?![^\\n]*--help)"
+      }
     },
     {
       "id": "json-everywhere",
@@ -277,6 +288,11 @@
         "label": "Publish or go live (irreversible)",
         "match": "publish|move out of drafts|ready to|canonical|library|verified|go live",
         "must_ask": true
+      },
+      {
+        "id": "tests",
+        "label": "Transform tests: which rules to pin",
+        "match": "^(transform )?tests?$|transform.?tests?|rule tests?|fixtures?|\\btests?\\b[^.?!]*\\b(transforms?|models?|tables?|rules?|expectations?)\\b|\\b(transforms?|models?|tables?|rules?)\\b[^.?!]*\\btests?\\b"
       },
       {
         "id": "scope",

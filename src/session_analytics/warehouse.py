@@ -105,7 +105,9 @@ TABLES = {
         ("docs_read", INT, "The skill's own files shown, beyond SKILL.md"), ("docs_total", INT, None),
         ("cli_docs_read", INT, None), ("doc_tokens", BIG, None), ("doc_rereads", INT, None), ("doc_listings", INT, None),
         ("checks_passed", INT, None), ("checks_failed", INT, None), ("objects_created", INT, None),
-        ("end_reason", TEXT, None), ("prompt", TEXT, None), ("args", TEXT, None)], ["run_id"]),
+        ("end_reason", TEXT, None), ("prompt", TEXT, None),
+        ("prompt_key", TEXT, "The prompt's opening words, lowercased: runs of one prompt share it"),
+        ("args", TEXT, None)], ["run_id"]),
     "skill_run_checks": ("One row per run and declared check (checks/<skill>.json).", [
         ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None), ("check_id", TEXT, None),
         ("description", TEXT, None), ("status", TEXT, "pass | fail | n/a | error"), ("detail", TEXT, None)],
@@ -461,7 +463,7 @@ def session_rows(a, s):
             "doc_rereads": r.get("doc_rereads"), "doc_listings": r.get("doc_listings"),
             "checks_passed": r.get("checks_passed"), "checks_failed": r.get("checks_failed"),
             "objects_created": r.get("objects_created"), "end_reason": r.get("end_reason"), "prompt": r.get("prompt"),
-            "args": r.get("args")})
+            "prompt_key": r.get("prompt_key"), "args": r.get("args")})
         for ch in r.get("checks") or ():
             rows["skill_run_checks"].append({
                 "run_id": r["run_id"], "session_id": sid, "skill": r["skill"], "version": ver, "check_id": ch.get("id"),

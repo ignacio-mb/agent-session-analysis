@@ -238,29 +238,52 @@ local ClickHouse (docker compose, profile `clickhouse`; `make clickhouse-dev-dow
 
 ### A Metabase dashboard on either
 
-`scripts/metabase_dashboard.py` builds a Metabase dashboard on the warehouse — Overview, Skill versions,
-Interview, Question topics, Skill files & CLI, with Skill, Data-engineering topic and Layer filters — once the
-warehouse is a database in that Metabase:
+`scripts/metabase_dashboard.py` builds one skill's evaluation dashboard in Metabase on the warehouse, once the
+warehouse is a database in that Metabase. Every card is that skill's runs (`--skill`, default `rde`), compared
+version by version and prompt by prompt: the way to judge a change to a skill is to run the same prompt on a fresh
+Metabase with each version. Tabs: Skill versions, Interview, Question topics, Skill files & CLI, Overview, Session;
+filters: Person (ClickHouse: whose sessions), Skill version, Prompt, Session, Data-engineering topic and Layer.
 
 ```bash
-python3 scripts/metabase_dashboard.py --test [--clickhouse]     # every card's SQL against the warehouse
-python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
+python3 scripts/metabase_dashboard.py --test [--clickhouse] [--skill rde]   # every card's SQL against the warehouse
+python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id> [--skill rde]
 ```
 
-`--sync` creates the dashboard in the collection, or updates it in place: everything is found by name, so ids,
-links and bookmarks survive. The SQL dialect follows the Metabase database's engine (Postgres or ClickHouse;
-`--ch-database` names the ClickHouse database, default `sessions`). New cards are created inside the dashboard, so
-the collection lists only the dashboard, the model and the metrics. Every card is then run once through Metabase
-and reported. The cards are native SQL on table and view names, so reloading the warehouse keeps them working.
+- **Skill versions**: versions compared prompt by prompt (cost, active minutes, tool calls and failures, --help
+  lookups, questions, objects created, check pass rate); median cost and failures by version; the steps the runs
+  took (built a transform, wrote and ran transform tests, ran a transform, defined measures or segments, published
+  to the Library, built a dashboard, wrote a document) as a share of each version's runs; the checks, the latest
+  version against the one before and what fails on the latest; and every run's checks side by side.
+- **Interview**, **Question topics**, **Skill files & CLI**: the questions the runs ask and what came back, what
+  they are about (a topic × layer matrix with a Tests column for transform tests), the skill files and CLI docs
+  the runs were shown, the CLI commands and the tool calls that failed.
+- **Overview**: the runs' count, cost, active hours and failure rate, each metric per run (average, median,
+  range), the cost of each run by version, cost by prompt, cost by model per version, each model's requests,
+  tokens (input, output, cache read and write, thinking) and share of the cost, tools, and every run with the
+  instance its prompt named; clicking a run's session opens the Session tab on it.
+- **Session**: one session in depth. Pick it in the Session filter (start, the id's first 8 characters, title) or
+  click it in the list of sessions with the skill's runs: its models and their usage, the cost of each turn by
+  model, every turn, the skill runs, questions and subagents in it, and every tool call.
+
+The Prompt filter is the run's `prompt_key` (the prompt's opening words, without the slash command and URLs), so
+the same prompt pasted again for another instance still groups with the first. Pick one to compare versions on the
+same task; the by-version charts then rank only that prompt's runs.
+
+`--sync` creates the dashboard (`<skill> skill evaluation`, or `--name`) in the collection, or updates it in
+place: everything is found by name, so ids, links and bookmarks survive, and text cards added by hand stay where
+they are, with the tab's cards starting below them. The SQL dialect follows the Metabase database's engine
+(Postgres or ClickHouse; `--ch-database` names the ClickHouse database, default `sessions`). New cards are created
+inside the dashboard, so the collection lists only the dashboard, the model and the metrics. Every card is then run
+once through Metabase and reported. The cards are native SQL on table and view names, so reloading the warehouse
+keeps them working.
 
 The Question topics tab sits on a semantic layer: a model, **Interview questions** (`v_interview_questions`:
-one row per question, with its data-engineering topic and layer, what came back, whether the recommended option
-was offered and taken, the wait), and metrics on it — Questions, Questions asked with AskUserQuestion,
-Recommended option taken, Typed-answer rate, Came back empty, Median wait for an answer — so a question asked
-of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic × layer
-matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run by
-layer and version, the layers never asked about, and every question with its topic and layer, with
-Data-engineering topic and Layer filters.
+one row per question, with its data-engineering topic and layer, the run's prompt, what came back, whether the
+recommended option was offered and taken, the wait), and metrics on it — Questions, Questions asked with
+AskUserQuestion, Recommended option taken, Typed-answer rate, Came back empty, Median wait for an answer — so a
+question asked of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic ×
+layer matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run
+by layer and version, the layers never asked about, and every question with its topic and layer.
 
 ## Accuracy
 

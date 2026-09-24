@@ -27,6 +27,11 @@ READ_FIRST_RE = re.compile(r"^\s*\**Read first\**\s*:(.*)$", re.I | re.M)
 LINK_RE = re.compile(r"\]\(([^)\s]+\.md)\)|`([\w./-]+\.md)`")
 OBJ_RE = re.compile(r"\{[^{}\n]{0,800}\}")
 MUTATING = {"create", "update", "delete", "delete-table", "archive", "run", "publish", "export", "import", "move"}
+# Enough opening words to tell two tasks apart, few enough that a prompt pasted again with a different tail (another
+# instance's URL, an extra instruction, a typo further on) still groups with the first.
+PROMPT_KEY_WORDS = 8
+URL_RE = re.compile(r"https?://\S+|\blocalhost:\d+\S*", re.I)
+ATTACHMENT_RE = re.compile(r'@"[^"]*"|@\S+')
 HOME = os.path.expanduser("~")
 
 
@@ -284,6 +289,7 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
                                       "match": {}}]
         check_rows = [checks_mod.evaluate(ch, events) for ch in checks_cache[key]]
         first_ctx = next((r.context_tokens for r in main_rq), None)
+        prompt = ctx.text(_prompt_of(turns_by_index.get(inv.turn), inv), 400)
         runs.append({
             "run_id": f"{s.session_id[:8]}:{n}",
             "session_id": s.session_id,
@@ -291,7 +297,7 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
             "skill": key, "canonical": inv.canonical or inv.name, "mode": inv.mode, "via": inv.via,
             "scope": inv.scope, "agent_id": agent, "inherited": inv.inherited,
             "args": ctx.text(inv.args, 400) if inv.args else None,
-            "prompt": ctx.text(_prompt_of(turns_by_index.get(inv.turn), inv), 400),
+            "prompt": prompt, "prompt_key": prompt_key(prompt),
             "start_ms": start, "end_ms": max(ts_all) if ts_all else start, "window_end_ms": end,
             "end_reason": g["end_reason"],
             "version": version, "fingerprint": inv.fingerprint, "base_dir": inv.base_dir,
@@ -358,6 +364,13 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
             "steps": [i for t, scope, a_id, i in step_ts if inside(t, a_id)],
         })
     return runs
+
+
+def prompt_key(prompt):
+    """The prompt a run started from, as a key that groups repeats of one prompt: its opening words, lowercased,
+    without attached files (@path), the slash command, URLs and punctuation; None when nothing is left."""
+    text = URL_RE.sub(" ", re.sub(r"^\s*/[\w:.-]+", "", ATTACHMENT_RE.sub(" ", prompt or "")))
+    return " ".join(re.findall(r"[^\W_]+", text.lower())[:PROMPT_KEY_WORDS]) or None
 
 
 def _prompt_of(turn, inv):
