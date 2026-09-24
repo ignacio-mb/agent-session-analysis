@@ -15,6 +15,15 @@ it works on past sessions too. Pure Python 3.9+ standard library: the skill runs
 
 ## Install
 
+As a Claude Code plugin, from any session:
+
+```
+/plugin marketplace add ignacio-mb/agent-session-analysis
+/plugin install session-export@agent-session-analysis
+```
+
+Or from a checkout:
+
 ```bash
 ./install.sh
 ```

@@ -1,0 +1,7 @@
+{
+  "name": "session-export",
+  "version": "0.1.0",
+  "description": "Export and analyze Claude Code sessions: skills, tools, tokens, cost, subagents, files, timing.",
+  "author": { "name": "ignacio", "email": "ignacio@metabase.com" },
+  "repository": "https://github.com/ignacio-mb/agent-session-analysis"
+}
