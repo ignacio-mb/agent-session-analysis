@@ -36,6 +36,7 @@ TABLES = {
                                     "reported_tool_uses", "task_prompt", "transcript"]),
     "errors.csv": ("errors", ["ts", "turn", "tool", "scope", "category", "input", "message"]),
     "questions.csv": ("questions", ["qid", "run_id", "skill", "t", "dt", "turn", "kind", "form", "topic", "topic_label",
+                                    "de_topic_label", "layer_label",
                                     "header", "question", "options", "multi", "recommended_label", "outcome", "answer",
                                     "typed", "reply", "notes", "feedback", "wait_ms", "batch_size", "flags",
                                     "before_create", "reask_of"]),

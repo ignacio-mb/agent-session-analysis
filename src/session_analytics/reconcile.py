@@ -8,7 +8,8 @@ AskUserQuestion questions, Skill tool calls. The recount follows the exporter's 
 the main file plus <session>/**/*.jsonl (subagents, workflow agents; not journal.jsonl); main-file lines stamped
 with another session id are history a resumed session copied in, and are skipped; `<synthetic>` messages are not
 API requests; the lines a streamed response was written in are merged by (message id, request id), keeping the
-largest usage figures. Transcripts written after the load (a live session) are reported apart, not compared.
+largest usage figures. A session any of whose files (main, subagents, workflow agents) was written after the load
+is live: reported apart, not compared.
 """
 
 from __future__ import annotations
@@ -39,9 +40,11 @@ def raw_counts(main):
     side = main.parent / sid
     files = [main] + (sorted(f for f in side.rglob("*.jsonl") if f.name != "journal.jsonl") if side.is_dir() else [])
     reqs, uses, results = {}, {}, {}
+    newest = 0.0
     for f in files:
         is_main = f == main
         try:
+            newest = max(newest, f.stat().st_mtime)
             lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
@@ -77,6 +80,7 @@ def raw_counts(main):
         "tool_calls": len(uses), "tool_errors": sum(1 for i in uses if results.get(i)),
         "ask_questions": sum(len(inp.get("questions") or ()) for name, inp in uses.values() if name == "AskUserQuestion"),
         "skill_calls": sum(1 for name, _ in uses.values() if name == "Skill"),
+        "_newest_ms": newest * 1000,
     }
 
 
@@ -106,11 +110,12 @@ def check(psql, claude_dir=None):
         sid, raw = raw_counts(p)
         if sid not in wh:
             if raw["api_requests"] or raw["tool_calls"]:
-                out["missing"].append({"session_id": sid, "transcript": str(p), "raw": raw})
+                out["missing"].append({"session_id": sid, "transcript": str(p), "raw": {k: raw[k] for k in FIELDS}})
             continue
         out["checked"] += 1
-        if loaded_ms is not None and p.stat().st_mtime * 1000 > loaded_ms:
-            out["live"].append(sid)  # written after the load: not comparable
+        if loaded_ms is not None and raw["_newest_ms"] > loaded_ms:
+            # Written after the load (a live session, or its subagents and workflow agents): not comparable.
+            out["live"].append(sid)
             continue
         for k in FIELDS:
             out["raw"][k] += raw[k]

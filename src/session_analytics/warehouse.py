@@ -24,7 +24,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import locate, util
+from . import locate, semantics, util
 from .analyze import analyze, categorize_error, cli_calls, primary_program
 from .export import default_root
 from .parse import parse_session
@@ -121,12 +121,20 @@ TABLES = {
     "questions": ("One row per question Claude put to the user: AskUserQuestion, prose, or a printed checkpoint.", [
         ("qid", TEXT, None), ("session_id", TEXT, None), ("run_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None),
         ("asked_at", TS, None), ("since_start_ms", BIG, None), ("turn", INT, None),
-        ("channel", TEXT, "ask | prose | checkpoint"), ("form", TEXT, None), ("topic", TEXT, None), ("topic_label", TEXT, None),
+        ("channel", TEXT, "ask | prose | checkpoint"), ("form", TEXT, None),
+        ("topic", TEXT, "The skill's own interview topic (checks/<skill>.json)"), ("topic_label", TEXT, None),
+        ("de_topic", TEXT, "Data-engineering topic (semantics/questions.json)"), ("de_topic_label", TEXT, None),
+        ("layer", TEXT, "Where in the data stack the question sits"), ("layer_label", TEXT, None),
+        ("semantics_by", TEXT, "What decided topic/layer: header, question or fallback"),
         ("header", TEXT, None), ("question", TEXT, None), ("options", INT, None), ("multi", BOOL, None),
         ("recommended_label", TEXT, None), ("outcome", TEXT, None), ("answer", TEXT, None), ("typed", TEXT, None),
         ("reply", TEXT, None), ("notes", TEXT, None), ("feedback", TEXT, None), ("wait_ms", BIG, None), ("batch_size", INT, None),
         ("flags", TEXT, None), ("flag_count", INT, None), ("before_create", BOOL, None), ("reask_of", TEXT, None)],
         ["qid"]),
+    "de_topics": ("The data-engineering topics questions are mapped to, in display order.", [
+        ("id", TEXT, None), ("label", TEXT, None), ("description", TEXT, None), ("sort_order", INT, None)], ["id"]),
+    "de_layers": ("The data-stack layers questions are mapped to, in display order.", [
+        ("id", TEXT, None), ("label", TEXT, None), ("description", TEXT, None), ("sort_order", INT, None)], ["id"]),
     "question_options": ("One row per option offered with a question.", [
         ("qid", TEXT, None), ("session_id", TEXT, None), ("option_no", INT, None), ("label", TEXT, None),
         ("description", TEXT, None), ("recommended", BOOL, None), ("chosen", BOOL, None)], ["qid", "option_no"]),
@@ -198,6 +206,50 @@ SELECT skill, version, topic, max(topic_label) AS topic_label, count(*) AS quest
        percentile_cont(0.5) WITHIN GROUP (ORDER BY wait_ms) FILTER (WHERE channel = 'ask') / 1000.0 AS median_wait_s
 FROM questions GROUP BY skill, version, topic;
 
+CREATE VIEW v_question_semantics AS
+SELECT q.skill, q.version, q.de_topic, t.label AS de_topic_label, t.sort_order AS de_topic_order,
+       q.layer, l.label AS layer_label, l.sort_order AS layer_order,
+       count(*) AS questions, count(*) FILTER (WHERE q.channel = 'ask') AS asked,
+       count(*) FILTER (WHERE q.channel <> 'ask') AS in_prose, count(DISTINCT q.run_id) AS runs,
+       count(*) FILTER (WHERE q.outcome = 'recommended') AS recommended_taken,
+       count(*) FILTER (WHERE q.channel = 'ask' AND q.recommended_label IS NOT NULL AND NOT q.multi
+                        AND q.outcome NOT IN ('declined', 'unanswered', 'interrupted', 'error')) AS recommended_offered,
+       count(*) FILTER (WHERE q.typed IS NOT NULL) AS typed,
+       count(*) FILTER (WHERE q.outcome IN ('no preference', 'declined', 'unanswered')) AS came_back_empty,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY q.wait_ms) FILTER (WHERE q.channel = 'ask') / 1000.0 AS median_wait_s
+FROM questions q LEFT JOIN de_topics t ON t.id = q.de_topic LEFT JOIN de_layers l ON l.id = q.layer
+GROUP BY q.skill, q.version, q.de_topic, t.label, t.sort_order, q.layer, l.label, l.sort_order;
+
+CREATE VIEW v_interview_questions AS
+SELECT q.qid, q.asked_at, q.skill, q.version, r.version_date, r.version_subject, q.run_id, q.session_id, s.project,
+       CASE q.channel WHEN 'ask' THEN 'AskUserQuestion' WHEN 'prose' THEN 'In prose' ELSE 'Checkpoint' END AS channel,
+       q.topic_label AS interview_topic,
+       coalesce(t.label, q.de_topic_label) AS de_topic, coalesce(t.sort_order, 99) AS de_topic_order,
+       coalesce(l.label, q.layer_label) AS layer, coalesce(l.sort_order, 99) AS layer_order,
+       q.semantics_by AS classified_by, q.header, q.question, q.outcome,
+       CASE WHEN q.channel <> 'ask' THEN 'in prose'
+            WHEN q.outcome = 'recommended' THEN 'recommended option'
+            WHEN q.outcome IN ('typed', 'typed + picked') THEN 'typed an answer'
+            WHEN q.outcome IN ('other option', 'picked') THEN 'another option'
+            WHEN q.outcome = 'no preference' THEN 'no preference'
+            ELSE 'declined or unanswered' END AS outcome_group,
+       o.offered AS recommendation_offered, o.offered AND q.outcome = 'recommended' AS took_recommendation,
+       q.typed IS NOT NULL AS typed_answer,
+       q.outcome IN ('no preference', 'declined', 'unanswered') AS came_back_empty,
+       coalesce(q.typed, q.answer, q.reply, q.feedback) AS answer,
+       CASE WHEN q.channel = 'ask' AND q.outcome NOT IN ('unanswered', 'declined')
+            THEN round(q.wait_ms / 1000.0, 1) END AS wait_s,
+       q.flags
+FROM questions q
+-- A recommendation counts as offered on a single-choice AskUserQuestion that came back with an answer.
+CROSS JOIN LATERAL (SELECT coalesce(q.channel = 'ask' AND q.recommended_label IS NOT NULL AND NOT q.multi
+                                    AND q.outcome NOT IN ('declined', 'unanswered', 'interrupted', 'error'),
+                                    false) AS offered) o
+LEFT JOIN de_topics t ON t.id = q.de_topic
+LEFT JOIN de_layers l ON l.id = q.layer
+LEFT JOIN skill_runs r ON r.run_id = q.run_id
+LEFT JOIN sessions s ON s.session_id = q.session_id;
+
 CREATE VIEW v_question_outcomes AS
 SELECT skill, version, channel, outcome, count(*) AS questions, count(DISTINCT run_id) AS runs
 FROM questions GROUP BY skill, version, channel, outcome;
@@ -255,6 +307,10 @@ VIEW_COMMENTS = {
     "v_skill_versions": "Each skill's versions compared: runs, medians, questions, checks.",
     "v_check_rates": "Pass rate of each declared check, per skill version.",
     "v_question_topics": "The interview by topic and version: how often asked, recommended taken, typed, waits.",
+    "v_question_semantics": "Questions by data-engineering topic and layer, per skill version: counts, outcomes, waits.",
+    "v_interview_questions": "One row per question, ready to explore: the data-engineering topic and layer it is about, "
+                             "what came back (outcome_group), whether the recommended option was offered and taken, "
+                             "typed answers, the wait. The Metabase model \"Interview questions\" reads it.",
     "v_question_outcomes": "What came back from questions, per skill version and channel.",
     "v_typed_answers": "Answers typed instead of picked, with the options that were offered.",
     "v_question_flags": "Questions against the skill's rules, by flag.",
@@ -425,7 +481,9 @@ def session_rows(a, s):
             "qid": f"{sid[:8]}:{q['qid']}", "session_id": sid, "run_id": q.get("run_id"), "skill": q.get("skill"),
             "version": run_version.get(q.get("run_id")), "asked_at": _iso(q.get("t")), "since_start_ms": q.get("dt"),
             "turn": q.get("turn"), "channel": q.get("kind"), "form": q.get("form"), "topic": q.get("topic"),
-            "topic_label": q.get("topic_label"), "header": q.get("header"), "question": q.get("question"),
+            "topic_label": q.get("topic_label"), "de_topic": q.get("de_topic"), "de_topic_label": q.get("de_topic_label"),
+            "layer": q.get("layer"), "layer_label": q.get("layer_label"), "semantics_by": q.get("semantics_by"),
+            "header": q.get("header"), "question": q.get("question"),
             "options": len(q.get("options") or ()), "multi": q.get("multi"),
             "recommended_label": q.get("recommended_label"), "outcome": q.get("outcome"), "answer": q.get("answer"),
             "typed": q.get("typed"), "reply": q.get("reply"), "notes": q.get("notes"), "feedback": q.get("feedback"),
@@ -507,6 +565,7 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
             failed.append({"transcript": str(f), "error": f"{type(exc).__name__}: {exc}"})
         if log and n % 25 == 0:
             log(f"  {n}/{len(files)} transcripts")
+    tables["de_topics"], tables["de_layers"] = semantics.load().dimensions()
     tables["warehouse_load"] = [{"loaded_at": util.iso(now), "transcripts": len(files),
                                   "sessions": len(tables["sessions"]), "since": since, "generator_version": __version__}]
     return tables, {"transcripts": len(files), "failed": failed, "cutoff": cutoff, "now": now}

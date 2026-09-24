@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from . import util
+from . import semantics, util
 
 RECOMMENDED_RE = re.compile(r"\(\s*recommended\s*\)", re.I)
 NO_PREFERENCE = {"", "[no preference]", "no preference", "(no preference)"}
@@ -358,6 +358,8 @@ def classify(qs, taxonomy):
                 flags.append("asked again" if once_again else "like an earlier question")
                 break
         q["flags"] = flags
+        # What the question is about in data-engineering terms: a topic and a layer (semantics/questions.json).
+        q.update(semantics.load().classify(q.get("header"), body, q["topic"]))
         q["words"] = len(body.split())
         q["has_numbers"] = bool(NUMBER_RE.search(body))
         earlier.append(q)
@@ -423,4 +425,6 @@ def summarize(qs):
         "wait_p50_ms": util.percentile(waits, 50), "wait_max_ms": max(waits) if waits else None,
         "wait_total_ms": sum(waits) if waits else 0, "prose_wait_p50_ms": util.percentile(prose_waits, 50),
         "outcomes": dict(outcomes.most_common()), "flags": dict(flags.most_common()), "topics": topics,
+        "de_topics": dict(Counter(q.get("de_topic_label") for q in qs if q.get("de_topic_label")).most_common()),
+        "layers": dict(Counter(q.get("layer_label") for q in qs if q.get("layer_label")).most_common()),
     }

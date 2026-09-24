@@ -63,3 +63,25 @@ def test_raw_recount_matches_what_the_warehouse_loads(claude_dir, skill_dir, che
     tables, _ = warehouse.build(claude_dir=claude_dir, since="all")
     (load,) = tables["warehouse_load"]
     assert load["sessions"] == 1 and load["transcripts"] == 1
+
+
+def test_a_session_is_live_when_any_of_its_files_was_written_after_the_load(claude_dir, skill_dir, checks_file,  # noqa: F811
+                                                                            monkeypatch):
+    # A workflow's agents keep writing <sid>/subagents/** after the main transcript goes quiet: a load taken
+    # meanwhile has part of the session, and comparing it would report a difference that is not a bug.
+    import os
+
+    from session_analytics import reconcile
+    p = interview_session(claude_dir, skill_dir)
+    sid, raw = reconcile.raw_counts(p)
+    old = raw["_newest_ms"] / 1000 - 3600
+    os.utime(p, (old, old))
+    stale = dict({k: raw[k] for k in reconcile.FIELDS}, api_requests=raw["api_requests"] - 1)
+    monkeypatch.setattr(reconcile, "warehouse_counts", lambda psql: ({sid: stale}, (old + 60) * 1000))
+    res = reconcile.check(None, claude_dir)
+    assert [d["session_id"] for d in res["differ"]] == [sid] and not res["live"] and not res["ok"]
+    agent = p.parent / sid / "subagents" / "workflows" / "wf_x" / "agent-a.jsonl"
+    agent.parent.mkdir(parents=True)
+    agent.write_text("")
+    res = reconcile.check(None, claude_dir)
+    assert res["live"] == [sid] and not res["differ"] and res["ok"]

@@ -394,12 +394,20 @@ setup, data handling, preference).
   `jargon: …`, `code in the question`, `asked again` (a topic marked `once`), `like an earlier question`,
   `after an error`, `asked in prose` (when the skill says `"prose": "avoid"`), `checkpoint with no
   AskUserQuestion`.
+- What a question is about in data-engineering terms (`semantics.py`, rules in `semantics/questions.json`):
+  `de_topic` / `de_topic_label` (`privacy`, `ownership`, `time`, `quality`, `delivery`, `business-logic`,
+  `sources`, `modeling`, `platform`, `operations`, `workflow`, `requirements`, `other`) and `layer` /
+  `layer_label` (`presentation`, `semantic`, `modeling`, `staging`, `source`, `platform`, `cross-cutting`).
+  Each rule list is tried on the header (the agent's own label), then the question text; the first match
+  wins, and a question neither matches takes its interview topic's `fallback`. `semantics_by` says what
+  decided each half, `<topic>/<layer>`: `header`, `question` or `fallback`.
 - Totals: `total`, `asked`, `calls` (rounds), `prose`, `checkpoints_unasked`, `answered`,
   `recommended_offered`, `recommended_picked`, `recommended_rate`, `typed`, `no_preference`, `declined`,
   `unanswered`, `prose_unanswered`, `flagged`, `reasked`, `wait_p50_ms` (per round), `wait_max_ms`,
   `wait_total_ms`, `prose_wait_p50_ms`, `outcomes`, `flags`, `topics[]` (per topic: `asked`, `prose`,
   `outcomes`, `offered`, `recommended`, `recommended_rate`, `wait_p50_ms`, `typed`, `answers`, `flags`),
-  `runs[]` (runs with questions: start and first create, for the interview map).
+  `runs[]` (runs with questions: start and first create, for the interview map), `de_topics` and `layers`
+  (questions per data-engineering topic and per layer, by label).
 
 Each skill run carries its own `interview` (the same fields, plus `taxonomy` and `first_create_dt`) and the
 flat fields `questions_asked`, `question_calls`, `prose_questions`, `recommended_rate`, `typed_answers`,
@@ -441,10 +449,17 @@ Keys: `sessions.session_id`; `turns (session_id, turn)`; `api_requests (session_
 with `signature` and `is_help`; `skill_invocations (session_id, invocation_no)`; `skill_runs.run_id` with
 `version`; `skill_run_checks (run_id, check_id)`; `skill_run_files (run_id, owner, path)`; `questions.qid`
 (`<session8>:<qid>`); `question_options (qid, option_no)`; `subagents (session_id, agent_id)`;
-`files_touched (session_id, path)`; `tool_errors (session_id, error_no)`; `warehouse_load` (the load that produced
+`files_touched (session_id, path)`; `tool_errors (session_id, error_no)`; `de_topics.id` and `de_layers.id`
+(the taxonomy, with `label`, `description`, `sort_order`); `warehouse_load` (the load that produced
 the tables: `loaded_at`, `transcripts`, `sessions`, `since`, `generator_version`). `v_skill_versions` carries
 per-run averages (`avg_questions_asked`, `avg_prose_questions`, `avg_question_rounds`) beside the totals.
-`warehouse --check` (reconcile.py) recounts every session from its raw JSONL and compares. Views: `v_daily`, `v_skill_versions`,
-`v_check_rates`, `v_question_topics`, `v_question_outcomes`, `v_typed_answers`, `v_question_flags`,
-`v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`.
+`warehouse --check` (reconcile.py) recounts every session from its raw JSONL and compares; a session any of whose
+files was written after the load is live, not compared. Views: `v_daily`, `v_skill_versions`, `v_check_rates`,
+`v_question_topics`, `v_question_semantics` (per skill, version, topic and layer: questions, asked, in prose,
+runs, recommended offered and taken, typed, came back empty, median wait), `v_interview_questions` (one row per
+question with friendly columns: `channel` as `AskUserQuestion` / `In prose` / `Checkpoint`, `de_topic`,
+`layer`, their sort orders, `classified_by`, `outcome_group`, the booleans `recommendation_offered`,
+`took_recommendation` — within offered — `typed_answer` and `came_back_empty`, `answer`, and `wait_s` for an
+answered AskUserQuestion), `v_question_outcomes`, `v_typed_answers`, `v_question_flags`, `v_skill_files`,
+`v_cli_signatures`, `v_tools`, `v_models`.
 

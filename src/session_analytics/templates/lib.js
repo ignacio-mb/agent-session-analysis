@@ -927,13 +927,16 @@ function questionTable(rows, { showRun = false, showVersion = false, limit = 100
   if (showRun) cols.push({ key: "run_id", label: "Run", fmt: (v) => v || "—" });
   cols.push(
     { key: "topic_label", label: "Topic", cls: "wrap" },
+    { key: "de_topic_label", label: "DE topic · layer", cls: "wrap", render: (r) => h("div", null, r.de_topic_label || "—",
+      r.layer_label ? h("div", { class: "muted" }, r.layer_label) : null) },
     { key: "question", label: "Question", cls: "wrap", render: questionCell },
     { key: "options", label: "Options", render: optionsCell, sort: (r) => (r.options || []).length },
     { key: "answer", label: "Answer", cls: "wrap", render: answerCell },
     { key: "outcome", label: "Outcome", render: outcomeChip },
     { key: "wait_ms", label: "Wait", num: true, fmt: F.dur },
     { key: "flags", label: "Flags", cls: "wrap", render: (r) => ((r.flags || []).length ? h("span", null, r.flags.map((f) => h("span", { class: "chip flag" }, f))) : h("span", { class: "muted" }, "—")) });
-  return dataTable({ rows, limit, columns: cols, selects: [{ key: "topic_label", label: "topics" }, { key: "outcome", label: "outcomes" }, { key: "kind", label: "channels" }] });
+  return dataTable({ rows, limit, columns: cols, selects: [{ key: "topic_label", label: "topics" }, { key: "de_topic_label", label: "DE topics" },
+    { key: "layer_label", label: "layers" }, { key: "outcome", label: "outcomes" }, { key: "kind", label: "channels" }] });
 }
 
 function interviewFacts(s) {

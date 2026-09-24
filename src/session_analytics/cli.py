@@ -275,9 +275,7 @@ def cmd_warehouse(args):
     if res["loaded"]:
         print(f"\nLoaded into Postgres: postgresql://{conn['user']}@{conn['host']}:{conn['port']}/{conn['database']} "
               f"(from a Metabase in Docker: {conn['from_docker']['host']}:{conn['port']}). Tables: "
-              + ", ".join(k for k, n in c.items()) + "; views: v_daily, v_skill_versions, v_check_rates, "
-              "v_question_topics, v_question_outcomes, v_typed_answers, v_question_flags, v_skill_files, "
-              "v_cli_signatures, v_tools, v_models.")
+              + ", ".join(k for k, n in c.items()) + "; views: " + ", ".join(warehouse.VIEW_COMMENTS) + ".")
     print(f"\nFiles: {res['out_dir']} (schema.sql, views.sql, one CSV per table)")
     if args.check and res["loaded"]:
         chk = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn), args.claude_dir)

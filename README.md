@@ -115,6 +115,12 @@ session-analytics compare b3734789:1 d085f38b:1    # two runs side by side, with
   skill's rules for questions (a recommendation, first; measured numbers behind a decision; plain language;
   asked once). Across runs: which topics each version asks, where the recommendation misses, what people type
   when no option fits, and what could be decided and shown instead of asked.
+- **What the questions are about.** Each question is also mapped to a data-engineering topic (privacy,
+  ownership, time, quality, delivery, business logic, sources, modeling, platform, operations, workflow,
+  requirements) and a layer of the stack (presentation, semantic, modeling, staging, source, platform, or
+  cross-cutting), by rules in `semantics/questions.json` tried on the question's header, then its text, then a
+  fallback from the skill's own topic. So an interview can be read as coverage: which layers it asks about,
+  which it never does, and where its recommendations and options work.
 - **What a run did.** Every CLI call by subcommand (`mb transform create`), `--help` lookups, retries after a
   failure; the objects the CLI reported creating; cost, context and the final hand-back; and a step-by-step
   trace of every Claude API request and tool call.
@@ -157,8 +163,10 @@ Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432
 `claude_sessions`, user `convo`, no password) as plain tables — `sessions`, `turns`, `api_requests`,
 `tool_calls`, `cli_calls` (every program in every shell command, by signature), `skill_invocations`,
 `skill_runs`, `skill_run_checks`, `skill_run_files`, `questions`, `question_options`, `subagents`,
-`files_touched`, `tool_errors` — and views that answer the usual questions: `v_skill_versions` (each version
-of a skill compared), `v_check_rates`, `v_question_topics`, `v_question_outcomes`, `v_typed_answers`,
+`files_touched`, `tool_errors`, plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
+that answer the usual questions: `v_skill_versions` (each version of a skill compared), `v_check_rates`,
+`v_question_topics`, `v_question_semantics` (questions by data-engineering topic × layer, per version),
+`v_interview_questions` (one row per question, ready to explore), `v_question_outcomes`, `v_typed_answers`,
 `v_question_flags`, `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`, `v_daily`. Tables and columns
 carry comments, which Metabase shows as descriptions. A Metabase running in Docker reaches it at
 `host.docker.internal:55432`. Each fact belongs to one session (transcripts are read own-only), and every load
@@ -166,16 +174,38 @@ drops and recreates the tables; `warehouse_load` records when, and the dashboard
 `make warehouse` checks every load: each session is recounted straight from its raw JSONL (plain `json`, none of
 the parser's code) and compared with the warehouse — API requests, tokens, tool calls, failures, questions, skill
 calls — so a difference is a bug, not a rounding (`make warehouse-check` runs it alone; sessions written after the
-load are reported apart). `make warehouse-psql` opens a shell.
+load — the main transcript or any of its subagent and workflow transcripts — are reported apart).
+`make warehouse-psql` opens a shell.
 
 Nothing refreshes it on its own: Claude Code only appends to its transcripts, and the warehouse (and every
-dashboard on it) holds what the last `make warehouse` read.
+dashboard on it) holds what the last load read. To reload whenever a session ends, add a SessionEnd hook to
+`~/.claude/settings.json`:
 
-`scripts/metabase_dashboard.py` builds a Metabase dashboard on it — Overview, Skill versions, Interview, Skill
-files & CLI, with a Skill filter — once the warehouse is added to that Metabase as a database:
-`python3 scripts/metabase_dashboard.py --test` checks every card's SQL against the warehouse, and
+```json
+{"hooks": {"SessionEnd": [{"hooks": [{"type": "command",
+                                      "command": "/path/to/convo-analysis/scripts/warehouse_hook.sh"}]}]}}
+```
+
+`scripts/warehouse_hook.sh` runs `warehouse --load` in the background (closing a session is never held up), one
+load at a time (a session that ends mid-load gets one more pass after it), logs to
+`~/claude-session-exports/_warehouse/hook.log` and overwrites `_warehouse/latest` instead of adding a folder per
+load.
+
+`scripts/metabase_dashboard.py` builds a Metabase dashboard on it — Overview, Skill versions, Interview,
+Question topics, Skill files & CLI, with a Skill filter — once the warehouse is added to that Metabase as a
+database: `python3 scripts/metabase_dashboard.py --test` checks every card's SQL against the warehouse, and
 `--build --profile <mb profile> --database <id>` creates the collection, cards and dashboard. The cards are
 native SQL on table and view names, so reloading the warehouse keeps them working.
+
+The Question topics tab sits on a semantic layer: a model, **Interview questions** (`v_interview_questions`:
+one row per question, with its data-engineering topic and layer, what came back, whether the recommended option
+was offered and taken, the wait), and metrics on it — Questions, Questions asked with AskUserQuestion,
+Recommended option taken, Typed-answer rate, Came back empty, Median wait for an answer — so a question asked
+of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic × layer
+matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run by
+layer and version, the layers never asked about, and every question with its topic and layer, with
+Data-engineering topic and Layer filters. `--semantic --profile <p> --database <id> --dashboard <id>
+--collection <id>` adds (or updates in place) the model, metrics and tab on an existing dashboard.
 
 ## Accuracy
 

@@ -1,0 +1,203 @@
+{
+  "about": "What each question Claude asks is about, in data-engineering terms: a topic (the kind of concern) and a layer (where in the data stack it sits). Rules are regular expressions tried in order, first on the question's header (the agent's own short label, usually the most precise signal), then on the question text; the first topic and the first layer that match win. A question neither matches falls back to its interview topic (`fallback`: interview topic -> [topic, layer]). Edit freely; see src/session_analytics/semantics.py.",
+  "topics": [
+    {
+      "id": "privacy",
+      "label": "Privacy & security",
+      "description": "Personal data, credentials, access, authentication, exposure.",
+      "match": "\\bpii\\b|personal|names and emails|emails and|e-?mail address|phone|credential|api key|\\btokens?\\b|token env|secret|\\bsso\\b|oauth|\\bauth\\b|auth flow|\\btls\\b|reachab|public internet|\\baccess\\b|who can see|another lab's rows|never touch|what's permitted|what does it allow|acls?\\b|administers"
+    },
+    {
+      "id": "ownership",
+      "label": "Ownership & governance",
+      "description": "Who decides what a number means, sign-off, autonomy, certification (trust labels, the Library), code owners.",
+      "match": "sign.?off|who (decides|owns|signs|approves)|decides what a number means|\\bowners?\\b|autonomy|trust label|official|library|certif|\\bdecisions\\b|how much .*steer|check (every|each) choice|just go|who touched|who reviews|audit"
+    },
+    {
+      "id": "time",
+      "label": "Time & freshness",
+      "description": "The as-of date, the last complete period, cutoffs, how current the data is.",
+      "match": "as-of|as of date|'now'|treat as .now|freshness|last complete|cutoff|where should the numbers stop|stops on|runs to 20|far past today|time ?zone"
+    },
+    {
+      "id": "quality",
+      "label": "Data quality & validation",
+      "description": "Matching a reference, reconciliation, parity with a previous system, gaps, anomalies, tests, safeguards.",
+      "match": "reference|\\bmatch(es)?\\b|reconcil|parity|discrepan|comparison|compare|validat|\\bgap\\b|missing|anomal|safeguard|assumption|faithful|fidelity|quality|blank for|before their recorded"
+    },
+    {
+      "id": "delivery",
+      "label": "Delivery & consumption",
+      "description": "Dashboards, charts, publishing drafts, alerts, subscriptions, audiences, apps and reports people use.",
+      "match": "dashboard|\\bcharts?\\b|drafts|publish|report cadence|how often should|\\balerts?\\b|subscriptions? (email|delivery|to|for)|subscribe|recipient|audience|list pages|app name|lead (focus|with)|url name|\\.ts\\.net|who's it for"
+    },
+    {
+      "id": "business-logic",
+      "label": "Business logic & definitions",
+      "description": "What counts as what: metric definitions, inclusion rules, classifications, thresholds.",
+      "match": "count(s|ed)? as|what counts|count toward|should .* count|\\bdefin|\\bdef\\b|split by|which plan|churn|engage|\\bactive\\b|positive|rating|revenue|\\bmrr\\b|grace|flagged|include|exclude|canonical|classif|kind/alias|apply policy|unexpected|final invoices|\\bplan\\b on a payment|\\bdefaults\\b|corrected or voided|\\bvoided\\b"
+    },
+    {
+      "id": "sources",
+      "label": "Sources & ingestion",
+      "description": "Source systems, connectors, APIs, what to sync, backfills, cursors, raw landing.",
+      "match": "connector|ingest|\\bsources?\\b|\\bsyncs?\\b|\\bapi\\b|rest api|fetch|pagination|backfill|cursor|\\bdlt\\b|fivetran|stitch|\\braw_|\\braw\\b|extract|objects should|datasets|message scope|token class|rate.?limit|gh archive|bigquery|webhook|star history|historical|window size|backward window|redrive|\\bfeeds?\\b"
+    },
+    {
+      "id": "modeling",
+      "label": "Modeling & transformation",
+      "description": "Transforms, models, grain, keys, entities, where clean tables live, schemas, layering.",
+      "match": "transform|\\bmodels?\\b|modeling|model first|model next|\\bdim_|\\bfacts?\\b|\\bgrain\\b|schema|clean(er)? (table|structure)|clean tables|table structure|materiali|\\bjoins?\\b|entity|workspaces?|\\bdbt\\b|target db|writable|land in|where should .*(live|land)|tables i build|vocab|build where|where tables live|tables get built|new tables"
+    },
+    {
+      "id": "platform",
+      "label": "Platform & infrastructure",
+      "description": "Instances, environments, deployment, networking, databases, CI, the tools that run the stack.",
+      "match": "instance|sandbox|production|\\bstaging\\b|environment|region|terraform|\\btf\\b|k8s|kubernetes|executor|\\bpods?\\b|\\becs\\b|fargate|network|privatelink|\\brds\\b|airflow|edition|deploy|\\bci\\b|infra|\\biam\\b|oidc|\\bdns\\b|\\balb\\b|bootstrap|ops db|db name|database name|localhost|architecture|home should|auto-sync|rotation|tailnet|tailscale|subnet|cidr|hostname|\\bdsn\\b|\\bzone\\b|resolve|router|mbdata|metabase cloud|cluster|host this|\\bjob\\b|\\bips?\\b"
+    },
+    {
+      "id": "operations",
+      "label": "Operations & rollout",
+      "description": "Going live, cutovers, pausing, decommissioning, migrating or reloading production data.",
+      "match": "cutover|go.?live|\\bpause|unpause|decommission|migrat|renam|prod (load|write)|production clickhouse|rollback|rehearsal|live cleanup|turn.?on|\\bstatus\\b|ship in this change|turned on|failed or late|nightly run|who fixed|depended on it|incident"
+    },
+    {
+      "id": "workflow",
+      "label": "Engineering workflow",
+      "description": "How the work itself proceeds: plans, phases, branches, commits, PRs, files, tooling.",
+      "match": "commit|branch|\\bprs?\\b|pull request|\\bpush|merge|codeowners|plan shape|\\bphases?\\b|next steps|proceed|how to run|tooling|working files|\\bfiles\\b|approach|direction|structure|lane name|\\bport\\b|landing|land this|save a copy|keep a copy|create (both )?prs"
+    },
+    {
+      "id": "requirements",
+      "label": "Requirements & scope",
+      "description": "What to build, first or next, how much to cover, priorities.",
+      "match": "\\bfirst\\b|\\bnext\\b|scope|focus|which (part|area|report|number|question|objects|tables|channels|datasets)|what should i (build|model)|how much|how far|how deep|depth|cover|priorit|slice|area|want me to|should i (add|go on|build)|did you mean|which (way|do you want|one)|want either|repetitive|what did you keep"
+    }
+  ],
+  "layers": [
+    {
+      "id": "presentation",
+      "label": "Presentation",
+      "description": "Dashboards, charts, apps, alerts, subscriptions: what people look at.",
+      "match": "dashboard|\\bcharts?\\b|drafts|\\balerts?\\b|subscriptions? (email|delivery|to|for)|subscribe|recipient|audience|list pages|app name|lead (focus|with)|report cadence|post to|url name|\\.ts\\.net|who's it for|\\bfilters?\\b|tile|\\bapp\\b"
+    },
+    {
+      "id": "semantic",
+      "label": "Semantic layer",
+      "description": "Metrics, definitions, segments, trust labels, the Library: what the numbers mean.",
+      "match": "metric|\\bdefin|\\bdef\\b|count(s|ed)? as|what counts|count toward|should .* count|revenue|\\bmrr\\b|churn|engage|\\bactive\\b|positive|rating|split by|which plan|trust label|library|official|verified|segment|measure|what a number means|sign.?off|decides what|which number|kpi"
+    },
+    {
+      "id": "modeling",
+      "label": "Modeling",
+      "description": "Transforms and models: clean tables, entities, facts and dimensions, where they live.",
+      "match": "transform|\\bmodels?\\b|modeling|model first|model next|\\bdim_|\\bfacts?\\b|\\bgrain\\b|schema|clean(er)? (table|structure)|clean tables|table structure|materiali|\\bjoins?\\b|entity|workspaces?|\\bdbt\\b|target db|writable|land in|where should .*(live|land)|tables i build|orders table|invoices is built|customers and products|account-months|customer-months|vocab|build where|where tables live|tables get built|new tables"
+    },
+    {
+      "id": "staging",
+      "label": "Staging",
+      "description": "Cleaning raw rows: types, soft deletes, sync metadata, deduplication.",
+      "match": "\\bstaging\\b(?!.*(sandbox|instance|production))|dedup|metadata col|soft.?delete|_fivetran|type parity|epoch|\\bcast\\b|null rate"
+    },
+    {
+      "id": "source",
+      "label": "Source & raw",
+      "description": "Source systems, connectors, APIs, ingestion, raw tables, how far the data runs.",
+      "match": "connector|ingest|\\bsources?\\b|\\bsyncs?\\b|\\bapi\\b|fetch|pagination|backfill|cursor|\\bdlt\\b|fivetran|stitch|\\braw_|\\braw\\b|extract|objects should|datasets|message scope|token class|rate.?limit|gh archive|bigquery|webhook|stops on|runs to 20|data runs to|star history|historical|window size|redrive|\\bfeeds?\\b"
+    },
+    {
+      "id": "platform",
+      "label": "Platform",
+      "description": "Instances, environments, deployment, networking, credentials, CI: what runs the stack.",
+      "match": "instance|sandbox|production|environment|region|terraform|\\btf\\b|k8s|kubernetes|executor|\\bpods?\\b|\\becs\\b|fargate|network|privatelink|\\brds\\b|airflow|edition|deploy|\\bci\\b|\\biam\\b|oidc|\\bdns\\b|\\balb\\b|\\btls\\b|\\bsso\\b|tailnet|reachab|bootstrap|credential|api key|token env|localhost|rotation|auto-sync|tailnet|tailscale|subnet|cidr|hostname|\\bdsn\\b|\\bzone\\b|router|mbdata|metabase cloud|cluster|\\bjob\\b|\\bips?\\b"
+    },
+    {
+      "id": "cross-cutting",
+      "label": "Cross-cutting",
+      "description": "Scope, ownership, privacy and process questions that span the stack.",
+      "match": "^(scope|next|next steps?|next slice|next focus|proceed|files|commit|branch|pr structure|landing|plan shape|phasing|approach|direction|how to run|tooling detail|lane name|owners|codeowners fix|push path|create prs?|first number)$|working files|save a copy|keep a copy"
+    }
+  ],
+  "fallback": {
+    "working-files": [
+      "workflow",
+      "cross-cutting"
+    ],
+    "sign-off": [
+      "ownership",
+      "semantic"
+    ],
+    "environment": [
+      "platform",
+      "platform"
+    ],
+    "profile": [
+      "platform",
+      "platform"
+    ],
+    "personal-data": [
+      "privacy",
+      "cross-cutting"
+    ],
+    "freshness": [
+      "time",
+      "source"
+    ],
+    "existing-build": [
+      "modeling",
+      "modeling"
+    ],
+    "memo": [
+      "business-logic",
+      "semantic"
+    ],
+    "publish": [
+      "delivery",
+      "presentation"
+    ],
+    "delivery": [
+      "delivery",
+      "presentation"
+    ],
+    "scope": [
+      "requirements",
+      "cross-cutting"
+    ],
+    "reference": [
+      "quality",
+      "semantic"
+    ],
+    "placement": [
+      "modeling",
+      "modeling"
+    ],
+    "definition": [
+      "business-logic",
+      "semantic"
+    ],
+    "offer": [
+      "requirements",
+      "cross-cutting"
+    ],
+    "permission": [
+      "workflow",
+      "cross-cutting"
+    ],
+    "setup": [
+      "platform",
+      "platform"
+    ],
+    "data-handling": [
+      "privacy",
+      "cross-cutting"
+    ],
+    "preference": [
+      "requirements",
+      "cross-cutting"
+    ],
+    "other": [
+      "other",
+      "cross-cutting"
+    ]
+  }
+}
