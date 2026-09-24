@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from . import __version__, locate
 from .export import FORMATS, export_session, parse_formats
@@ -112,6 +113,16 @@ def build_parser():
                          "~/.config/convo-analysis/.env (--init-env); --clickhouse=auto skips it while that is empty")
     wh.add_argument("--clickhouse-forget", action="store_true",
                     help="take this machine's rows out of the ClickHouse warehouse (everyone else's stay)")
+    wh.add_argument("--skills", help="ClickHouse gets the sessions that invoked one of these skills (comma separated; "
+                                     "* for every session). Default: CLICKHOUSE_SKILLS in the env file, else rde")
+    wh.add_argument("--session", action="append", metavar="TRANSCRIPT",
+                    help="ClickHouse: update only this session (its main transcript .jsonl); repeatable")
+    wh.add_argument("--session-queue", metavar="DIR",
+                    help="ClickHouse: update only the sessions queued in DIR (one file per session, holding its "
+                         "transcript path; the SessionEnd hook writes them), and clear what was handled")
+    wh.add_argument("--rescope", action="store_true",
+                    help="CLICKHOUSE_SKILLS changed: take out the shared sessions the new scope no longer covers (a "
+                         "sync only reports them until then, so a typo there cannot delete history)")
     wh.add_argument("--init-env", action="store_true",
                     help="create ~/.config/convo-analysis/.env from .env.example, to fill in CLICKHOUSE_URL")
     wh.add_argument("--env-file", help="read CLICKHOUSE_URL from this file instead of ~/.config/convo-analysis/.env")
@@ -254,38 +265,197 @@ def cmd_compare(args):
     return 0
 
 
+def _read_queue(qdir, log):
+    """The hook's queue: {entry: (transcript path, mtime)}. Only entries named like a session id count; anything else
+    there (a Finder .DS_Store) is ignored, and an entry that cannot be read, or names no transcript, is dropped."""
+    out = {}
+    d = Path(qdir)
+    if not d.is_dir():
+        return out
+    for q in sorted(d.iterdir()):
+        if not q.is_file() or not locate.UUID_RE.match(q.name):
+            continue
+        try:
+            mtime = q.stat().st_mtime_ns
+            t = q.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            t = ""
+        if not t.endswith(".jsonl"):
+            log(f"Dropped a queue entry that names no transcript: {q.name}")
+            q.unlink(missing_ok=True)
+            continue
+        out[q] = (t, mtime)
+    return out
+
+
+def _done_with(queued, keep=()):
+    """Delete the queue entries handled — but not one written again meanwhile: that session ended again, and its
+    newer content still has to go out."""
+    for q, (t, mtime) in queued.items():
+        if Path(t).stem in keep:
+            continue
+        try:
+            if q.stat().st_mtime_ns == mtime:
+                q.unlink()
+        except OSError:
+            pass
+
+
+def _claude_dir_of(transcript, default):
+    """<claude dir>/projects/<project>/<session>.jsonl: the config directory a transcript belongs to, whose source
+    its rows go under (sessions of a second CLAUDE_CONFIG_DIR share the hook's queue)."""
+    p = Path(transcript)
+    return p.parent.parent.parent if p.parent.parent.name == "projects" else Path(default)
+
+
+def _print_clickhouse(ch):
+    if ch.get("quiet"):
+        if ch["read"]:
+            print(f"\nClickHouse: nothing to share — the {ch['read']} session(s) read did not run {ch['skills']}, "
+                  f"and none of them was shared; no request was made.")
+        return
+    what = []
+    if ch["written"]:
+        what.append(f"shared {len(ch['written'])} session(s) that ran {ch['skills']}")
+    fresh_out = sorted(set(ch["removed"]) - set(ch["stale"]))
+    if fresh_out:
+        what.append(f"took out {len(fresh_out)} that no longer qualify")
+    if ch["stale"]:
+        what.append(f"took out {len(ch['stale'])} shared earlier that never ran {ch['skills']}")
+    head = "Synced every session on this machine" if ch["mode"] == "all" else "Synced the ended session(s)"
+    print(f"\n{head} to ClickHouse ({ch['target']}, as {ch['identity']}): {'; '.join(what) or 'nothing changed'}. "
+          f"This source now holds {ch['held']} session(s); every other source's rows are untouched.")
+    if ch["missing"]:
+        print(f"No transcript for {len(ch['missing'])} queued session(s) (moved or deleted): left as they are.")
+    if ch.get("withheld"):
+        print(f"{len(ch['withheld'])} session(s) that ran {ch['skills']} were withdrawn earlier and stay out "
+              f"(`--clickhouse --session <id>` shares one again).")
+    if ch.get("scope_pending"):
+        sp = ch["scope_pending"]
+        print(f"CLICKHOUSE_SKILLS changed from {sp['from']} to {sp['to']}: {sp['would_take_out']} shared session(s) "
+              f"the new scope does not cover stay until you run `warehouse --clickhouse --rescope`.")
+
+
+ACTIVE_MS = 5 * 60 * 1000  # a transcript written to within this is a session still going: the catch-up leaves it
+
+
+def _forget_specs(specs, default_cdir, claude_dir):
+    """--clickhouse-forget --session values as {config dir: [session ids]}. A session id is taken as it is, so one whose
+    transcript Claude Code has deleted — kept shared by design — can still be taken out."""
+    out = {}
+    for spec in specs:
+        try:
+            t = locate.resolve(spec, cdir=claude_dir)
+            out.setdefault(_claude_dir_of(t, default_cdir), []).append(t.stem)
+        except locate.SessionNotFound:
+            if not locate.UUID_RE.match(spec):
+                raise
+            out.setdefault(Path(default_cdir), []).append(spec)
+    return out
+
+
+def _sweep(target, source, cdir, queued_paths, started_ms, log):
+    """The catch-up: transcripts of `cdir` changed since the last pass whose SessionEnd never came (the app was quit,
+    the machine slept). Leaves out one already synced at its current state, and one still being written (its own end,
+    or a later pass, picks it up). Returns (paths, {path: mtime}, the oldest mtime left for later or None)."""
+    cache = clickhouse_cache(target, source)
+    swept = cache.get("swept_ms")
+    if not swept:
+        return [], {}, None
+    synced = cache.get("synced") or {}
+    picked, mtimes, held_back = [], {}, None
+    for p in locate.iter_transcripts(cdir):
+        m = p.stat().st_mtime * 1000
+        if m <= swept - 10 * 60 * 1000 or str(p) in queued_paths or m <= synced.get(p.stem, 0):
+            continue
+        if started_ms - m < ACTIVE_MS:
+            held_back = m if held_back is None else min(held_back, m)
+            continue
+        picked.append(str(p))
+        mtimes[str(p)] = m
+    return picked, mtimes, held_back
+
+
+def clickhouse_cache(target, source):
+    from . import clickhouse
+    return clickhouse.read_cache(target, source) or {}
+
+
 def cmd_warehouse(args):
     from . import clickhouse, reconcile, warehouse
     log = (lambda *_: None) if args.json else (lambda m: print(m, file=sys.stderr))
+    started_ms = time.time() * 1000
     if args.init_env:
         path, created = clickhouse.init_env()
         print(f"{'Created' if created else 'Already there:'} {path} — fill in CLICKHOUSE_URL (its comments say how).")
         return 0
-    target = ident = None
+    default_cdir = Path(locate.claude_dir(args.claude_dir))
+    target, unusable = None, None
     if args.clickhouse or args.clickhouse_forget:
         conf, env_path = clickhouse.settings(args.env_file)
         if conf["CLICKHOUSE_URL"] or args.clickhouse == "yes" or args.clickhouse_forget:
             try:
                 target = clickhouse.target_from_settings(args.env_file)
-                ident = clickhouse.identity(locate.claude_dir(args.claude_dir), args.env_file)
             except clickhouse.ClickHouseError as exc:
+                # set but unusable: say so, keep the queue, and still reload a running Postgres (exit 1 at the end)
                 print(f"session-analytics: warehouse --clickhouse: {exc}", file=sys.stderr)
                 if args.clickhouse != "auto":
-                    return 1  # asked for: fail; auto: the Postgres load still runs
+                    return 1
+                unusable = str(exc)
         if target is not None and env_path == clickhouse.checkout_env_file():
             log(f"note: the connection is in {env_path}; move it to {clickhouse.config_dir() / '.env'}, where an "
                 f"update of this checkout or plugin can't take it with it")
+    skills = clickhouse.skills_setting(args.env_file, args.skills)
     if args.clickhouse_forget:
         try:
-            done = clickhouse.forget(target, ident)
-        except clickhouse.ClickHouseError as exc:
+            by_dir = _forget_specs(args.session, default_cdir, args.claude_dir) if args.session else {default_cdir: None}
+        except locate.SessionNotFound as exc:
             print(f"session-analytics: warehouse --clickhouse-forget: {exc}", file=sys.stderr)
             return 1
-        print(f"Removed the rows of {ident!r} from {target!r} ({len(done)} tables); every other source's rows stay.")
+        for cdir, ids in by_dir.items():
+            ident = clickhouse.identity(cdir, args.env_file)
+            try:
+                gone, absent = clickhouse.forget(target, ident, ids)
+            except clickhouse.ClickHouseError as exc:
+                print(f"session-analytics: warehouse --clickhouse-forget: {exc}", file=sys.stderr)
+                return 1
+            print(f"Took {len(gone)} session(s) of {ident!r} out of {target!r}"
+                  + (f"; {len(absent)} named were not shared ({', '.join(absent)})" if absent else "")
+                  + ". Every other source's rows stay. They are withdrawn: no later sync shares them again — "
+                    "`--clickhouse --session <id>` shares one again. The SessionEnd hook still shares new sessions "
+                    f"that run {','.join(skills)}; empty CLICKHOUSE_URL to stop that.")
         return 0
+    explicit = []
+    for spec in args.session or ():
+        try:
+            explicit.append(str(locate.resolve(spec, cdir=args.claude_dir)))
+        except locate.SessionNotFound as exc:
+            print(f"session-analytics: warehouse --session {spec}: {exc}", file=sys.stderr)
+            return 1
+    if explicit and target is not None:  # named to share: no longer withdrawn
+        for t in explicit:
+            clickhouse.reshare(target, clickhouse.source_id(_claude_dir_of(t, default_cdir)), [Path(t).stem])
+    queued = _read_queue(args.session_queue, log) if args.session_queue else {}
+    sessions = None
+    if args.session or args.session_queue:
+        sessions = list(dict.fromkeys(explicit + [t for t, _ in queued.values()]))
     do_load = args.load == "yes" or (args.load == "auto" and warehouse.running(args.container))
     if (args.load or args.clickhouse) and not do_load and target is None and not args.check:
+        if unusable:
+            return 1  # the queue stays: the sessions go out once CLICKHOUSE_URL is fixed
+        _done_with(queued)  # nowhere to put them: a full load (make clickhouse) covers history later
         log("Nothing to load: no local Postgres running and no CLICKHOUSE_URL set.")  # the hook, before any parse
+        return 0
+    swept_paths, swept_mtimes, held_back = [], {}, None
+    if args.session_queue and target is not None:
+        swept_paths, swept_mtimes, held_back = _sweep(target, clickhouse.source_id(default_cdir), default_cdir,
+                                                      set(sessions), started_ms, log)
+        sessions = list(dict.fromkeys(sessions + swept_paths))
+    source0 = clickhouse.source_id(default_cdir) if target is not None else None
+    if args.session_queue and not sessions and not do_load and not args.check:
+        log("Nothing queued.")
+        if target is not None:
+            clickhouse.write_cache(target, source0, swept_ms=min(started_ms, held_back or started_ms))
         return 0
     if args.check and not do_load and target is None:
         try:
@@ -295,28 +465,79 @@ def cmd_warehouse(args):
             return 1
         print(json.dumps(res, indent=1, default=str) if args.json else reconcile.render(res))
         return 0 if res["ok"] else 1
-    try:
-        res = warehouse.run_warehouse(args.claude_dir, args.project, args.since, args.out, do_load=do_load,
-                                      start=args.up, container=args.container, dsn=args.dsn,
-                                      redact=not args.no_redact, pricing=Pricing(args.pricing), log=log,
-                                      clickhouse_target=target, clickhouse_identity=ident)
-    except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
-        detail = getattr(exc, "stderr", None) or str(exc)
-        print(f"session-analytics: warehouse: {detail}".strip(), file=sys.stderr)
-        return 1
+    # One pass per Claude config directory the sessions belong to (each is its own source); Postgres, and the
+    # files, with the first.
+    groups = {default_cdir: None if sessions is None else []}
+    for t in sessions or ():
+        groups.setdefault(_claude_dir_of(t, default_cdir), []).append(t)
+    mtimes = {}
+    for t in sessions or ():
+        try:
+            mtimes[t] = Path(t).stat().st_mtime * 1000
+        except OSError:
+            pass
+    runs = []
+    for n, (cdir, group) in enumerate(groups.items()):
+        if n and target is None:
+            continue  # other config directories only matter to ClickHouse
+        if group == [] and not (n == 0 and (do_load or args.check or len(groups) == 1)):
+            continue  # no session of this config directory queued, and no Postgres load to do with it
+        ident = clickhouse.identity(cdir, args.env_file) if target is not None else None
+        try:
+            res = warehouse.run_warehouse(str(cdir), args.project, args.since, args.out, do_load=do_load and n == 0,
+                                          start=args.up and n == 0, container=args.container, dsn=args.dsn,
+                                          redact=not args.no_redact, pricing=Pricing(args.pricing), log=log,
+                                          clickhouse_target=target, clickhouse_identity=ident, sessions=group,
+                                          skills=skills, rescope=args.rescope, write_files=n == 0)
+        except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
+            detail = getattr(exc, "stderr", None) or str(exc)
+            print(f"session-analytics: warehouse: {detail}".strip(), file=sys.stderr)
+            return 1
+        runs.append((cdir, group, ident, res))
+    for cdir, group, ident, res in runs:
+        ch = res["clickhouse"]
+        if unusable or res["errors"].get("clickhouse"):
+            continue  # nothing handled: every entry stays queued for the next pass
+        unread = set((ch or {}).get("unread") or ())
+        mine = {q: v for q, v in queued.items() if group is not None and v[0] in group}
+        _done_with(mine, keep=unread)
+        queued_unread = sorted(unread & {Path(v[0]).stem for v in mine.values()})
+        swept_unread = sorted(unread - set(queued_unread))
+        if queued_unread:
+            log(f"Could not read {len(queued_unread)} queued transcript(s); left queued, their shared rows untouched: "
+                + ", ".join(queued_unread))
+        if swept_unread:
+            log(f"Could not read {len(swept_unread)} transcript(s) the catch-up found; the next pass tries again: "
+                + ", ".join(swept_unread))
+        if ch and not ch.get("quiet"):
+            # what was synced, at the state it was read in: the catch-up leaves it alone until it changes again
+            by_stem = {Path(t).stem: m for t, m in mtimes.items()}
+            synced = dict(clickhouse_cache(target, ident.source).get("synced") or {})
+            synced.update({sid: by_stem[sid] for sid in ch.get("written") or () if sid in by_stem})
+            for sid in ch.get("removed") or ():
+                synced.pop(sid, None)
+            clickhouse.write_cache(target, ident.source, synced=synced)
+        if target is not None and args.session_queue and cdir == default_cdir:
+            oldest_unread = min((swept_mtimes.get(t) for t in swept_mtimes if Path(t).stem in swept_unread),
+                                default=None)
+            clickhouse.write_cache(target, ident.source, swept_ms=min(
+                x for x in (started_ms, held_back, oldest_unread) if x is not None))
     checks = {}
-    if args.check and res["loaded"]:
+    first = runs[0][3]
+    if args.check and first["loaded"]:
         checks["Postgres"] = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn),
                                              args.claude_dir)
-    if args.check and res["clickhouse"]:
+    if args.check and first["clickhouse"] and not first["clickhouse"].get("quiet"):
         try:
-            checks["ClickHouse"] = reconcile.check((clickhouse.Client(target), ident.source), args.claude_dir)
+            checks["ClickHouse"] = reconcile.check((clickhouse.Client(target), runs[0][2].source), args.claude_dir,
+                                                   only=set(first["clickhouse"]["written"]))
         except clickhouse.ClickHouseError as exc:
-            res["errors"]["clickhouse check"] = str(exc)
-    ok = not res["errors"] and all(c["ok"] for c in checks.values())
+            first["errors"]["clickhouse check"] = str(exc)
+    ok = not unusable and all(not r[3]["errors"] for r in runs) and all(c["ok"] for c in checks.values())
     if args.json:
-        print(json.dumps(dict(res, checks=checks), indent=1, default=str))
+        print(json.dumps(dict(first, runs=[r[3]["clickhouse"] for r in runs], checks=checks), indent=1, default=str))
         return 0 if ok else 1
+    res = first
     c, conn = res["counts"], res["connection"]
     print(f"# Session warehouse\n\n{res['meta']['transcripts']} transcripts → {c['sessions']:,} sessions, "
           f"{c['turns']:,} turns, {c['api_requests']:,} API requests, {c['tool_calls']:,} tool calls, "
@@ -328,13 +549,14 @@ def cmd_warehouse(args):
         print(f"\nLoaded into Postgres: postgresql://{conn['user']}@{conn['host']}:{conn['port']}/{conn['database']} "
               f"(from a Metabase in Docker: {conn['from_docker']['host']}:{conn['port']}). Tables: "
               + ", ".join(k for k, n in c.items()) + "; views: " + ", ".join(warehouse.VIEW_COMMENTS) + ".")
-    if res["clickhouse"]:
-        print(f"\nLoaded into ClickHouse: {res['clickhouse']['target']}, as {res['clickhouse']['identity']} — "
-              f"{sum(res['clickhouse']['counts'].values()):,} rows in {len(res['clickhouse']['counts'])} tables "
-              f"(this source's rows replaced; every other source's untouched), and {len(clickhouse.VIEWS)} views.")
-    print(f"\nFiles: {res['out_dir']} (schema.sql, views.sql, one CSV per table)")
-    for name, err in res["errors"].items():
-        print(f"\n{name} failed: {err}", file=sys.stderr)
+    for _cdir, _group, _ident, r in runs:
+        if r["clickhouse"]:
+            _print_clickhouse(r["clickhouse"])
+    if args.out or res["out_dir"]:
+        print(f"\nFiles: {res['out_dir']} (schema.sql, views.sql, one CSV per table)")
+    for _cdir, _group, _ident, r in runs:
+        for name, err in r["errors"].items():
+            print(f"\n{name} failed: {err}", file=sys.stderr)
     for name, chk in checks.items():
         print("\n" + reconcile.render(chk, title=f"{name} check"))
     return 0 if ok else 1

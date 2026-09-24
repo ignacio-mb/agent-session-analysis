@@ -460,7 +460,11 @@ per-run averages (`avg_questions_asked`, `avg_prose_questions`, `avg_question_ro
 and the table's `ORDER BY`, every other column `Nullable`; empty text is NULL, as in the Postgres load. Every table
 but `de_topics` and `de_layers` also has `source` (the loading machine and Claude config directory, hashed; the
 partition key: a load replaces its own partition) and `person`; `warehouse_load` has `machine` (host name) and one
-row per source, its latest load. `v_interview_questions` adds `person`. Run and question ids repeat across machines,
+row per source (none once it holds nothing): when it last changed, `sessions` = `transcripts` = the sessions it
+holds, `since` (`all`, a `--since` value, or `hook`), and `skills`, the scope it holds (sessions in which one of
+CLICKHOUSE_SKILLS ran, default `rde`; `*` in the Postgres load: every session). `v_interview_questions` adds
+`person`. `--session` / `--session-queue` (the SessionEnd hook) sync single sessions inside the source's partition;
+`--check` after a ClickHouse sync compares the sessions it wrote. Run and question ids repeat across machines,
 so the ClickHouse views join them together with the session id. Its views have
 the same names and columns in ClickHouse SQL (medians are `quantileExactInclusive`, the interpolation Postgres's
 `percentile_cont` uses; rounding goes through Decimal so both round half away from zero). Views: `v_daily`, `v_skill_versions`, `v_check_rates`,

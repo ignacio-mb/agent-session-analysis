@@ -1,7 +1,10 @@
 """The ClickHouse load, offline: the connection string, the DDL, the rows, and the load's order of operations against
 a fake server (a live one: `make clickhouse-dev`, then scripts/metabase_dashboard.py --test --clickhouse)."""
 
+import json
+import os
 import re
+import time
 
 import pytest
 
@@ -48,7 +51,7 @@ def test_table_ddl():
     assert "`source` LowCardinality(String)" in ddl and "`person` LowCardinality(String)" in ddl
     assert "`qid` String" in ddl and "`asked_at` Nullable(DateTime64(3, 'UTC'))" in ddl
     assert "`multi` Nullable(Bool)" in ddl and "PARTITION BY source\nORDER BY (`qid`)" in ddl
-    assert f"COMMENT '{clickhouse.MARK} · " in ddl and "COMMENT 'ask | prose | checkpoint'" in ddl
+    assert f"COMMENT '{clickhouse.MARK} {clickhouse.__version__} · " in ddl and "COMMENT 'ask | prose | checkpoint'" in ddl
     topics = clickhouse.table_ddl("sessions", "de_topics")  # the taxonomy: the same for everyone, not partitioned
     assert "source" not in topics and "PARTITION BY" not in topics
     assert "`machine`" in clickhouse.table_ddl("db", "warehouse_load")
@@ -92,48 +95,101 @@ def test_views_are_the_postgres_views_qualified():
 
 
 class FakeClickHouse:
-    """A tiny ClickHouse: tables with columns and per-source partitions, and a log of the statements run."""
+    """A tiny ClickHouse over real rows: tables with columns and per-source partitions of row dicts, answering the
+    handful of statement shapes clickhouse.py sends, and logging every statement. Constructing it as a Client counts
+    as a connection (`connections`)."""
 
-    def __init__(self, tables=None, databases=("sessions",), short=None):
-        # name -> {"comment", "columns", "parts": {source: rows}}
+    def __init__(self, tables=None, databases=("sessions",), short=None, short_copy=None):
+        # name -> {"comment", "columns", "parts": {source: [row, ...]}}
         self.tables = tables or {}
-        self.databases, self.short, self.sql = databases, short, []
+        self.databases, self.short, self.short_copy = databases, short, short_copy
+        self.sql, self.connections = [], 0
 
     def __call__(self, target, timeout=300):
         self.t = target
+        self.connections += 1
         return self
 
     @staticmethod
     def table(comment, columns, parts=None):
-        return {"comment": comment, "columns": set(columns), "parts": dict(parts or {})}
+        return {"comment": comment, "columns": set(columns), "parts": {k: list(v) for k, v in (parts or {}).items()}}
 
-    def rows(self, sql, params=None):
+    def rows_of(self, table, source=None):
+        parts = self.tables[table]["parts"]
+        return [r for src, rows in parts.items() if source in (None, src) for r in rows]
+
+    def held(self, table):
+        """{source: rows} of a table."""
+        return {src: len(rows) for src, rows in self.tables[table]["parts"].items() if rows}
+
+    def sessions(self, table, source):
+        return {r.get("session_id") for r in self.rows_of(table, source)}
+
+    @staticmethod
+    def ids_in(sql):
+        m = re.search(r"NOT has\((\[.*?\]), session_id\)", sql, re.S)
+        return set(re.findall(r"'([^']*)'", m.group(1))) if m else set()
+
+    def rows(self, sql, params=None, settings=None):
+        params = params or {}
         if "system.databases" in sql:
             return [{"name": params["db"]}] if params["db"] in self.databases else []
         if "system.tables" in sql:
-            return [{"name": n, "engine": "MergeTree", "comment": t["comment"]} for n, t in self.tables.items()]
+            return [{"name": n, "engine": "MergeTree", "comment": t["comment"]} for n, t in self.tables.items()
+                    if "t" not in params or n == params["t"]]
         if "system.columns" in sql:
             return [{"table": n, "name": c} for n, t in self.tables.items() for c in t["columns"]]
-        m = re.search(r"count\(\) AS n FROM `sessions`\.`(\w+)`", sql)
-        n = sum(self.tables[m.group(1)]["parts"].values())
-        return [{"n": n - 1 if m.group(1).startswith(f"{self.short}__load") else n}]
+        src = params.get("src")
+        if "UNION ALL" in sql:
+            names = re.findall(r"FROM `sessions`\.`(\w+)` WHERE source", sql)
+            ids = {r.get("session_id") for n in names for r in self.rows_of(n, src)}
+            return [{"session_id": sid} for sid in sorted(i for i in ids if i)]
+        m = re.search(r"FROM `sessions`\.`(\w+)`", sql)
+        name = m.group(1)
+        rows = self.rows_of(name, src) if src else self.rows_of(name)
+        if "NOT has(" in sql:
+            rows = [r for r in rows if r.get("session_id") not in self.ids_in(sql)]
+        if sql.startswith("SELECT count()"):
+            n = len(rows)
+            if self.short and name.startswith(f"{self.short}__load") and n:
+                n -= 1
+            return [{"n": n}]
+        if sql.startswith("SELECT DISTINCT session_id"):
+            return [{"session_id": sid} for sid in sorted({r.get("session_id") for r in rows})]
+        if sql.startswith("SELECT * "):
+            return [dict(r) for r in rows]
+        cols = [c.strip(" `") for c in re.match(r"SELECT (.*?) FROM", sql).group(1).split(",")]
+        return [{c: r.get(c) for c in cols} for r in rows]
 
     def run(self, sql, data=None, params=None, settings=None, compress=False):
         self.sql.append(sql.split("\n")[0])
+        params = params or {}
         name = lambda x: x.split("`.`")[1].rstrip("`")  # noqa: E731
         if m := re.match(r"CREATE TABLE (?:IF NOT EXISTS )?(`\S+`)( AS (`\S+`))?", sql):
             n = name(m.group(1))
             if n not in self.tables:
-                cols = self.tables[name(m.group(3))]["columns"] if m.group(2) else set(re.findall(r"^  `(\w+)`", sql, re.M))
-                self.tables[n] = self.table(clickhouse.MARK, cols)
+                if m.group(2):
+                    like = self.tables[name(m.group(3))]
+                    self.tables[n] = self.table(like["comment"], like["columns"])
+                else:
+                    comment = re.search(r"COMMENT '((?:[^'\\]|\\.)*)'\s*$", sql)
+                    self.tables[n] = self.table(comment.group(1) if comment else clickhouse.MARK,
+                                                set(re.findall(r"^  `(\w+)`", sql, re.M)))
+        elif m := re.match(r"INSERT INTO (`\S+`) SELECT \* FROM (`\S+`) WHERE source", sql):
+            ids = self.ids_in(sql)
+            kept = [dict(r) for r in self.tables[name(m.group(2))]["parts"].get(params["src"], [])
+                    if r.get("session_id") not in ids]
+            if self.short_copy == name(m.group(2)) and kept:
+                kept = kept[:-1]  # a copy that read a stale replica
+            self.tables[name(m.group(1))]["parts"].setdefault(params["src"], []).extend(kept)
         elif m := re.match(r"INSERT INTO (`\S+`)", sql):
-            rows = data.count(b"\n") + 1
-            src = re.search(rb'"source":"(\w+)"', data)
             parts = self.tables[name(m.group(1))]["parts"]
-            key = src.group(1).decode() if src else ""
-            parts[key] = parts.get(key, 0) + rows
+            for line in data.decode().splitlines():
+                row = json.loads(line)
+                parts.setdefault(row.get("source", ""), []).append(row)
         elif m := re.match(r"ALTER TABLE (`\S+`) REPLACE PARTITION '(\w+)' FROM (`\S+`)", sql):
-            self.tables[name(m.group(1))]["parts"][m.group(2)] = self.tables[name(m.group(3))]["parts"][m.group(2)]
+            src_rows = self.tables[name(m.group(3))]["parts"][m.group(2)]
+            self.tables[name(m.group(1))]["parts"][m.group(2)] = [dict(r) for r in src_rows]
         elif m := re.match(r"ALTER TABLE (`\S+`) DROP PARTITION '(\w+)'", sql):
             self.tables[name(m.group(1))]["parts"].pop(m.group(2), None)
         elif m := re.match(r"ALTER TABLE (`\S+`) ADD COLUMN IF NOT EXISTS `(\w+)`", sql):
@@ -148,66 +204,204 @@ class FakeClickHouse:
         return ""
 
 
-def _tables(questions=2):
+def _tables(sessions=None, questions=None, skill="rde", success=True):
+    """Warehouse rows for sessions {id: questions}; each invoked `skill` (None: no skill at all)."""
+    if sessions is None:
+        sessions = {"s": questions} if questions is not None else {"s1": 2}
     t = {k: [] for k in warehouse.TABLES}
     t["de_topics"] = [{"id": "privacy", "label": "Privacy", "description": None, "sort_order": 1}]
-    t["questions"] = [{"qid": f"q{i}", "session_id": "s"} for i in range(questions)]
-    t["warehouse_load"] = [{"loaded_at": "2026-09-24T12:00:00.000Z", "transcripts": 1, "sessions": 0}]
+    for sid, n in sessions.items():
+        t["sessions"].append({"session_id": sid})
+        t["questions"] += [{"qid": f"{sid}:q{i}", "session_id": sid} for i in range(n)]
+        if skill:
+            t["skill_invocations"].append({"session_id": sid, "invocation_no": 0, "skill": skill, "success": success,
+                                           "status": "ok" if success else "error"})
+    t["warehouse_load"] = [{"loaded_at": "2026-09-24T12:00:00.000Z", "transcripts": 1, "sessions": len(sessions)}]
     return t
+
+
+def _merge(*parts):
+    out = {k: [] for k in warehouse.TABLES}
+    for p in parts:
+        for k, rows in p.items():
+            if k in ("de_topics", "de_layers", "warehouse_load"):
+                out[k] = rows
+            else:
+                out[k] += rows
+    return out
 
 
 ANA = clickhouse.Identity("aaaa", "ana@example.com", "ana-laptop")
 BO = clickhouse.Identity("bbbb", "bo@example.com", "bo-desktop")
 URL = "https://u:p@h:8443/sessions"
+RDE = ("rde",)
 
 
-def test_each_load_replaces_its_own_rows_and_nobody_elses(monkeypatch):
+def sync(tables, ident_, read=None, full=False):
+    read = {r["session_id"] for r in tables["sessions"]} if read is None else read
+    return clickhouse.sync(tables, Target.from_url(URL), ident_, read, RDE, full=full, log=None)
+
+
+def test_each_machine_changes_only_its_own_rows(monkeypatch):
     ch = FakeClickHouse()
     monkeypatch.setattr(clickhouse, "Client", ch)
-    clickhouse.load(_tables(2), Target.from_url(URL), ANA, log=None)
-    clickhouse.load(_tables(3), Target.from_url(URL), BO, log=None)
-    assert ch.tables["questions"]["parts"] == {"aaaa": 2, "bbbb": 3}
-    clickhouse.load(_tables(5), Target.from_url(URL), ANA, log=None)  # Ana again: her rows replaced, Bo's kept
-    assert ch.tables["questions"]["parts"] == {"aaaa": 5, "bbbb": 3}
+    sync(_tables({"a1": 2}), ANA, full=True)
+    sync(_tables({"b1": 3}), BO, full=True)
+    assert ch.held("questions") == {"aaaa": 2, "bbbb": 3}
+    sync(_tables({"a1": 5}), ANA, full=True)  # Ana again: her rows replaced, Bo's kept
+    assert ch.held("questions") == {"aaaa": 5, "bbbb": 3}
     assert "ALTER TABLE `sessions`.`questions` REPLACE PARTITION 'aaaa' FROM `sessions`.`questions__load_aaaa`" in ch.sql
-    assert ch.tables["de_topics"]["parts"] == {"": 1}  # the taxonomy: the same for everyone, swapped whole
-    clickhouse.load(_tables(0), Target.from_url(URL), BO, log=None)  # no questions left: drop, not REPLACE
-    assert ch.tables["questions"]["parts"] == {"aaaa": 5}
-    assert not any("__load" in n for n in ch.tables)  # staging never outlives a load
-    first_view = next(i for i, x in enumerate(ch.sql) if x.startswith("CREATE OR REPLACE VIEW"))
-    assert sum(x.startswith("CREATE OR REPLACE VIEW") for x in ch.sql[first_view:]) >= len(clickhouse.VIEWS)
-    assert clickhouse.forget(Target.from_url(URL), ANA) and ch.tables["questions"]["parts"] == {}
+    assert ch.held("de_topics") == {"": 1}  # the taxonomy: the same for everyone
+    assert not any("__load" in n for n in ch.tables)  # staging never outlives a sync
+    assert sum(x.startswith("CREATE OR REPLACE VIEW") for x in ch.sql) >= len(clickhouse.VIEWS)
+    first_sessions = next(i for i, x in enumerate(ch.sql) if x.startswith("ALTER TABLE `sessions`.`sessions` REPLACE"))
+    assert all(not x.startswith("ALTER TABLE") or "warehouse_load" in x or "de_" in x
+               for x in ch.sql[first_sessions + 1:first_sessions + 3])  # `sessions` is written after the rest
 
 
-def test_a_table_from_before_per_source_loads_is_rebuilt(monkeypatch):
+def test_the_hook_updates_one_session_and_leaves_every_other_alone(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 2, "a2": 1}), ANA, full=True)
+    sync(_tables({"b1": 3}), BO, full=True)
+    res = sync(_tables({"a2": 4}), ANA)  # a2 ended again: updated
+    assert res["written"] == ["a2"] and res["removed"] == [] and res["held"] == 2
+    assert ch.sessions("questions", "aaaa") == {"a1", "a2"} and len(ch.rows_of("questions", "aaaa")) == 6
+    assert ch.held("questions")["bbbb"] == 3
+    sync(_tables({"a3": 1}), ANA)  # a new session: added
+    assert ch.sessions("sessions", "aaaa") == {"a1", "a2", "a3"}
+    res = sync(_tables({"a1": 1}, skill=None), ANA)  # a1 read again, no longer runs rde: taken out
+    assert res["removed"] == ["a1"] and ch.sessions("sessions", "aaaa") == {"a2", "a3"}
+    assert ch.held("sessions")["bbbb"] == 1
+    (row,) = ch.rows_of("warehouse_load", "aaaa")
+    assert (row["sessions"], row["transcripts"], row["skills"], row["since"]) == (2, 2, "rde", "all")
+
+
+def test_a_session_not_read_this_time_keeps_its_history(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 2, "a2": 1}), ANA, full=True)
+    # a1's transcript is gone (Claude Code prunes old ones), or outside --since: a full sync must not take it out
+    res = sync(_tables({"a2": 1}), ANA, full=True)
+    assert res["removed"] == [] and ch.sessions("sessions", "aaaa") == {"a1", "a2"}
+
+
+def test_what_an_older_version_shared_is_taken_out(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    # as the previous version did: every session shared, rde or not, no scope recorded
+    everything = _merge(_tables({"a1": 1}), _tables({"x1": 2}, skill="dataviz"), _tables({"x2": 1}, skill=None))
+    clickhouse.load(everything, Target.from_url(URL), ANA, log=None)
+    assert ch.sessions("sessions", "aaaa") == {"a1", "x1", "x2"}
+    res = sync(_tables({"a1": 1}), ANA)  # the hook, after the upgrade: one rde session ends
+    assert sorted(res["stale"]) == ["x1", "x2"] and ch.sessions("sessions", "aaaa") == {"a1"}
+    assert ch.sessions("questions", "aaaa") == {"a1"} and ch.sessions("skill_invocations", "aaaa") == {"a1"}
+    (row,) = ch.rows_of("warehouse_load", "aaaa")
+    assert row["skills"] == "rde" and row["sessions"] == 1  # the marker is written once the partition matches it
+
+
+def test_a_rejected_or_failed_skill_call_does_not_share_the_session(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    res = sync(_tables({"a1": 3}, success=False), ANA)
+    assert res["written"] == [] and "sessions" not in ch.tables
+
+
+def test_a_session_that_never_ran_rde_costs_no_request(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    t = Target.from_url(URL)
+    assert clickhouse.needs_sync(t, ANA, {"x1"}, set(), RDE)  # no record yet: ask what is shared (source hash only)
+    sync(_tables({"x1": 1}, skill=None), ANA)
+    assert ch.connections == 1 and not any(x.startswith(("INSERT", "ALTER", "CREATE")) for x in ch.sql)
+    assert "sessions" not in ch.tables and "warehouse_load" not in ch.tables  # nothing written, not even a load row
+    assert not clickhouse.needs_sync(t, ANA, {"x2"}, set(), RDE)  # now known: nothing shared, scope unchanged
+    sync(_tables({"a1": 1}), ANA)
+    assert clickhouse.needs_sync(t, ANA, {"a1"}, set(), RDE)  # a shared session read again: it may have to go
+    # a changed scope alone is no reason to call: that waits for a pass with something to share, or --rescope
+    assert not clickhouse.needs_sync(t, ANA, {"x2"}, set(), ("dataviz",))
+
+
+def test_tables_from_before_per_source_loads(monkeypatch):
     old = {"qid", "session_id"}  # no `source`: it held only the last loader's rows
-    ch = FakeClickHouse(tables={"questions": FakeClickHouse.table(f"{clickhouse.MARK} · old", old, {"": 7}),
+    ch = FakeClickHouse(tables={"questions": FakeClickHouse.table(f"{clickhouse.MARK} · old", old, {"": [{"qid": "q"}]}),
                                 "unrelated": FakeClickHouse.table("", {"x"})})
     monkeypatch.setattr(clickhouse, "Client", ch)
-    clickhouse.load(_tables(2), Target.from_url(URL), ANA, log=None)
-    assert ch.tables["questions"]["parts"] == {"aaaa": 2} and "source" in ch.tables["questions"]["columns"]
+    with pytest.raises(ClickHouseError, match="run a full load first"):
+        sync(_tables({"a1": 1}), ANA)  # the hook: not with a partial view of the machine
+    sync(_tables({"a1": 2}), ANA, full=True)
+    assert ch.held("questions") == {"aaaa": 2} and "source" in ch.tables["questions"]["columns"]
     assert "EXCHANGE TABLES `sessions`.`questions__rebuild` AND `sessions`.`questions`" in ch.sql
     assert "questions__rebuild" not in ch.tables and "unrelated" in ch.tables
     assert not any("unrelated" in x for x in ch.sql)  # never touches what is not its own
     ch.tables["questions"]["columns"].discard("reask_of")  # a newer version's column: added, nothing dropped
-    clickhouse.load(_tables(2), Target.from_url(URL), ANA, log=None)
+    sync(_tables({"a1": 2}), ANA)
     assert "ALTER TABLE `sessions`.`questions` ADD COLUMN IF NOT EXISTS `reask_of` Nullable(String)" in ch.sql
 
 
-def test_load_refuses_what_it_did_not_create_and_a_short_insert(monkeypatch):
-    t = Target.from_url(URL)
+def test_what_it_did_not_create_a_short_copy_and_a_short_insert_are_refused(monkeypatch):
     monkeypatch.setattr(clickhouse, "Client", FakeClickHouse(tables={"sessions": FakeClickHouse.table("x", {"a"})}))
     with pytest.raises(ClickHouseError, match="not created by convo-analysis"):
-        clickhouse.load(_tables(), t, ANA, log=None)
+        sync(_tables(), ANA)
     monkeypatch.setattr(clickhouse, "Client", FakeClickHouse(databases=()))
     with pytest.raises(ClickHouseError, match="does not exist"):
-        clickhouse.load(_tables(), t, ANA, log=None)
+        sync(_tables(), ANA)
     ch = FakeClickHouse(short="questions")
     monkeypatch.setattr(clickhouse, "Client", ch)
-    with pytest.raises(ClickHouseError, match="2 sent; the live table is untouched"):
-        clickhouse.load(_tables(2), t, ANA, log=None)
+    with pytest.raises(ClickHouseError, match="the live table is untouched"):
+        sync(_tables({"a1": 2}), ANA)
     assert not any("REPLACE PARTITION 'aaaa' FROM `sessions`.`questions__load" in x for x in ch.sql)
-    assert "questions__load_aaaa" not in ch.tables
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 2, "a2": 3}), ANA)
+    ch.short_copy = "questions"  # the copy of the live partition came back short (a replica still catching up)
+    with pytest.raises(ClickHouseError, match="copied"):
+        sync(_tables({"a1": 1}), ANA)
+    assert len(ch.rows_of("questions", "aaaa")) == 5 and "questions__load_aaaa" not in ch.tables
+
+
+def test_forget(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 1, "a2": 2}), ANA)
+    sync(_tables({"b1": 1}), BO)
+    assert clickhouse.forget(Target.from_url(URL), ANA, ["a2", "zz"]) == (["a2"], ["zz"])
+    assert ch.sessions("sessions", "aaaa") == {"a1"} and ch.held("sessions")["bbbb"] == 1
+    (row,) = ch.rows_of("warehouse_load", "aaaa")
+    assert row["sessions"] == 1  # the load row follows what is left
+    sync(_tables({"a1": 1, "a2": 5}), ANA, full=True)  # a withdrawn session is not shared again by a later sync
+    assert ch.sessions("sessions", "aaaa") == {"a1"}
+    assert clickhouse.forget(Target.from_url(URL), ANA) == (["a1"], [])
+    assert "aaaa" not in ch.held("sessions") and ch.held("sessions") == {"bbbb": 1}
+    assert "aaaa" not in ch.held("warehouse_load")  # nothing held: no row saying who loaded
+    sync(_tables({"a1": 1, "a3": 1}), ANA)  # a new session is shared; the forgotten ones stay out
+    assert ch.sessions("sessions", "aaaa") == {"a3"}
+    clickhouse.reshare(Target.from_url(URL), "aaaa", ["a1"])  # named again: shared again
+    sync(_tables({"a1": 1}), ANA)
+    assert ch.sessions("sessions", "aaaa") == {"a1", "a3"}
+
+
+def test_the_taxonomy_is_rewritten_only_when_it_changed(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 1}), ANA)
+    before = sum("de_topics" in x and x.startswith(("EXCHANGE", "RENAME")) for x in ch.sql)
+    sync(_tables({"a1": 2}), ANA)
+    assert sum("de_topics" in x and x.startswith(("EXCHANGE", "RENAME")) for x in ch.sql) == before
+
+
+def test_only_the_sessions_that_ran_the_skill_are_shared():
+    t = _merge(_tables({"r1": 1, "r2": 2}), _tables({"x1": 5}, skill="dataviz"),
+               _tables({"p1": 1}, skill="agent-skills:rde"), _tables({"n1": 1}, skill="rde", success=False))
+    assert warehouse.sessions_with_skill(t, RDE) == {"r1", "r2", "p1"}
+    assert warehouse.sessions_with_skill(t, ("*",)) == {"r1", "r2", "x1", "p1", "n1"}
+    assert warehouse.sessions_with_skill(t, ("agent-skills:rde",)) == {"p1"}  # a plugin prefix: that plugin only
+    only = warehouse.only_sessions(t, {"r1"}, RDE)
+    assert [r["session_id"] for r in only["questions"]] == ["r1"] and only["de_topics"] == t["de_topics"]
+    assert only["warehouse_load"][0]["sessions"] == 1 and only["warehouse_load"][0]["skills"] == "rde"
+    assert only["warehouse_load"][0]["transcripts"] == 1  # not how many transcripts the machine has
+    assert clickhouse.skills_setting(override="rde, dataviz") == ("dataviz", "rde")
+    assert clickhouse.skills_setting(override="") == ("rde",)
 
 
 def test_who_is_loading(tmp_path, monkeypatch):
@@ -247,3 +441,251 @@ def test_the_hook_does_nothing_until_something_is_set_up(tmp_path, monkeypatch, 
     monkeypatch.setattr(warehouse, "build", lambda *a, **k: pytest.fail("parsed transcripts with nothing to load"))
     assert cli.main(["warehouse", "--load=auto", "--clickhouse=auto", "--claude-dir", str(tmp_path)]) == 0
     assert "Nothing to load" in capsys.readouterr().err
+
+
+def _hook_setup(tmp_path, monkeypatch, fake):
+    """A machine with one session (the interview fixture, which invokes the skill `demo`), queued by the hook."""
+    from test_questions import interview_session
+    claude = tmp_path / "claude"
+    claude.mkdir()
+    skill = tmp_path / "skill"
+    (skill / "references").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# demo\n")
+    transcript = interview_session(claude, skill)
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    (queue / transcript.stem).write_text(f"{transcript}\n")
+    env = tmp_path / "ch.env"
+    env.write_text("CLICKHOUSE_URL=https://u:p@h:8443/sessions\nCLICKHOUSE_PERSON=ana@example.com\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(clickhouse, "_machine_id", lambda: "machine-1")
+    monkeypatch.setattr(clickhouse, "Client", fake)
+    monkeypatch.setattr(warehouse, "running", lambda container=None: False)
+    args = ["warehouse", "--clickhouse=auto", "--session-queue", str(queue), "--env-file", str(env),
+            "--claude-dir", str(claude), "--out", str(tmp_path / "out")]
+    return transcript, queue, args
+
+
+def test_the_hook_exports_the_session_that_ended_and_clears_it_from_the_queue(tmp_path, monkeypatch):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    source = clickhouse.source_id(tmp_path / "claude")
+    assert ch.sessions("sessions", source) == {transcript.stem} and not list(queue.iterdir())
+    assert ch.sessions("questions", source) == {transcript.stem}
+
+
+def test_a_session_that_did_not_invoke_the_skill_is_not_shared(tmp_path, monkeypatch):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    _transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args) == 0  # default skills: rde — the fixture only invoked `demo`
+    assert "sessions" not in ch.tables and not list(queue.iterdir())  # nothing written at all; the entry is done
+
+
+def test_a_failed_load_keeps_the_session_queued(tmp_path, monkeypatch):
+    from session_analytics import cli
+    _transcript, queue, args = _hook_setup(tmp_path, monkeypatch, FakeClickHouse(databases=()))
+    assert cli.main(args + ["--skills", "demo"]) == 1
+    assert len(list(queue.iterdir())) == 1  # the next session end retries it
+
+
+def test_the_check_looks_only_at_the_shared_sessions(tmp_path, monkeypatch):
+    from test_questions import interview_session
+
+    from session_analytics import reconcile
+    claude = tmp_path / "claude"
+    claude.mkdir()
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# demo\n")
+    interview_session(claude, skill)
+    monkeypatch.setattr(reconcile, "warehouse_counts", lambda source: ({}, None))
+    assert len(reconcile.check(None, claude)["missing"]) == 1  # the warehouse lacks it
+    res = reconcile.check(None, claude, only=set())  # but it was never meant to be there
+    assert res["missing"] == [] and res["checked"] == 0
+
+
+def test_a_transcript_that_does_not_read_is_left_alone_and_stays_queued(tmp_path, monkeypatch):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args + ["--skills", "demo"]) == 0  # shared once
+    source = clickhouse.source_id(tmp_path / "claude")
+    assert ch.sessions("sessions", source) == {transcript.stem}
+    (queue / transcript.stem).write_text(f"{transcript}\n")  # it ends again, and this time it cannot be read
+    real = warehouse.parse_session
+    monkeypatch.setattr(warehouse, "parse_session", lambda *a, **k: (_ for _ in ()).throw(ValueError("mid-write")))
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    assert ch.sessions("sessions", source) == {transcript.stem}  # not taken out
+    assert [q.name for q in queue.iterdir()] == [transcript.stem]  # retried next time
+    monkeypatch.setattr(warehouse, "parse_session", real)
+    assert cli.main(args + ["--skills", "demo"]) == 0 and not list(queue.iterdir())
+
+
+def test_the_queue_ignores_junk_and_keeps_an_entry_rewritten_meanwhile(tmp_path, monkeypatch):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    (queue / ".DS_Store").write_bytes(b"\x00\x05\x16\x07\xff\xfe binary")  # Finder was here
+    (queue / "notes.txt").write_text("hello")
+    real = warehouse.run_warehouse
+
+    def ended_again(*a, **k):  # the session ends once more while its export runs
+        res = real(*a, **k)
+        entry = queue / transcript.stem
+        entry.write_text(f"{transcript}\n")
+        os.utime(entry, ns=(entry.stat().st_mtime_ns + 10**9,) * 2)
+        return res
+    monkeypatch.setattr(warehouse, "run_warehouse", ended_again)
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    assert sorted(q.name for q in queue.iterdir()) == [".DS_Store", transcript.stem, "notes.txt"]
+
+
+def test_an_unusable_connection_string_keeps_the_queue(tmp_path, monkeypatch):
+    from session_analytics import cli
+    _transcript, queue, args = _hook_setup(tmp_path, monkeypatch, FakeClickHouse())
+    env = tmp_path / "ch.env"
+    env.write_text("CLICKHOUSE_URL=postgres://nope@host/db\n")
+    assert cli.main(args) == 1 and len(list(queue.iterdir())) == 1
+
+
+def test_a_queued_session_without_its_transcript_is_left_alone(tmp_path, monkeypatch):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args + ["--skills", "demo"]) == 0  # shared
+    source = clickhouse.source_id(tmp_path / "claude")
+    moved = transcript.with_name("moved.jsonl.bak")
+    transcript.rename(moved)
+    (queue / transcript.stem).write_text(f"{transcript}\n")
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    assert ch.sessions("sessions", source) == {transcript.stem} and not list(queue.iterdir())
+
+
+def test_a_second_claude_config_dir_goes_under_its_own_source(tmp_path, monkeypatch):
+    from test_questions import interview_session
+
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    _transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    other = tmp_path / "claude-work"
+    other.mkdir()
+    theirs = interview_session(other, tmp_path / "skill", sid="eeeeeeee-0000-0000-0000-00000000000b")
+    (queue / theirs.stem).write_text(f"{theirs}\n")
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    mine, work = clickhouse.source_id(tmp_path / "claude"), clickhouse.source_id(other)
+    assert ch.sessions("sessions", work) == {theirs.stem} and theirs.stem not in ch.sessions("sessions", mine)
+
+
+def test_forget_one_session(tmp_path, monkeypatch, capsys):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, _queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    source = clickhouse.source_id(tmp_path / "claude")
+    env, claude = args[args.index("--env-file") + 1], args[args.index("--claude-dir") + 1]
+    assert cli.main(["warehouse", "--clickhouse-forget", "--session", transcript.stem, "--env-file", env,
+                     "--claude-dir", claude]) == 0
+    assert ch.sessions("sessions", source) == set() and "Took 1 session(s)" in capsys.readouterr().out
+
+
+def test_the_hook_catches_up_a_session_whose_end_it_missed(tmp_path, monkeypatch):
+    from test_questions import interview_session
+
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args + ["--skills", "demo"]) == 0  # the first pass records when it ran
+    missed = interview_session(tmp_path / "claude", tmp_path / "skill", sid="eeeeeeee-0000-0000-0000-00000000000c")
+    source = clickhouse.source_id(tmp_path / "claude")
+    assert not list(queue.iterdir())  # its SessionEnd never fired: nothing queued
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    assert missed.stem not in ch.sessions("sessions", source)  # written to just now: maybe still going, left alone
+    idle = time.time() - 6 * 60
+    os.utime(missed, (idle, idle))  # six minutes later, it has gone quiet
+    before = len(ch.sql)
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    assert missed.stem in ch.sessions("sessions", source)
+    synced = clickhouse.read_cache(Target.from_url(URL), source)["synced"]
+    assert set(synced) == {transcript.stem, missed.stem} and len(ch.sql) > before
+    before = len(ch.sql)
+    assert cli.main(args + ["--skills", "demo"]) == 0  # nothing new: no request at all
+    assert len(ch.sql) == before
+
+
+def test_a_skill_call_still_waiting_at_the_prompt_does_not_count():
+    pending = _tables({"a1": 1})
+    pending["skill_invocations"][0].update(success=None, status=None)  # no tool_result yet
+    assert warehouse.sessions_with_skill(pending, RDE) == set()
+
+
+def test_rows_an_interrupted_write_left_behind_are_found_and_taken_out(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 2, "a2": 1}), ANA)
+    ch.tables["sessions"]["parts"]["aaaa"] = [r for r in ch.rows_of("sessions", "aaaa") if r["session_id"] != "a2"]
+    ch.tables["skill_invocations"]["parts"]["aaaa"] = [r for r in ch.rows_of("skill_invocations", "aaaa")
+                                                       if r["session_id"] != "a2"]  # a2: only its questions remain
+    res = sync(_tables({"a1": 2}), ANA)
+    assert "a2" in res["stale"] and ch.sessions("questions", "aaaa") == {"a1"}
+
+
+def test_ids_travel_in_the_body_not_the_url(monkeypatch):
+    ch = FakeClickHouse()
+    sent = []
+    real_run = ch.run
+
+    def run(sql, data=None, params=None, settings=None, compress=False):
+        sent.append(params or {})
+        return real_run(sql, data, params, settings, compress)
+    ch.run = run
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({f"s{i:04d}": 1 for i in range(300)}), ANA)
+    sync(_tables({}, skill=None), ANA, read={f"s{i:04d}" for i in range(300)})  # all 300 taken out
+    assert not any("ids" in p for p in sent) and max(len(str(p)) for p in sent) < 200
+
+
+def test_a_changed_scope_waits_for_rescope(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 1, "a2": 1}), ANA)
+    typo = clickhouse.sync(_tables({}), Target.from_url(URL), ANA, set(), ("rdee",), log=None)
+    assert typo["scope_pending"] == {"from": "rde", "to": "rdee", "would_take_out": 2} and typo["removed"] == []
+    assert ch.sessions("sessions", "aaaa") == {"a1", "a2"}  # nothing lost to a typo
+    done = clickhouse.sync(_tables({}), Target.from_url(URL), ANA, set(), ("dataviz",), rescope=True, log=None)
+    assert sorted(done["removed"]) == ["a1", "a2"] and "aaaa" not in ch.held("sessions")
+
+
+def test_an_older_version_does_not_replace_a_newer_taxonomy(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 1}), ANA)
+    ch.tables["de_topics"]["comment"] = f"{clickhouse.MARK} 99.0.0 · written by a newer version"
+    newer = list(ch.rows_of("de_topics"))
+    t = _tables({"a1": 2})
+    t["de_topics"] = [{"id": "other", "label": "Other", "description": None, "sort_order": 9}]
+    sync(t, ANA)
+    assert ch.rows_of("de_topics") == newer
+
+
+def test_forget_a_session_whose_transcript_is_gone_and_share_it_again(tmp_path, monkeypatch):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    source = clickhouse.source_id(tmp_path / "claude")
+    env, claude = args[args.index("--env-file") + 1], args[args.index("--claude-dir") + 1]
+    kept = transcript.read_text()
+    transcript.unlink()  # Claude Code pruned it; the shared rows stay by design
+    assert cli.main(["warehouse", "--clickhouse-forget", "--session", transcript.stem, "--env-file", env,
+                     "--claude-dir", claude]) == 0
+    assert ch.sessions("sessions", source) == set()
+    transcript.write_text(kept)
+    (queue / transcript.stem).write_text(f"{transcript}\n")
+    assert cli.main(args + ["--skills", "demo"]) == 0  # it ends again: withdrawn, so it stays out
+    assert ch.sessions("sessions", source) == set()
+    assert cli.main(["warehouse", "--clickhouse", "--session", str(transcript), "--skills", "demo", "--env-file", env,
+                     "--claude-dir", claude, "--out", str(tmp_path / "out2")]) == 0  # named: shared again
+    assert ch.sessions("sessions", source) == {transcript.stem}
