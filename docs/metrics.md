@@ -286,3 +286,189 @@ transcripts, only inside the window; `duplicate_requests_removed`), `sessions` (
 attributed requests, tool calls and cost), `slash_commands`, `agent_types`, `error_categories`, `programs`,
 `mcp_servers`, `heatmap` (requests by weekday × hour), `entrypoints`, `claude_code_versions`,
 `cost_components`, `insights`.
+
+## `trace`
+
+`steps`: every prompt, skill invocation, Claude API request, tool call and notable event, in time order.
+Each step has `i`, `t` (epoch ms), `k` (`prompt`, `skill`, `request`, `tool`, `event`), `turn`, `scope`,
+`agent`, and by kind:
+
+- `prompt`: `trigger`, `text`
+- `skill`: `name`, `mode`, `via`, `args`, `ok`, `version` (fingerprint)
+- `request`: `model`, `in`, `out`, `cr` (cache read), `cw` (cache write), `ctx` (context sent), `think`
+  (thinking characters), `text` (what the model said), `tools`, `usd`, `lat` (latency to first block), `dur`,
+  `stop`, `skill` (attributed), `miss` (cache-miss reason)
+- `tool`: `name`, `id`, `status`, `dur`, `input`, `result`, `sigs` (CLI signatures), `prog` (main program),
+  `res` (skill documents touched, `"<op> <owner>:<path>"`, e.g. `read rde:references/state.md`,
+  `search mb:dashboard/SKILL.md`; see `skill_runs.skill_files`), `skill`, `batch`, `denial`
+- `event`: `what` (`compaction`, `api_error`, `interrupt`), `text`
+
+## `skill_runs`
+
+One entry per skill run (an invocation plus the follow-up turns it steered, until another skill takes over):
+
+| Field | Meaning |
+|---|---|
+| `run_id`, `skill`, `canonical`, `mode`, `via`, `scope`, `agent_id`, `inherited` | Which run, and how it was invoked |
+| `args`, `prompt` | What the run was asked |
+| `version` | `{status: commit|working-tree|installed|unknown, commit, sha, date, subject, source, label}`; `fingerprint` is the hash of the injected SKILL.md body |
+| `start_ms`, `end_ms`, `end_reason`, `duration_ms`, `active_ms` | Span, and why it ended |
+| `turns`, `turn_count`, `follow_up_turns`, `nested_skills`, `failed_invocations` | Turns covered (each `attributed` or follow-up) and skills invoked inside it |
+| `requests`, `attributed_requests`, token fields, `cost_usd`, `attributed_cost_usd`, `cache_hit_ratio` | Claude API usage |
+| `context_start`, `context_end`, `context_peak`, `latency_p50_ms`, `models` | Context and latency |
+| `tool_calls`, `main_tool_calls`, `tools`, `tool_errors`, `error_rate`, `error_categories`, `errors`, `denials`, `interrupted`, `subagents` | Tool usage and failures |
+| `cli`, `cli_calls`, `help_lookups`, `retries_after_error` | CLI subcommands (`mb transform create`) with calls, errors and `--help` lookups |
+| `skill_files` | Every skill document the run touched and how much of it Claude was shown (below) |
+| `resources_read`, `playbooks`, `references` | The skill's own files read or searched, in order of first access |
+| `docs_read`, `docs_total`, `docs_never`, `cli_docs_read`, `doc_tokens`, `doc_rereads`, `doc_listings`, `doc_unprompted`, `doc_version_mismatches` | Summary numbers from `skill_files` for tables and medians |
+| `changes_seen` | What the commit that ran changed against the previous commit touching the skill, per file, and whether this run was shown those lines |
+| `expected_by_playbooks`, `missing_expected`, `not_named_by_playbooks` | Files the playbooks' "Read first:" lines name, which of them were never read, and which were read without being named |
+| `questions`, `questions_asked`, `question_calls` | AskUserQuestion calls, with your answers |
+| `objects`, `objects_created`, `files_written` | Objects the CLI reported (`{id, name, type, verb}`), files written |
+| `final_message`, `last_stop_reason` | The run's hand-back |
+| `checks`, `checks_passed`, `checks_failed` | `{id, desc, status: pass|fail|n/a|error, detail}` per declared check |
+| `steps` | Indices into `trace.steps` |
+
+### `skill_runs[].skill_files`
+
+Which documents entered the run's context, measured by what Claude was shown rather than by what a command
+meant to print. Owners are the run's skill (`rde`), other installed skills, and CLIs that bundle skill docs
+(`mb:dashboard/SKILL.md`, from `…/@metabase/cli/skill-data/`, found through `mb skills path|get <name>`,
+variables such as `D=$(mb skills path x | jq -r …)`, or the path itself).
+
+- **Evidence**: SKILL.md's body is injected whole by the invocation; the Read tool reports the lines it
+  returned; a Bash or Grep output is matched line by line against the file's text at the version the run is
+  labelled with (distinctive lines exactly, blank and repeated lines between two shown ones filled in), so
+  `sed -n '/## Tabs/,/^## /p'`, `grep -n -A12`, `head -40` and `cat` are all measured the same way.
+- `accesses`: one row per tool call and document, in order: `t`, `dt` (ms since the invocation), `call`,
+  `owner`, `path`, `kind` (directory, or the owner for other owners' docs), `op` (`inject`, `read`, `search`,
+  `list`, `resolve`, `stat`), `via` (`Read`, `cat`, `sed`, `grep`, `mb skills get`…), `detail` (the command
+  without its file arguments), `status`, `lines` (`[[first, last], …]` shown), `seen`, `total`, `coverage`,
+  `how` (`injected`, `full`, `partial`, `hits`, `not shown`, `no hits`, `missing`, `listed`, `resolved`,
+  `searched (n with hits)` for a search over a directory), `sections` (Markdown headings the shown lines fall
+  under, for partial reads), `chars`, `version`, `first`, `named_by`, `found_by`.
+- `files`: one row per document: `order` (0 is SKILL.md's injection), `first_dt`, `accesses`, `reads`,
+  `searches`, `via`, `lines` (union shown), `coverage`, `how`, `sections`, `rereads` (reads after the whole
+  file had been shown), `chars` / `tokens` (≈ chars ÷ 4, re-reads counted again), `unique_chars`,
+  `named_by` (documents shown earlier whose shown lines name this one: a path, a relative Markdown link, or
+  `mb skills path <name>`), `found_by` (`named`, `listing`, `search`, `resolved path`, `unprompted`),
+  `version`, `missing`.
+- `version` (per access and file): `match` (the text shown is the pinned version's), `older <commit>` /
+  `newer <commit>` (another commit's), `uncommitted` (the source's working tree), `installed copy` (a copy on
+  disk that matches no commit), `differs` (a whole-file read printed text matching no version found),
+  `changed since` / `as installed now` for other owners' docs, checked against what is installed today.
+  Only whole-file reads can be checked.
+- `inventory`: `files` of the skill at that version (`git ls-tree`, or the directory), `never` (shown to
+  this run: none of their lines).
+- `totals`: `own_shown`, `own_inventory`, `own_full`, `own_partial`, `other_files`, `other_owners`, `reads`,
+  `searches`, `listings`, `resolves`, `rereads`, `missing`, `version_mismatches`, `body_chars`, `doc_chars`,
+  `doc_tokens`, `unique_doc_chars`, `unprompted`.
+
+`changes_seen.files[]`: `path`, `added`, `removed`, `ranges` (lines the change added or rewrote, in the new
+version's numbering), `changed_lines`, `seen_lines`, `frontmatter_lines`, `deletions`, and `status`: `seen`,
+`partly seen`, `not in the lines read`, `file not read`, `deletions only`, or `frontmatter only` (SKILL.md's
+frontmatter decides when the skill triggers and is never injected).
+
+`skill_files.csv` flattens `files` across runs.
+
+## `interview`
+
+Every question Claude put to you, from `questions.py`. Questions inside a skill run are named by that skill's
+own topics (`checks/<skill>.json`, `"interview"`); the rest by generic ones (permission, scope, definition,
+setup, data handling, preference).
+
+- **Channels** (`kind`): `ask` (AskUserQuestion), `prose` (a sentence ending in "?" in the reply that ends a
+  turn; answered by the next prompt), `checkpoint` (a printed `[CHECKPOINT]` block with no AskUserQuestion
+  behind it). Prose offers ("Want me to …?") get the topic `offer`.
+- `questions[]`: `qid`, `t`, `dt`, `turn`, `run_id`, `skill`, `call`, `batch_size`, `batch_index`, `header`,
+  `question`, `options` (`label`, `description`, `preview`, `recommended` — "(Recommended)" in the label —
+  and `chosen`), `multi`, `form` (`confirm`, `choice`, `multi`, `offer`, `prose`, `checkpoint`),
+  `recommended_index`, `recommended_label`, `status`, `outcome` (`recommended`, `other option`, `picked` when
+  no recommendation was offered, `typed`, `typed + picked`, `no preference`, `declined`, `unanswered`,
+  `interrupted`, `error`; for prose `accepted`, `turned down`, `replied`, `unanswered`), `answer`, `typed`
+  (text typed instead of an option), `notes` (your notes on an answer), `feedback` (what you said when
+  declining), `reply` (the next prompt, for prose), `wait_ms`, `topic`, `topic_label`, `taxonomy`,
+  `before_create` (asked before the run's first `… create`), `checkpoint_block`, `after_error`, `reask_of`,
+  `words`, `has_numbers`, and `flags`: `no recommendation`, `recommendation not first`, `fewer than two
+  options`, `no measured numbers` (a topic marked `evidence` with no digits in the question or its reply),
+  `jargon: …`, `code in the question`, `asked again` (a topic marked `once`), `like an earlier question`,
+  `after an error`, `asked in prose` (when the skill says `"prose": "avoid"`), `checkpoint with no
+  AskUserQuestion`.
+- What a question is about in data-engineering terms (`semantics.py`, rules in `semantics/questions.json`):
+  `de_topic` / `de_topic_label` (`privacy`, `ownership`, `time`, `quality`, `delivery`, `business-logic`,
+  `sources`, `modeling`, `platform`, `operations`, `workflow`, `requirements`, `other`) and `layer` /
+  `layer_label` (`presentation`, `semantic`, `modeling`, `staging`, `source`, `platform`, `cross-cutting`).
+  Each rule list is tried on the header (the agent's own label), then the question text; the first match
+  wins, and a question neither matches takes its interview topic's `fallback`. `semantics_by` says what
+  decided each half, `<topic>/<layer>`: `header`, `question` or `fallback`.
+- Totals: `total`, `asked`, `calls` (rounds), `prose`, `checkpoints_unasked`, `answered`,
+  `recommended_offered`, `recommended_picked`, `recommended_rate`, `typed`, `no_preference`, `declined`,
+  `unanswered`, `prose_unanswered`, `flagged`, `reasked`, `wait_p50_ms` (per round), `wait_max_ms`,
+  `wait_total_ms`, `prose_wait_p50_ms`, `outcomes`, `flags`, `topics[]` (per topic: `asked`, `prose`,
+  `outcomes`, `offered`, `recommended`, `recommended_rate`, `wait_p50_ms`, `typed`, `answers`, `flags`),
+  `runs[]` (runs with questions: start and first create, for the interview map), `de_topics` and `layers`
+  (questions per data-engineering topic and per layer, by label).
+
+Each skill run carries its own `interview` (the same fields, plus `taxonomy` and `first_create_dt`) and the
+flat fields `questions_asked`, `question_calls`, `prose_questions`, `recommended_rate`, `typed_answers`,
+`unanswered_questions`, `question_wait_p50_ms`, `questions_reasked`, `questions_flagged`,
+`questions_before_create`, `first_question_dt`. Checks can match a call's questions with `topic` and `flag`.
+`questions.csv` has one row per question.
+
+## `shell.signatures`
+
+Per CLI signature (`mb card create`, `git commit`, `gh pr view`…): `calls` (Bash calls using it), `uses`
+(occurrences), `errors`, `error_rate`, `help_lookups`, `p50_ms`, `max_ms`. `shell.help_lookups` is the total.
+
+## Skill report (`skill.json`)
+
+Schema `convo-analysis/skill-v1`: `skill`, `scope`, `totals`, `checks` (ids and descriptions), `versions`
+(per version: `label`, `commit`, `date`, `subject`, `runs`, `median` and `mean` of the run metrics, `checks`
+pass/fail/n.a. and `rate`, `resources` read, `cli` per signature with `per_run`, `error_categories`,
+`inventory` (the skill's files at that version), `files` (per `owner:path`: `touched`, `shown`, `full`,
+`partial`, `not_shown`, median `coverage` / `order` / `first_dt` / `tokens`, `accesses`, `rereads`, `via`,
+`found_by`, `named_by`, `sections`, `mismatches`), `never` (files no run of the version was shown), and
+`changes` = commits and files changed since the previous version with runs, plus `exposure`: per changed
+file, the lines it gained and how many runs saw all, some or none of them), `files` (one row per file across
+versions, with `per_version` stats, `in_version` and `changed`), `runs` (one row per run),
+`details.<run_id>` (skill_files, changes_seen, cli, questions, objects, final message, errors, checks, turns,
+actions, steps), `failures` (tool errors grouped by what the message says), `insights`. `csv/skill_files.csv`
+has one row per run and file. `interview`: the skill's `taxonomy`, a `summary`, the `catalog` (per topic:
+`asked`, `prose`, `runs`, `offered`, `recommended`, `recommended_rate`, `typed`, `no_preference`,
+`declined`, `unanswered`, `reasked`, `wait_p50_ms`, `answers`, `headers`, `examples`, `once`, `must_ask`,
+and `per_version`), `questions` (every question of every run, with `version_key` and `commit`) and `typed`
+(answers typed instead of picked, with the options offered); each version also has `interview` totals.
+`csv/questions.csv` has one row per question.
+
+## Warehouse (Postgres)
+
+`session-analytics warehouse --up --load` writes and loads one table per kind of fact; `schema.sql` and
+`views.sql` sit beside the CSVs it loads, and every table and column that needs it carries a `COMMENT`.
+Keys: `sessions.session_id`; `turns (session_id, turn)`; `api_requests (session_id, request_no)`;
+`tool_calls (session_id, tool_use_id)` with `run_id` and `program`; `cli_calls (session_id, tool_use_id, seq)`
+with `signature` and `is_help`; `skill_invocations (session_id, invocation_no)`; `skill_runs.run_id` with
+`version`; `skill_run_checks (run_id, check_id)`; `skill_run_files (run_id, owner, path)`; `questions.qid`
+(`<session8>:<qid>`); `question_options (qid, option_no)`; `subagents (session_id, agent_id)`;
+`files_touched (session_id, path)`; `tool_errors (session_id, error_no)`; `de_topics.id` and `de_layers.id`
+(the taxonomy, with `label`, `description`, `sort_order`); `warehouse_load` (the load that produced
+the tables: `loaded_at`, `transcripts`, `sessions`, `since`, `generator_version`). `v_skill_versions` carries
+per-run averages (`avg_questions_asked`, `avg_prose_questions`, `avg_question_rounds`) beside the totals.
+`warehouse --check` (reconcile.py) recounts every session from its raw JSONL and compares — with Postgres, or after
+`--clickhouse` with ClickHouse; a session any of whose files was written after the load is live, not compared.
+`warehouse --clickhouse` (clickhouse.py) loads the same rows into a shared ClickHouse: text → `String`, integers →
+`Int64`, numerics → `Float64`, timestamps → `DateTime64(3, 'UTC')`, booleans → `Bool`; primary-key columns required
+and the table's `ORDER BY`, every other column `Nullable`; empty text is NULL, as in the Postgres load. Every table
+but `de_topics` and `de_layers` also has `source` (the loading machine and Claude config directory, hashed; the
+partition key: a load replaces its own partition) and `person`; `warehouse_load` has `machine` (host name) and one
+row per source, its latest load. `v_interview_questions` adds `person`. Run and question ids repeat across machines,
+so the ClickHouse views join them together with the session id. Its views have
+the same names and columns in ClickHouse SQL (medians are `quantileExactInclusive`, the interpolation Postgres's
+`percentile_cont` uses; rounding goes through Decimal so both round half away from zero). Views: `v_daily`, `v_skill_versions`, `v_check_rates`,
+`v_question_topics`, `v_question_semantics` (per skill, version, topic and layer: questions, asked, in prose,
+runs, recommended offered and taken, typed, came back empty, median wait), `v_interview_questions` (one row per
+question with friendly columns: `channel` as `AskUserQuestion` / `In prose` / `Checkpoint`, `de_topic`,
+`layer`, their sort orders, `classified_by`, `outcome_group`, the booleans `recommendation_offered`,
+`took_recommendation` — within offered — `typed_answer` and `came_back_empty`, `answer`, and `wait_s` for an
+answered AskUserQuestion), `v_question_outcomes`, `v_typed_answers`, `v_question_flags`, `v_skill_files`,
+`v_cli_signatures`, `v_tools`, `v_models`.
+

@@ -22,6 +22,27 @@ Arguments the user gave: `$ARGUMENTS`
 | another session: an id, a prefix, `latest`, or a transcript path | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" export <that reference>` |
 | to find a session first ("my sessions", "yesterday's session") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" list` (`--all` for every project), then export the one they mean |
 | several sessions: "this week", "last 30 days", "across projects" | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" rollup --since 7d` (`--all` for every project; `--since` takes 24h, 7d, 2w, or a date) |
+| how one skill behaves across sessions and versions ("how is rde doing", "did my change to <skill> work", "which version of <skill> fails more", "which files of <skill> get read") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" skill <name> --since 30d` |
+| everything in a local database, to query with SQL or explore in Metabase ("load my sessions into Postgres", "a local warehouse") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --up --load --check` (needs Docker; `--since 90d` to narrow; `--check` recounts every session from its raw transcript and compares — report whether it matched). Then give the connection: `postgresql://convo@127.0.0.1:55432/claude_sessions`, or `host.docker.internal:55432` from a Metabase in Docker |
+| the shared ClickHouse warehouse ("load / export / push my sessions into ClickHouse", "update the shared warehouse", "refresh the team dashboard") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse --check` — see **The shared warehouse** below. Report the rows loaded, whose they were, and whether the check matched |
+| to take their sessions out of the shared warehouse | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse-forget` (removes this machine's rows only) |
+| two runs of a skill side by side ("compare run X with run Y") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" compare <session>:<n> <session>:<n>` (run ids come from the reports) |
+
+### The shared warehouse
+
+Many people load into one ClickHouse database, each from their own machines. Every row carries `source` (this
+machine and Claude config directory, hashed) and `person` (`CLICKHOUSE_PERSON`, else the git email), and a load
+replaces only its own source's rows — never anyone else's — so it is safe to run as often as wanted.
+
+- **The connection string is the user's to enter.** It lives in `~/.config/convo-analysis/.env` (outside the
+  plugin, so an update keeps it). When the command says `CLICKHOUSE_URL is not set`, run
+  `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --init-env`, which creates that file from the
+  template, and ask the user to fill in `CLICKHOUSE_URL` there themselves (the JDBC string from the ClickHouse Cloud
+  console works as it is). Never ask for it in chat, and never read, print or edit that file.
+- **It reloads itself.** The plugin's SessionEnd hook loads the shared warehouse in the background whenever a session
+  ends, once `CLICKHOUSE_URL` is set; until then it does nothing.
+- **Say what gets shared** before a first load: prompt previews, questions and answers, command summaries, error
+  messages and file paths, readable by anyone who can read that database. Secret-looking strings are masked.
 
 Pass through any flags the user asked for:
 
@@ -51,10 +72,40 @@ open `report.md` or `session.json` just to repeat them. Lead with what the user 
 Keep it short; the files hold the detail. For a live session (the current one), say it is a snapshot
 that includes this export.
 
+### Skill development
+
+`skill <name>` finds every run of the skill (a run is the invocation plus the follow-up turns it steered) and
+labels each with the git commit of the skill that ran, by matching the injected SKILL.md against the skill's
+source repo (found under ~/dev and similar, or `--source <dir>`). It evaluates the checks in
+`checks/<name>.json` of the convo-analysis repo (or `--checks <file>`) on every run. Report per version: the
+median cost, tool calls, errors, questions and help lookups, the check pass rates, the skill files read, the
+CLI commands and their failures, and the git changes since the previous version. Lead with what changed
+between the latest two versions, and name the checks that moved. For "did my change work?", compare the
+check pass rates and medians of the versions before and after the commit, and say how many runs each has:
+one or two runs per version is anecdote, not a trend.
+
+For "which files were read" and "did the runs even see my change": every run records each document of the
+skill (and each bundled CLI doc, e.g. `mb:dashboard/SKILL.md`) it was shown — whole or in part, which
+sections, in what order, and what named it — measured on the tool output, so partial reads by `sed`, `grep`
+or `head` count only the lines they printed. The insights say which changed files the runs of a version did
+not see, which files no run was shown, and when the text read was not the version that ran (a stale installed
+copy reads as `older <commit>`). A change a run never saw cannot explain a difference in that run.
+
+For "how is the interview going" or "are the questions good": every question a run asked is recorded with its
+topic (the skill's own, from `checks/<name>.json` "interview"), the options, what came back (the recommended
+option, another one, a typed answer, no preference, declined, unanswered), the wait, and flags against the
+skill's rules for questions. Report the recommended-taken rate by topic (always taken: could be decided and
+shown instead, unless the skill requires asking; rarely taken: the default is wrong), the typed answers (what
+the options missed), questions asked again or in prose, and how the numbers moved between versions.
+
 ## 3. Show the dashboard
 
-`report.html` (or `rollup.html`) is a self-contained, offline page: timeline, tool and skill breakdowns, cost
-and context charts, sortable tables, light and dark themes.
+`report.html` (or `rollup.html`, `skill.html`) is a self-contained, offline page: timeline, step-by-step trace
+of every Claude API request and tool call, skill runs with their checks, tool and skill breakdowns, cost and
+context charts, sortable tables, light and dark themes. `skill.html` adds per-version strip plots, the checks
+matrix, an Interview tab (questions by topic and version, the answers people gave, where the options fell
+short), a Skill files tab (files × versions, how each was read, which changes the runs saw) and a compare
+view.
 
 - If a tool that sends a file to the user is available (`SendUserFile`), send the HTML with display
   `render`.
@@ -66,9 +117,14 @@ them anywhere unless the user asks.
 ## 4. Follow-up questions
 
 Answer from `session.json` (or the CSVs in `csv/`) with a short `python3 -c` or `jq` query instead of
-re-running the export. Useful keys: `totals`, `insights`, `skills.invocations`, `skills.per_skill`,
-`tools.by_tool`, `tools.rows`, `turns.rows`, `requests.rows`, `subagents.rows`, `cost`, `reported`,
-`lineage`, `errors`, `timing`, `files.rows`, `git`. `docs/metrics.md` in the project describes every field.
+re-running the export. Useful keys: `totals`, `insights`, `skill_runs` (per run: version, checks,
+`skill_files` with `files` / `accesses` / `inventory`, `changes_seen`, `interview`, cli, objects, errors,
+final_message), `interview` (every question: topic, options, outcome, wait, flags), `trace.steps`, `skills.invocations`, `skills.per_skill`,
+`tools.by_tool`, `tools.rows`, `shell.signatures`, `turns.rows`, `requests.rows`, `subagents.rows`, `cost`,
+`reported`, `lineage`, `errors`, `timing`, `files.rows`, `git`. For a skill report, `skill.json` has
+`versions` (with `files`, `never`, `changes.exposure` and `interview`), `files`, `interview` (`catalog`,
+`questions`, `typed`), `runs`, `details.<run_id>` and `failures`; `csv/skill_files.csv` and
+`csv/questions.csv` have one row per run and file, and per question. `docs/metrics.md` in the project describes every field.
 
 After a Claude Code upgrade, `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" schema` lists transcript event types this version does
 not recognise yet.

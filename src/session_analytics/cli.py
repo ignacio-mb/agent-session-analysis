@@ -3,6 +3,9 @@
     session-analytics export [SESSION]      current | latest | <id or prefix> | <path.jsonl>
     session-analytics list                  recent sessions for this project (or --all)
     session-analytics rollup --since 7d     aggregate many sessions
+    session-analytics skill rde             every run of a skill across sessions, by version, with checks
+    session-analytics compare A B           two skill runs side by side (run ids like b3734789:1)
+    session-analytics warehouse --up --load  every session into a local Postgres (tables + views)
     session-analytics schema [SESSION]      event-type inventory; flags what this version does not know
     session-analytics pricing               the price table used for estimates
 """
@@ -43,6 +46,10 @@ def build_parser():
     e.add_argument("--no-redact", action="store_true", help="do not mask secret-looking strings")
     e.add_argument("--own-only", action="store_true",
                    help="leave out history copied from an earlier session when this one was resumed/continued")
+    e.add_argument("--checks", action="append", default=[], metavar="FILE",
+                   help="skill checks to evaluate on each skill run (default: checks/<skill>.json in this repo)")
+    e.add_argument("--source", action="append", default=[], metavar="DIR",
+                   help="a skill's source directory or repo, to label runs with the git commit that ran")
     e.add_argument("--open", action="store_true", help="open the HTML dashboard when done")
     e.add_argument("--json", action="store_true", help="print a JSON result (paths, totals, insights) instead of Markdown")
     e.add_argument("--quiet", action="store_true", help="print only the output directory")
@@ -66,6 +73,56 @@ def build_parser():
     r.add_argument("--open", action="store_true")
     r.add_argument("--json", action="store_true")
     _common(r)
+
+    sk = sub.add_parser("skill", help="every run of one skill across sessions, grouped by the version that ran")
+    sk.add_argument("name", help="skill name, e.g. rde")
+    sk.add_argument("--since", default="30d", help="7d, 24h, 2w, all, or a date (YYYY-MM-DD); default 30d")
+    sk.add_argument("--project", help="only sessions of this project directory (default: every project)")
+    sk.add_argument("--limit", type=int, default=1000, help="at most this many transcripts (newest first)")
+    sk.add_argument("--checks", action="append", default=[], metavar="FILE",
+                    help="checks to evaluate on each run (default: checks/<name>.json in this repo)")
+    sk.add_argument("--source", action="append", default=[], metavar="DIR",
+                    help="the skill's source directory or repo (default: found under ~/dev and friends)")
+    sk.add_argument("--out", help="output directory (default: ~/claude-session-exports/_skills/...)")
+    sk.add_argument("--format", default="all", help="comma list of json, md, html, csv (default: all)")
+    sk.add_argument("--no-redact", action="store_true")
+    sk.add_argument("--open", action="store_true")
+    sk.add_argument("--json", action="store_true")
+    _common(sk)
+
+    cp = sub.add_parser("compare", help="compare two skill runs side by side (run ids like b3734789:1)")
+    cp.add_argument("run_a")
+    cp.add_argument("run_b")
+    cp.add_argument("--checks", action="append", default=[], metavar="FILE")
+    cp.add_argument("--source", action="append", default=[], metavar="DIR")
+    cp.add_argument("--out", help="also write the comparison to this Markdown file")
+    cp.add_argument("--no-redact", action="store_true")
+    _common(cp)
+
+    wh = sub.add_parser("warehouse", help="load every session into Postgres and/or ClickHouse, as tables and views")
+    wh.add_argument("--since", default="all", help="all (default), 90d, 7d, or a date (YYYY-MM-DD)")
+    wh.add_argument("--project", help="only sessions of this project directory (default: every project)")
+    wh.add_argument("--out", help="where to write the CSVs and SQL (default: ~/claude-session-exports/_warehouse/<time>/)")
+    wh.add_argument("--up", action="store_true", help="start the Postgres in docker-compose.yml first")
+    wh.add_argument("--load", nargs="?", const="yes", choices=["yes", "auto"],
+                    help="load the tables into the local Postgres (default: only write files); --load=auto only when "
+                         "its container is running (the SessionEnd hook)")
+    wh.add_argument("--clickhouse", nargs="?", const="yes", choices=["yes", "auto"],
+                    help="replace this machine's rows in the shared ClickHouse: CLICKHOUSE_URL in "
+                         "~/.config/convo-analysis/.env (--init-env); --clickhouse=auto skips it while that is empty")
+    wh.add_argument("--clickhouse-forget", action="store_true",
+                    help="take this machine's rows out of the ClickHouse warehouse (everyone else's stay)")
+    wh.add_argument("--init-env", action="store_true",
+                    help="create ~/.config/convo-analysis/.env from .env.example, to fill in CLICKHOUSE_URL")
+    wh.add_argument("--env-file", help="read CLICKHOUSE_URL from this file instead of ~/.config/convo-analysis/.env")
+    wh.add_argument("--check", action="store_true",
+                    help="recount every session from its raw transcript and compare with what was loaded "
+                         "(alone: with the Postgres warehouse)")
+    wh.add_argument("--container", default="convo-analysis-pg", help="the Postgres container to load through")
+    wh.add_argument("--dsn", help="load with a local psql to this DSN instead of the container")
+    wh.add_argument("--no-redact", action="store_true")
+    wh.add_argument("--json", action="store_true")
+    _common(wh)
 
     sc = sub.add_parser("schema", help="inventory event types; flag ones this version does not recognise")
     sc.add_argument("session", nargs="?", help="a session (default: every transcript)")
@@ -102,7 +159,8 @@ def cmd_export(args):
         return 2
     cur = locate.current_session_id(args.current_session)
     res = export_session(path, out_dir=args.out, formats=formats, full=args.full, redact=not args.no_redact,
-                         pricing=pricing, current_id=cur, own_only=args.own_only)
+                         pricing=pricing, current_id=cur, own_only=args.own_only, checks=args.checks,
+                         skill_sources=args.source)
     if args.open and "dashboard" in res["paths"]:
         _open(res["paths"]["dashboard"])
     if args.quiet:
@@ -156,6 +214,132 @@ def cmd_rollup(args):
     return 0
 
 
+def cmd_skill(args):
+    from .skillreport import run_skill_report
+    try:
+        formats = parse_formats(args.format)
+        res = run_skill_report(args.name, claude_dir=args.claude_dir, project=args.project, since=args.since,
+                               limit=args.limit, out_dir=args.out, formats=formats, redact=not args.no_redact,
+                               pricing=Pricing(args.pricing), check_files=args.checks, sources=args.source)
+    except ValueError as exc:
+        print(f"session-analytics: {exc}", file=sys.stderr)
+        return 2
+    if args.open and "dashboard" in res["paths"]:
+        _open(res["paths"]["dashboard"])
+    if args.json:
+        rep = res["report"]
+        print(json.dumps({"out_dir": res["out_dir"], "paths": res["paths"], "totals": rep["totals"],
+                          "insights": rep["insights"],
+                          "versions": [{k: v[k] for k in ("label", "runs", "median")} for v in rep["versions"]]},
+                         indent=2, default=str))
+    else:
+        print(res["summary"])
+    return 0
+
+
+def cmd_compare(args):
+    from .skillreport import compare_runs, load_run, render_compare
+    pricing = Pricing(args.pricing)
+    try:
+        a = load_run(args.run_a, args.claude_dir, not args.no_redact, pricing, args.checks, args.source)
+        b = load_run(args.run_b, args.claude_dir, not args.no_redact, pricing, args.checks, args.source)
+    except (ValueError, locate.SessionNotFound) as exc:
+        print(f"session-analytics: {exc}", file=sys.stderr)
+        return 2
+    text = render_compare(a, b, compare_runs(a, b))
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    print(text)
+    return 0
+
+
+def cmd_warehouse(args):
+    from . import clickhouse, reconcile, warehouse
+    log = (lambda *_: None) if args.json else (lambda m: print(m, file=sys.stderr))
+    if args.init_env:
+        path, created = clickhouse.init_env()
+        print(f"{'Created' if created else 'Already there:'} {path} — fill in CLICKHOUSE_URL (its comments say how).")
+        return 0
+    target = ident = None
+    if args.clickhouse or args.clickhouse_forget:
+        conf, env_path = clickhouse.settings(args.env_file)
+        if conf["CLICKHOUSE_URL"] or args.clickhouse == "yes" or args.clickhouse_forget:
+            try:
+                target = clickhouse.target_from_settings(args.env_file)
+                ident = clickhouse.identity(locate.claude_dir(args.claude_dir), args.env_file)
+            except clickhouse.ClickHouseError as exc:
+                print(f"session-analytics: warehouse --clickhouse: {exc}", file=sys.stderr)
+                if args.clickhouse != "auto":
+                    return 1  # asked for: fail; auto: the Postgres load still runs
+        if target is not None and env_path == clickhouse.checkout_env_file():
+            log(f"note: the connection is in {env_path}; move it to {clickhouse.config_dir() / '.env'}, where an "
+                f"update of this checkout or plugin can't take it with it")
+    if args.clickhouse_forget:
+        try:
+            done = clickhouse.forget(target, ident)
+        except clickhouse.ClickHouseError as exc:
+            print(f"session-analytics: warehouse --clickhouse-forget: {exc}", file=sys.stderr)
+            return 1
+        print(f"Removed the rows of {ident!r} from {target!r} ({len(done)} tables); every other source's rows stay.")
+        return 0
+    do_load = args.load == "yes" or (args.load == "auto" and warehouse.running(args.container))
+    if (args.load or args.clickhouse) and not do_load and target is None and not args.check:
+        log("Nothing to load: no local Postgres running and no CLICKHOUSE_URL set.")  # the hook, before any parse
+        return 0
+    if args.check and not do_load and target is None:
+        try:
+            res = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn), args.claude_dir)
+        except (RuntimeError, OSError) as exc:
+            print(f"session-analytics: warehouse --check: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(res, indent=1, default=str) if args.json else reconcile.render(res))
+        return 0 if res["ok"] else 1
+    try:
+        res = warehouse.run_warehouse(args.claude_dir, args.project, args.since, args.out, do_load=do_load,
+                                      start=args.up, container=args.container, dsn=args.dsn,
+                                      redact=not args.no_redact, pricing=Pricing(args.pricing), log=log,
+                                      clickhouse_target=target, clickhouse_identity=ident)
+    except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
+        detail = getattr(exc, "stderr", None) or str(exc)
+        print(f"session-analytics: warehouse: {detail}".strip(), file=sys.stderr)
+        return 1
+    checks = {}
+    if args.check and res["loaded"]:
+        checks["Postgres"] = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn),
+                                             args.claude_dir)
+    if args.check and res["clickhouse"]:
+        try:
+            checks["ClickHouse"] = reconcile.check((clickhouse.Client(target), ident.source), args.claude_dir)
+        except clickhouse.ClickHouseError as exc:
+            res["errors"]["clickhouse check"] = str(exc)
+    ok = not res["errors"] and all(c["ok"] for c in checks.values())
+    if args.json:
+        print(json.dumps(dict(res, checks=checks), indent=1, default=str))
+        return 0 if ok else 1
+    c, conn = res["counts"], res["connection"]
+    print(f"# Session warehouse\n\n{res['meta']['transcripts']} transcripts → {c['sessions']:,} sessions, "
+          f"{c['turns']:,} turns, {c['api_requests']:,} API requests, {c['tool_calls']:,} tool calls, "
+          f"{c['cli_calls']:,} CLI calls, {c['skill_runs']:,} skill runs, {c['questions']:,} questions.")
+    if res["meta"]["failed"]:
+        print(f"\n{len(res['meta']['failed'])} transcripts could not be read: "
+              + ", ".join(f["transcript"] for f in res["meta"]["failed"][:5]))
+    if res["loaded"]:
+        print(f"\nLoaded into Postgres: postgresql://{conn['user']}@{conn['host']}:{conn['port']}/{conn['database']} "
+              f"(from a Metabase in Docker: {conn['from_docker']['host']}:{conn['port']}). Tables: "
+              + ", ".join(k for k, n in c.items()) + "; views: " + ", ".join(warehouse.VIEW_COMMENTS) + ".")
+    if res["clickhouse"]:
+        print(f"\nLoaded into ClickHouse: {res['clickhouse']['target']}, as {res['clickhouse']['identity']} — "
+              f"{sum(res['clickhouse']['counts'].values()):,} rows in {len(res['clickhouse']['counts'])} tables "
+              f"(this source's rows replaced; every other source's untouched), and {len(clickhouse.VIEWS)} views.")
+    print(f"\nFiles: {res['out_dir']} (schema.sql, views.sql, one CSV per table)")
+    for name, err in res["errors"].items():
+        print(f"\n{name} failed: {err}", file=sys.stderr)
+    for name, chk in checks.items():
+        print("\n" + reconcile.render(chk, title=f"{name} check"))
+    return 0 if ok else 1
+
+
 def cmd_schema(args):
     from .schema_scan import scan
     cdir = locate.claude_dir(args.claude_dir)
@@ -204,8 +388,8 @@ def main(argv=None):
     if not args.cmd:
         args = build_parser().parse_args(["export"] + list(argv or sys.argv[1:]))
     started = time.time()
-    code = {"export": cmd_export, "list": cmd_list, "rollup": cmd_rollup, "schema": cmd_schema,
-            "pricing": cmd_pricing}[args.cmd](args)
+    code = {"export": cmd_export, "list": cmd_list, "rollup": cmd_rollup, "skill": cmd_skill, "compare": cmd_compare,
+            "schema": cmd_schema, "pricing": cmd_pricing, "warehouse": cmd_warehouse}[args.cmd](args)
     if os.environ.get("SESSION_ANALYTICS_TIMING"):
         print(f"({time.time() - started:.2f}s)", file=sys.stderr)
     return code

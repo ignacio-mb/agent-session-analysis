@@ -15,10 +15,11 @@ import time
 from collections import Counter, defaultdict
 from urllib.parse import urlparse
 
-from . import __version__, util
+from . import __version__, questions, skillfiles, skillruns, util
 from .parse import BUILTIN_COMMANDS, mcp_parts, tool_category
 from .pricing import COMPONENTS
 from .redact import Redactor
+from .util import strip_heredocs
 
 SCHEMA = "convo-analysis/v1"
 IDLE_GAP_MS = 30 * 60 * 1000
@@ -31,6 +32,7 @@ MULTI_LEVEL = {"git", "gh", "uv", "docker", "make", "npm", "npx", "pnpm", "yarn"
                "gcloud", "cargo", "go", "pip", "pip3", "brew", "helm", "poetry", "bun", "deno", "mb", "dq",
                "ingest", "job", "claude", "systemctl", "launchctl", "psql", "clickhouse", "docker-compose"}
 ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+PROG_RE = re.compile(r"^[A-Za-z0-9_.+@-]+$")  # a program name, not a stray awk/jq program or quoted string
 
 ERROR_CATEGORIES = [
     ("sibling_cancelled", re.compile(r"Cancelled: parallel tool call|sibling tool call", re.I)),
@@ -53,6 +55,9 @@ ERROR_CATEGORIES = [
     ("network", re.compile(r"ECONNREFUSED|ENOTFOUND|getaddrinfo|Connection refused|ECONNRESET|socket hang up", re.I)),
     ("http", re.compile(r"\b(?:status(?: code)?|HTTP)\s*:?\s*[45]\d\d\b|\b[45]\d\d (?:Not Found|Forbidden|Unauthorized|"
                         r"Internal Server Error|Bad Request)|Too many redirects", re.I)),
+    ("jq_error", re.compile(r"\bjq: error")),
+    ("python_exception", re.compile(r"Traceback \(most recent call last\)")),
+    ("shell_syntax", re.compile(r"parse error near|syntax error near unexpected|unexpected EOF while looking")),
     ("exit_code", re.compile(r"^Exit code -?\d+")),
 ]
 
@@ -98,24 +103,7 @@ def _domain(url):
         return "(invalid)"
 
 
-HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 NAVIGATION = {"cd", "pushd", "popd", "export", "source", ".", "set", "unset", "alias", "true", ":"}
-
-
-def strip_heredocs(cmd):
-    """Drop heredoc bodies so the Python/SQL inside `cat <<'EOF'` is not read as shell."""
-    lines = (cmd or "").split("\n")
-    out, i = [], 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        i += 1
-        for m in HEREDOC_RE.finditer(line):
-            marker = m.group(2)
-            while i < len(lines) and lines[i].strip() != marker:
-                i += 1
-            i += 1
-    return "\n".join(out)
 
 
 def split_segments(cmd):
@@ -198,7 +186,7 @@ def _programs(cmd):
             out.append(("test", None))
             continue
         prog = os.path.basename(toks[i].strip("()'\"{}`$"))
-        if not prog or prog[0] in "#<>-":
+        if not prog or prog[0] in "#<>-" or not PROG_RE.match(prog):
             continue
         sub = None
         args = toks[i + 1:]
@@ -223,6 +211,56 @@ def _programs(cmd):
             sub = rest[0]
         out.append((prog, sub))
     return out
+
+
+SIG_LEVELS = {"git": 1, "terraform": 1, "brew": 1, "pip": 1, "pip3": 1, "helm": 1, "make": 1, "cargo": 1,
+              "go": 1, "gcloud": 3, "uv": 2, "npm": 2, "pnpm": 2, "yarn": 2}
+SUBCOMMAND = re.compile(r"^[a-z][a-z0-9_-]*$")
+GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+
+
+@functools.lru_cache(maxsize=4096)
+def _cli_cached(cmd):
+    out = []
+    for seg in split_segments(strip_heredocs(cmd)):
+        toks = _shell_tokens(seg)
+        if toks and toks[0] in ("for", "select", "case"):
+            continue
+        i = 0
+        while i < len(toks) and (ENV_ASSIGN.match(toks[i]) or toks[i] in SHELL_KEYWORDS or toks[i] in SHELL_WRAPPERS):
+            i += 1
+        if i >= len(toks):
+            continue
+        prog = os.path.basename(toks[i].strip("()'\"{}`$"))
+        if not prog or prog[0] in "#<>-" or toks[i] in ("[", "[[") or not PROG_RE.match(prog):
+            continue
+        levels = SIG_LEVELS.get(prog, 2 if prog in MULTI_LEVEL else 0)
+        words, j = [], i + 1
+        while j < len(toks) and len(words) < levels:
+            t = toks[j]
+            if prog == "git" and t in GIT_VALUE_OPTS:
+                j += 2
+                continue
+            if t.startswith("-") and not words:
+                j += 1
+                continue
+            if not SUBCOMMAND.match(t):
+                break
+            words.append(t)
+            j += 1
+        rest = toks[i + 1:]
+        is_help = "--help" in rest or "-h" in rest or bool(words and words[-1] == "help")
+        out.append((prog, " ".join([prog] + words), is_help, seg))
+    return tuple(out)
+
+
+def cli_calls(cmd):
+    """Each CLI invocation in a shell command: [{program, signature, help, segment}].
+
+    The signature keeps subcommands for CLIs that have them (`mb transform create`, `gh pr view`,
+    `git commit`) and just the program otherwise (`cat`, `grep`).
+    """
+    return [{"program": p, "signature": sig, "help": h, "segment": seg} for p, sig, h, seg in _cli_cached(cmd or "")]
 
 
 def primary_program(cmd):
@@ -349,7 +387,9 @@ def skill_source(base_dir, name, home):
 
 
 class _Ctx:
-    def __init__(self, session, pricing, redactor, full, current_id, now_ms):
+    def __init__(self, session, pricing, redactor, full, current_id, now_ms, checks=(), skill_sources=()):
+        self.checks = tuple(checks or ())
+        self.skill_sources = tuple(skill_sources or ())
         self.s = session
         self.pricing = pricing
         self.R = redactor
@@ -399,10 +439,11 @@ def usage_totals(reqs):
     return t
 
 
-def analyze(session, pricing, redactor=None, full=False, current_id=None, now_ms=None):
+def analyze(session, pricing, redactor=None, full=False, current_id=None, now_ms=None, checks=(), skill_sources=()):
     s = session
     R = redactor if redactor is not None else Redactor(True)
-    ctx = _Ctx(s, pricing, R, full, current_id, now_ms if now_ms is not None else time.time() * 1000)
+    ctx = _Ctx(s, pricing, R, full, current_id, now_ms if now_ms is not None else time.time() * 1000,
+               checks=checks, skill_sources=skill_sources)
 
     for r in s.requests.values():
         unsplit = max(0, r.cache_write_tokens - r.cache_write_5m_tokens - r.cache_write_1h_tokens)
@@ -440,6 +481,12 @@ def analyze(session, pricing, redactor=None, full=False, current_id=None, now_ms
     out["context"] = _context(ctx, reqs)
     out["outputs"] = _outputs(ctx, calls, out["git"])
     out["timeline"] = _timeline(ctx, reqs, calls, out)
+    docs = skillfiles.DocSet.for_session(ctx.s)
+    out["trace"] = _trace(ctx, reqs, calls, docs)
+    raw_qs = questions.raw_questions(ctx.s, reqs, calls, ctx.text)
+    out["skill_runs"] = skillruns.build_runs(ctx, reqs, calls, out["trace"], check_files=ctx.checks,
+                                             sources_extra=ctx.skill_sources, docs=docs, raw_qs=raw_qs)
+    out["interview"] = _interview(ctx, raw_qs, out["skill_runs"])
     out["schema_coverage"] = _schema(ctx)
     out["totals"] = _totals(out)
     out["insights"] = _insights(out)
@@ -1352,6 +1399,28 @@ def _shell(ctx, calls):
         p0, _ = primary_program(cmd)
         if p0:
             primary[p0] += 1
+    sigs = defaultdict(lambda: {"calls": 0, "uses": 0, "errors": 0, "help": 0, "_d": []})
+    for c in bash:
+        seen = set()
+        for cl in cli_calls(c.input.get("command")):
+            d = sigs[cl["signature"]]
+            d["uses"] += 1
+            if cl["help"]:
+                d["help"] += 1
+            if cl["signature"] not in seen:
+                seen.add(cl["signature"])
+                d["calls"] += 1
+                if c.status == "error":
+                    d["errors"] += 1
+                if c.duration_ms is not None:
+                    d["_d"].append(c.duration_ms)
+    sig_rows = []
+    for sig, d in sorted(sigs.items(), key=lambda kv: (-kv[1]["calls"], kv[0])):
+        if " " not in sig and d["calls"] < 2:
+            continue
+        sig_rows.append({"signature": sig, "calls": d["calls"], "uses": d["uses"], "errors": d["errors"],
+                         "error_rate": util.ratio(d["errors"], d["calls"]), "help_lookups": d["help"],
+                         "p50_ms": util.percentile(d["_d"], 50), "max_ms": max(d["_d"]) if d["_d"] else None})
     exit_codes = Counter(c.facts.get("exit_code") for c in bash if c.facts.get("exit_code") is not None)
     slow = sorted((c for c in bash if c.duration_ms is not None), key=lambda c: -c.duration_ms)[:12]
     failing = [c for c in bash if c.status == "error"][:25]
@@ -1374,6 +1443,8 @@ def _shell(ctx, calls):
         "programs": dict(programs.most_common(40)),
         "primary_programs": dict(primary.most_common(25)),
         "subcommands": dict(subs.most_common(40)),
+        "signatures": sig_rows[:200],
+        "help_lookups": sum(d["help"] for d in sigs.values()),
         "duration_ms": util.describe([c.duration_ms for c in bash]),
         "slowest": [{"command": ctx.text(c.input.get("command"), 200), "duration_ms": c.duration_ms,
                      "status": c.status, "turn": c.turn, "ts": util.iso(c.ts_call)} for c in slow],
@@ -1448,6 +1519,26 @@ def _web(ctx, calls, reqs):
     }
 
 
+def _interview(ctx, raw_qs, runs):
+    """Every question of the session: those inside a skill run as that run classified them (the skill's own
+    topics), the rest against the generic topics."""
+    by_qid = {}
+    for r in runs:
+        for q in r["interview"]["questions"]:
+            by_qid.setdefault(q["qid"], dict(q, skill=r["skill"]))
+    rest = questions.classify([dict(q) for q in raw_qs if q["qid"] not in by_qid], questions.Taxonomy())
+    rows = sorted(list(by_qid.values()) + [questions.public(q, run_id=None, skill=None) for q in rest],
+                  key=lambda q: (q["t"] or 0, q["qid"]))
+    s0 = ctx.s.first_ts
+    for q in rows:
+        q["dt"] = (q["t"] - s0) if q["t"] is not None and s0 is not None else None
+    summary = questions.summarize(rows)
+    return dict(summary, questions=rows,
+                runs=[{"run_id": r["run_id"], "skill": r["skill"], "start_ms": r["start_ms"],
+                       "first_create_dt": r["interview"]["first_create_dt"], "asked": r["interview"]["asked"],
+                       "prose": r["interview"]["prose"]} for r in runs if r["interview"]["questions"]])
+
+
 def _planning(ctx, calls):
     s = ctx.s
     created = [c for c in calls if c.name == "TaskCreate"]
@@ -1463,7 +1554,7 @@ def _planning(ctx, calls):
         questions.append({
             "ts": util.iso(c.ts_call), "turn": c.turn, "status": c.status,
             "questions": [{"header": q.get("header"), "question": ctx.text(q.get("question"), 300),
-                           "options": q.get("options"), "multi_select": q.get("multi")}
+                           "options": len(q.get("options") or ()), "multi_select": q.get("multi")}
                           for q in c.facts.get("questions") or []],
             "answers": {ctx.text(k, 200): ctx.text(v if isinstance(v, str) else str(v), 300)
                         for k, v in answers.items()} if answers else None,
@@ -1707,6 +1798,96 @@ def _timeline(ctx, reqs, calls, out):
     markers.sort(key=lambda m: m["t"])
     # Spans are drawn from turns.rows, requests.rows, tools.rows and subagents.rows directly.
     return {"start_ms": t0, "end_ms": t1, "buckets": buckets, "markers": markers}
+
+
+def _result_summary(ctx, c, limit):
+    f = c.facts
+    if c.name == "AskUserQuestion" and f.get("questions"):
+        ans = f.get("answers") or {}
+        return " · ".join(f"{q.get('question')} → {ans.get(q.get('question'), '(no answer)')}" for q in f["questions"])
+    if c.name == "Read" and c.status == "ok":
+        part = " (partial)" if f.get("partial") else ""
+        return f"{f.get('num_lines') or '?'} lines{part}"
+    if c.name in ("Edit", "Write", "MultiEdit") and c.status == "ok":
+        return f"+{f.get('added') or 0} −{f.get('removed') or 0} lines"
+    return c.result_preview
+
+
+def _trace(ctx, reqs, calls, docs):
+    """Every prompt, API request, tool call and notable event of the session, in time order.
+
+    A tool step's `res` lists the skill documents it touched as "<op> <owner>:<path>" (see skillfiles)."""
+    s = ctx.s
+    lim = 2000 if ctx.full else 280
+    rows = []
+    for t in s.turns:
+        if t.ts_start is None:
+            continue
+        rows.append((t.ts_start, 0, {"k": "prompt", "t": t.ts_start, "turn": t.index, "scope": "main", "agent": None,
+                                     "trigger": t.trigger, "text": ctx.text(t.text or ("/" + (t.command or "")), lim),
+                                     "inherited": t.inherited}))
+    for inv in s.skills:
+        if inv.ts is None:
+            continue
+        rows.append((inv.ts, 1, {"k": "skill", "t": inv.ts, "turn": inv.turn, "scope": inv.scope, "agent": inv.agent_id,
+                                 "name": inv.canonical or inv.name, "mode": inv.mode, "via": inv.via,
+                                 "args": ctx.text(inv.args, lim) if inv.args else None, "ok": inv.success,
+                                 "version": inv.fingerprint, "inherited": inv.inherited}))
+    for r in reqs:
+        if r.ts_first is None:
+            continue
+        rows.append((r.ts_first, 2, {"k": "request", "t": r.ts_first, "turn": r.turn, "scope": r.scope,
+                                     "agent": r.agent_id, "model": r.model, "in": r.input_tokens, "out": r.output_tokens,
+                                     "cr": r.cache_read_tokens, "cw": r.cache_write_tokens, "ctx": r.context_tokens,
+                                     "think": r.thinking_chars, "text": ctx.text(r.text_preview, lim) or None,
+                                     "tools": [ctx.s.tool_calls[x].name for x in r.tool_use_ids if x in ctx.s.tool_calls],
+                                     "usd": round(r.cost["total"], 6) if r.cost else None, "lat": r.latency_ms,
+                                     "dur": r.duration_ms, "stop": r.stop_reason, "skill": r.attribution_skill,
+                                     "miss": r.cache_miss_reason, "inherited": r.inherited}))
+    for c in calls:
+        ts = c.ts_call if c.ts_call is not None else c.ts_result
+        if ts is None:
+            continue
+        res = []
+        for o in skillfiles.call_ops(c, docs):
+            # A search or read over a directory or glob is one step, named as it was written.
+            target = o["rel"] if o.get("spread") is None else o["spread"]
+            entry = f"{o['op']} {o['owner']}:{target or './'}"
+            if entry not in res:
+                res.append(entry)
+        rows.append((ts, 3, {"k": "tool", "t": ts, "turn": c.turn, "scope": c.scope, "agent": c.agent_id,
+                             "name": c.name, "id": c.id, "status": c.status, "dur": c.duration_ms,
+                             "input": ctx.text(summarize_input(c), lim),
+                             "result": ctx.block(_result_summary(ctx, c, lim), lim),
+                             "sigs": sorted({x["signature"] + (" --help" if x["help"] else "")
+                                             for x in cli_calls(c.input.get("command")) if " " in x["signature"]})
+                             if c.name == "Bash" else None,
+                             "prog": primary_program(c.input.get("command"))[0] if c.name == "Bash" else None,
+                             "res": res or None, "skill": c.attribution_skill, "batch": c.batch_size,
+                             "denial": c.denial_kind, "inherited": c.inherited}))
+    for e in s.compactions:
+        if e["ts"] is not None:
+            rows.append((e["ts"], 4, {"k": "event", "t": e["ts"], "turn": e["turn"], "scope": e["scope"], "agent": None,
+                                      "what": "compaction", "text": f"{e['trigger'] or '?'}: {util.fmt_tokens(e['pre_tokens'])}"
+                                      f" → {util.fmt_tokens(e['post_tokens'])} tokens"}))
+    for e in s.api_errors:
+        if e["ts"] is not None:
+            rows.append((e["ts"], 4, {"k": "event", "t": e["ts"], "turn": e["turn"], "scope": e["scope"],
+                                      "agent": e.get("agent_id"), "what": "api_error",
+                                      "text": ctx.text(f"{e['status'] or e['connection_code'] or ''} {e['message'] or ''}"
+                                                       f" (attempt {e['retry_attempt']})", 200)}))
+    for e in s.interrupts:
+        if e["ts"] is not None:
+            rows.append((e["ts"], 4, {"k": "event", "t": e["ts"], "turn": e["turn"], "scope": e["scope"], "agent": None,
+                                      "what": "interrupt", "text": "interrupted by you" + (
+                                          " during a tool call" if e["for_tool_use"] else "")}))
+    rows.sort(key=lambda x: (x[0], x[1]))
+    steps = []
+    for i, (_, _, d) in enumerate(rows):
+        d["i"] = i
+        steps.append({k: v for k, v in d.items() if v is not None and v != [] and v is not False})
+        steps[-1]["i"], steps[-1]["t"] = i, d["t"]
+    return {"steps": steps, "count": len(steps), "note": "Previews are redacted and truncated; --full keeps up to 2000 characters."}
 
 
 def _schema(ctx):

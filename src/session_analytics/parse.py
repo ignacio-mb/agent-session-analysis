@@ -28,6 +28,7 @@ about the format (all verified against real transcripts):
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import re
 from collections import Counter, defaultdict
@@ -98,6 +99,7 @@ COMMAND_NAME_RE = re.compile(r"<command-name>\s*([^<]*?)\s*</command-name>")
 COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")
 LOCAL_STDOUT_RE = re.compile(r"<local-command-(?:stdout|stderr)>([\s\S]*?)</local-command-(?:stdout|stderr)>")
 BASE_DIR_RE = re.compile(r"Base directory for this skill:\s*(\S+)")
+BASE_DIR_LINE_RE = re.compile(r"^\s*Base directory for this skill: [^\n]*\n+")
 TOKENS_LEFT_RE = re.compile(r"(\d[\d,]*)\s+tokens?\s+left")
 EXIT_CODE_RE = re.compile(r"^Exit code (-?\d+)")
 
@@ -173,6 +175,8 @@ class Request:
     blocks: Counter = field(default_factory=Counter)
     text_chars: int = 0
     thinking_chars: int = 0
+    text_preview: str = ""          # the start of what the model said in this response
+    text_full: str = ""             # all of it (capped), for the questions it asks in prose
     tool_use_ids: list = field(default_factory=list)
     cache_miss_reason: str = None
     cache_missed_tokens: int = 0
@@ -229,6 +233,13 @@ class Request:
             self.iterations = max(self.iterations, len(u["iterations"]))
 
 
+TEXT_CAP = 60_000
+
+# Tools whose whole output is kept: skillfiles matches it line by line against skill documents.
+OUTPUT_KEPT = {"Bash", "Grep", "Glob"}
+OUTPUT_CAP = 200_000
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -254,6 +265,8 @@ class ToolCall:
     attribution_skill: str = None
     attribution_agent: str = None
     inherited: bool = False
+    cwd: str = None                 # the shell's working directory when the call was made
+    output: str = None              # full result text of shell and search calls, for skillfiles
 
     @property
     def duration_ms(self):
@@ -309,6 +322,7 @@ class SkillInvocation:
     forked_agent_id: str = None
     status: str = None
     inherited: bool = False
+    fingerprint: str = None         # hash of the injected SKILL.md body, normalised; identifies the version
 
 
 def _int(v):
@@ -654,7 +668,7 @@ class Session:
         origin = ev.get("origin")
         t = Turn(
             index=len(self.turns), prompt_id=pid, trigger=TURN_STARTERS[kind], ts_start=ts, ts_end=ts,
-            text=text, prompt_source=ev.get("promptSource"),
+            text=util.clean_prompt(text) if kind == "prompt" else text, prompt_source=ev.get("promptSource"),
             origin=origin.get("kind") if isinstance(origin, dict) else None,
             permission_mode=ev.get("permissionMode"), images=images, inherited=self._inherited,
         )
@@ -768,6 +782,7 @@ class Session:
             inv.content_chars = len(text)
             if base:
                 inv.base_dir = base.group(1)
+            inv.fingerprint = skill_fingerprint(text, inv.base_dir, self.session_id, inv.args)
             return
         pending = ctx.pending_command
         if pending is not None and not text.lstrip().startswith(("<local-command", "<command-")):
@@ -781,6 +796,7 @@ class Session:
             via="slash" if cmd["invoked_by"] == "user" else "harness",
             success=True, base_dir=base_dir, content_chars=len(text) if text is not None else None,
             status="ok", inherited=bool(cmd.get("inherited")),
+            fingerprint=skill_fingerprint(text, base_dir, self.session_id, cmd["args"]) if text else None,
         )
         self.skills.append(inv)
         cmd["is_skill"] = True
@@ -840,7 +856,12 @@ class Session:
             bt = b.get("type") or "<none>"
             req.blocks[bt] += 1
             if bt == "text":
-                req.text_chars += len(b.get("text") or "")
+                t = b.get("text") or ""
+                req.text_chars += len(t)
+                if len(req.text_preview) < 1200 and t.strip():
+                    req.text_preview = (req.text_preview + "\n" + t).strip()[:1200]
+                if t.strip() and t not in req.text_full and len(req.text_full) < TEXT_CAP:
+                    req.text_full = (req.text_full + "\n\n" + t).strip()[:TEXT_CAP]
             elif bt == "thinking":
                 req.thinking_chars += len(b.get("thinking") or "")
             elif bt == "tool_use":
@@ -858,7 +879,7 @@ class Session:
             request_key=req.key, message_id=req.message_id, ts_call=ts, turn=req.turn,
             attribution_skill=ev.get("attributionSkill") or req.attribution_skill,
             attribution_agent=ev.get("attributionAgent") or req.attribution_agent,
-            inherited=req.inherited,
+            inherited=req.inherited, cwd=ev.get("cwd"),
         )
         self.tool_calls[tid] = call
         req.tool_use_ids.append(tid)
@@ -892,6 +913,8 @@ class Session:
         call.result_chars, call.result_images, refs = util.result_stats(content)
         text = util.result_text(content)
         call.result_preview = text[:2000]
+        if call.name in OUTPUT_KEPT:
+            call.output = text[:OUTPUT_CAP]
         call.is_error = bool(b.get("is_error"))
         call.denial_kind = ev.get("toolDenialKind")
         if not call.denial_kind and call.is_error and text.startswith("The user doesn't want to proceed"):
@@ -921,9 +944,15 @@ class Session:
             fl = d.get("file") if isinstance(d.get("file"), dict) else {}
             f["path"] = fl.get("filePath") or inp.get("file_path")
             f["kind"] = d.get("type")
+            f["start_line"] = fl.get("startLine")
             f["num_lines"] = fl.get("numLines")
             f["total_lines"] = fl.get("totalLines")
             f["truncated"] = bool(fl.get("truncatedByTokenCap"))
+            content = fl.get("content")
+            if isinstance(content, str):
+                f["content_chars"] = len(content)
+                f["content_sha"] = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+                f["partial"] = bool(fl.get("totalLines") and fl.get("numLines") and fl["numLines"] < fl["totalLines"])
         elif name in ("Edit", "MultiEdit"):
             f["path"] = d.get("filePath") or inp.get("file_path")
             f["added"], f["removed"] = util.patch_counts(d.get("structuredPatch"))
@@ -1039,9 +1068,14 @@ class Session:
         elif name == "AskUserQuestion":
             qs = d.get("questions") or inp.get("questions") or []
             f["questions"] = [{"header": q.get("header"), "question": q.get("question"),
-                               "options": len(q.get("options") or []), "multi": bool(q.get("multiSelect"))}
+                               "options": [{"label": o.get("label"), "description": o.get("description"),
+                                            "preview": bool(o.get("preview"))}
+                                           for o in q.get("options") or () if isinstance(o, dict)],
+                               "multi": bool(q.get("multiSelect"))}
                               for q in qs if isinstance(q, dict)]
+            # A multi-select answer is a list; typed text ("Other") arrives in place of an option label.
             f["answers"] = d.get("answers") if isinstance(d.get("answers"), dict) else None
+            f["annotations"] = d.get("annotations") if isinstance(d.get("annotations"), dict) else None
         elif name == "ExitPlanMode":
             f["plan_chars"] = len(inp.get("plan") or d.get("plan") or "")
             f["plan_path"] = d.get("filePath") or inp.get("planFilePath")
@@ -1352,6 +1386,40 @@ class Session:
         if self.turns and not self.turns[-1].ended:
             return self.turns[-1]
         return None
+
+
+ARGS_MARKER = "\n\nARGUMENTS: "
+
+
+def skill_body(text, base_dir=None, session_id=None, args=None):
+    """An injected skill body turned back into the SKILL.md body it came from (frontmatter already removed).
+
+    Claude Code injects "Base directory for this skill: <dir>" + the SKILL.md body, substitutes
+    ${CLAUDE_SKILL_DIR}, ${CLAUDE_SESSION_ID} and $ARGUMENTS, and appends "ARGUMENTS: <args>" when the skill
+    does not place them itself. All of that varies per run, so it is undone here.
+    """
+    if not text:
+        return None
+    body = BASE_DIR_LINE_RE.sub("", text, count=1)
+    i = body.rfind(ARGS_MARKER)
+    if i >= 0:
+        body = body[:i]
+    if base_dir:
+        body = body.replace(base_dir.rstrip("/"), "${CLAUDE_SKILL_DIR}")
+    if session_id:
+        body = body.replace(session_id, "${CLAUDE_SESSION_ID}")
+    if args and isinstance(args, str) and len(args) >= 8:
+        body = body.replace(args, "$ARGUMENTS")
+    return body.strip()
+
+
+def fingerprint_body(body):
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:12] if body is not None else None
+
+
+def skill_fingerprint(text, base_dir=None, session_id=None, args=None):
+    """Hash identifying the version of a skill from its injected body; see skill_body()."""
+    return fingerprint_body(skill_body(text, base_dir, session_id, args))
 
 
 def _command_parts(text):

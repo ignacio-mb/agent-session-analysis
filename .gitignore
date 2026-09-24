@@ -10,3 +10,5 @@ build/
 claude-session-exports/
 .claude/launch.json
 .preview/
+# the ClickHouse connection string (see .env.example)
+.env

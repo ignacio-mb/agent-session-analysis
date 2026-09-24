@@ -109,6 +109,13 @@ def summary(a, paths=None):
             lines.append("- attributed spend: " + ", ".join(
                 f"{p['skill']} {usd(p['cost_usd'])} ({_plural(p['attributed_tool_calls'], 'tool call')})"
                 for p in attributed[:6]))
+    runs = a.get("skill_runs") or []
+    if runs:
+        lines += ["", "## Skill runs: the skill files each run was shown"]
+        lines += [run_files_line(r) for r in runs[:12]]
+    iv = a.get("interview") or {}
+    if iv.get("total"):
+        lines += ["", "## Interview", interview_line(iv)]
     tools = a["tools"]["by_tool"][:10]
     if tools:
         lines += ["", "## Top tools"]
@@ -118,6 +125,92 @@ def summary(a, paths=None):
         lines += ["", "## Files written"]
         lines += [f"- {k}: {v}" for k, v in paths.items()]
     return "\n".join(lines) + "\n"
+
+
+def _ranges(lines, limit=4):
+    if not lines:
+        return "—"
+    parts = [str(x) if x == y else f"{x}–{y}" for x, y in lines[:limit]]
+    return ", ".join(parts) + (f" +{len(lines) - limit} more" if len(lines) > limit else "")
+
+
+def run_files_line(r):
+    """One line per skill run: how much of the skill it was shown, and whether it saw its version's changes."""
+    t = r["skill_files"]["totals"]
+    v = r["version"]
+    line = (f"- {r['run_id']} **{r['skill']}** @ {v.get('commit') or v.get('label')}: {t['own_shown']}/"
+            f"{t['own_inventory']} files shown ({t['own_full']} whole, {t['own_partial']} in part)")
+    if t["other_files"]:
+        line += f", {t['other_files']} {'/'.join(t['other_owners'])} docs"
+    line += f", ≈{tok(t['doc_tokens'])} tokens of docs"
+    if t["listings"]:
+        line += f", {_plural(t['listings'], 'listing')}"
+    if t["version_mismatches"]:
+        line += f", ⚠️ {t['version_mismatches']} not the version that ran"
+    cs = r.get("changes_seen")
+    if cs:
+        changed = [f for f in cs["files"] if f["changed_lines"] and f["path"] != "README.md"]
+        missed = [f["path"] for f in changed if f["status"] != "seen"]
+        line += f"; shown {len(changed) - len(missed)}/{len(changed)} files {cs['to']} changed"
+        if missed:
+            line += " (not: " + ", ".join(missed[:3]) + (" …" if len(missed) > 3 else "") + ")"
+    return line
+
+
+def interview_line(iv):
+    """The session's questions in one line: how many, how asked, what came back."""
+    parts = [f"{_plural(iv['total'], 'question')}: {iv['asked']} through AskUserQuestion in {_plural(iv['calls'], 'round')}"]
+    if iv["prose"]:
+        parts.append(f"{iv['prose']} in prose")
+    if iv["recommended_offered"]:
+        parts.append(f"recommended option taken {iv['recommended_picked']}/{iv['recommended_offered']}")
+    if iv["typed"]:
+        parts.append(f"{iv['typed']} typed")
+    empty = iv["no_preference"] + iv["declined"] + iv["unanswered"]
+    if empty:
+        parts.append(f"{empty} came back empty")
+    if iv.get("wait_p50_ms") is not None:
+        parts.append(f"median wait {dur(iv['wait_p50_ms'])}")
+    if iv["flags"]:
+        parts.append("flags: " + _kv(iv["flags"], 5))
+    return "- " + "; ".join(parts)
+
+
+def _options(q):
+    return " / ".join(("✓ " if o["chosen"] else "") + (o["label"] or "") for o in q["options"]) or "—"
+
+
+def _interview(a):
+    iv = a.get("interview") or {}
+    if not iv.get("total"):
+        return []
+    rows = iv["questions"]
+    return ["## Interview", "", interview_line(iv), "", table(
+        ["#", "When", "Run", "Topic", "Question", "Options", "Answer", "Outcome", "Wait", "Flags"],
+        [(i + 1, "+" + dur(q["dt"]) if q.get("dt") is not None else "—", q.get("run_id") or "—", q["topic_label"],
+          one_line(q["question"], 140), one_line(_options(q), 140),
+          one_line(q["typed"] and f"typed: {q['typed']}" or q["answer"] or q["reply"] or q["feedback"] or "", 100),
+          q["outcome"], dur(q["wait_ms"]) if q["wait_ms"] is not None else "—", ", ".join(q["flags"]) or "—")
+         for i, q in enumerate(rows)])]
+
+
+def _skill_runs(a):
+    runs = a.get("skill_runs") or []
+    if not runs:
+        return []
+    out = ["### Skill runs: the files each run was shown", ""]
+    out += [run_files_line(r) for r in runs] + [""]
+    for r in runs:
+        files = r["skill_files"]["files"]
+        if not files:
+            continue
+        out += [f"#### {r['run_id']} {r['skill']}", "", table(
+            ["#", "File", "How", "Shown", "Lines", "Sections", "First", "Via", "Pointed to by", "Version"],
+            [(f["order"], f["path"] if f["owner"] == r["skill"] else f"{f['owner']}:{f['path']}", f["how"],
+              pct(f["coverage"]), _ranges(f["lines"]), one_line(" · ".join(f["sections"][:3]), 60),
+              "+" + dur(f["first_dt"]) if f["first_dt"] is not None else "—", ", ".join(f["via"]),
+              one_line(", ".join(f["named_by"][:3]) or f["found_by"], 60), f["version"] or "—") for f in files])]
+    return out
 
 
 def report(a):
@@ -162,6 +255,8 @@ def report(a):
     if sk["restored_after_compaction"]:
         out += ["### Re-injected after compaction", "",
                 ", ".join(f"{r['name']} ({_t(r['ts'])})" for r in sk["restored_after_compaction"]), ""]
+    out += _skill_runs(a)
+    out += _interview(a)
 
     # ---------------- tools
     tl = a["tools"]

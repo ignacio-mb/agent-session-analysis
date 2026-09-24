@@ -15,6 +15,15 @@ it works on past sessions too. Pure Python 3.9+ standard library: the skill runs
 
 ## Install
 
+As a Claude Code plugin, from any session:
+
+```
+/plugin marketplace add ignacio-mb/agent-session-analysis
+/plugin install session-export@agent-session-analysis
+```
+
+Or from a checkout:
+
 ```bash
 ./install.sh
 ```
@@ -82,6 +91,64 @@ built-in slash commands (`/model`, `/compact`…), and skills re-injected after 
 
 `docs/metrics.md` describes every field.
 
+### Developing a skill
+
+For anyone building a skill (it was built around RDE), `skill` follows one skill across every session:
+
+```bash
+session-analytics skill rde --since 30d            # every rde run, grouped by the version that ran
+session-analytics compare b3734789:1 d085f38b:1    # two runs side by side, with a diff of what each did
+```
+
+- **Runs, not turns.** Claude Code attributes work to a skill only until the turn ends, but the skill keeps
+  steering your follow-up turns, so a run lasts until another skill takes over or the session ends. Both
+  views are kept: `attributed` and the whole run.
+- **Versions.** Each run is labelled with the git commit of the skill that ran, by matching the SKILL.md body
+  Claude Code injected against every commit of the skill's source (found under `~/dev/*/skills/<name>`, or
+  `--source`). The report shows what changed in git between consecutive versions.
+- **Which files the skill fed Claude.** Every document of the skill a run touched, and every doc it sent Claude
+  to in the CLI's bundled skills (`mb:dashboard/SKILL.md`, reached through `mb skills path|get`): which lines
+  Claude was actually shown (measured on the command's output, so `sed -n '/## Tabs/,/^## /p'`, `grep -A12`,
+  `head` and `cat` all count), the sections those lines fall under, the order, what named each file (SKILL.md,
+  a playbook's link, `mb skills path <name>`) or whether it was found by listing or grepping, and whether the
+  text shown is the version that ran — an installed copy that lags the repository shows up as
+  `older <commit>`. Files no run reads are listed per version.
+- **Did a change reach the runs?** For every file a version changed, the lines it added, and how many of that
+  version's runs were shown them. A rule added to a reference no run opens, or below the part a `head -40`
+  prints, cannot have changed anything.
+- **The interview.** Every question a run put to you — through AskUserQuestion, in prose at the end of a
+  turn, or as a printed `[CHECKPOINT]` with no question behind it — named by the skill's own topics
+  (`checks/rde.json` carries RDE's: sign-off, where the work lands, freshness, the decision memo, definitions,
+  publishing…). For each: the options offered, whether you took the recommended one, picked another, typed
+  your own answer, had no preference, declined or never answered, how long you took, and flags against the
+  skill's rules for questions (a recommendation, first; measured numbers behind a decision; plain language;
+  asked once). Across runs: which topics each version asks, where the recommendation misses, what people type
+  when no option fits, and what could be decided and shown instead of asked.
+- **What the questions are about.** Each question is also mapped to a data-engineering topic (privacy,
+  ownership, time, quality, delivery, business logic, sources, modeling, platform, operations, workflow,
+  requirements) and a layer of the stack (presentation, semantic, modeling, staging, source, platform, or
+  cross-cutting), by rules in `semantics/questions.json` tried on the question's header, then its text, then a
+  fallback from the skill's own topic. So an interview can be read as coverage: which layers it asks about,
+  which it never does, and where its recommendations and options work.
+- **What a run did.** Every CLI call by subcommand (`mb transform create`), `--help` lookups, retries after a
+  failure; the objects the CLI reported creating; cost, context and the final hand-back; and a step-by-step
+  trace of every Claude API request and tool call.
+- **Checks.** `checks/<skill>.json` declares what the skill should do, and every run is checked against it.
+  `checks/rde.json` encodes RDE's own rules: state first, `mb --version` and `mb auth list` before work,
+  a playbook before building, ask before creating anything, `--json`/`--profile` on every `mb` call, bodies
+  from `.scratch` files, update rather than delete and recreate, read one section of a bundled `mb` skill
+  rather than all of it. Check types: `first`, `before`, `count`, `count_before`, `never`, `every`; matchers
+  cover commands, tools, and the documents read (`"file": "^mb:", "how": "^full$"`) — see
+  `src/session_analytics/checks.py`.
+
+The skill report has per-version strip plots (one dot per run), check pass rates by version, a run × check
+matrix, an **Interview** tab (questions per version, the topic × version matrix, a question catalog with the
+answers people gave, where the options fell short, an interview map per run), drill-down into any run, a
+**Skill files** tab (files × versions, how each file was read, which
+changes the runs saw, files never shown, paths tried that do not exist), CLI calls and grouped failures, and a
+compare view. Single-session exports gain a **Skill runs** tab (with each run's files, drawn as strips of the
+lines shown), an **Interview** tab and a **Trace** tab.
+
 ### Several sessions
 
 ```bash
@@ -93,6 +160,107 @@ session-analytics list                       # recent sessions, to pick one
 The rollup adds cost and activity per day, a weekday × hour heatmap, cost by project and model, and tools and
 skills across sessions. A resumed or continued session starts with a copy of the earlier conversation, so
 the rollup counts every API request exactly once.
+
+### A warehouse, for SQL and Metabase
+
+```bash
+make warehouse                                   # start Postgres (docker compose) and load every session
+python3 -m session_analytics warehouse --up --load --since 90d
+```
+
+Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432`, database
+`claude_sessions`, user `convo`, no password) as plain tables — `sessions`, `turns`, `api_requests`,
+`tool_calls`, `cli_calls` (every program in every shell command, by signature), `skill_invocations`,
+`skill_runs`, `skill_run_checks`, `skill_run_files`, `questions`, `question_options`, `subagents`,
+`files_touched`, `tool_errors`, plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
+that answer the usual questions: `v_skill_versions` (each version of a skill compared), `v_check_rates`,
+`v_question_topics`, `v_question_semantics` (questions by data-engineering topic × layer, per version),
+`v_interview_questions` (one row per question, ready to explore), `v_question_outcomes`, `v_typed_answers`,
+`v_question_flags`, `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`, `v_daily`. Tables and columns
+carry comments, which Metabase shows as descriptions. A Metabase running in Docker reaches it at
+`host.docker.internal:55432`. Each fact belongs to one session (transcripts are read own-only), and every load
+drops and recreates the tables; `warehouse_load` records when, and the dashboard shows it as "Data as of".
+`make warehouse` checks every load: each session is recounted straight from its raw JSONL (plain `json`, none of
+the parser's code) and compared with the warehouse — API requests, tokens, tool calls, failures, questions, skill
+calls — so a difference is a bug, not a rounding (`make warehouse-check` runs it alone; sessions written after the
+load — the main transcript or any of its subagent and workflow transcripts — are reported apart).
+`make warehouse-psql` opens a shell.
+
+Nothing refreshes it on its own: Claude Code only appends to its transcripts, and the warehouse (and every
+dashboard on it) holds what the last load read. `scripts/warehouse_hook.sh` is a SessionEnd hook that reloads
+whatever is set up — the local Postgres when its container is running (`--load=auto`), the shared ClickHouse
+(below) when `CLICKHOUSE_URL` is set (`--clickhouse=auto`) — and, with neither, exits before reading a transcript.
+It runs in the background (closing a session is never held up), one load at a time (a session that ends mid-load
+gets one more pass after it), logs to `~/claude-session-exports/_warehouse/hook.log` and overwrites
+`_warehouse/latest` instead of adding a folder per load. The plugin installs it (`hooks/hooks.json`); from a
+checkout, add it to `~/.claude/settings.json` instead — not both, or every session end loads twice:
+
+```json
+{"hooks": {"SessionEnd": [{"hooks": [{"type": "command",
+                                      "command": "/path/to/convo-analysis/scripts/warehouse_hook.sh"}]}]}}
+```
+
+### A shared warehouse in ClickHouse
+
+```bash
+make env                # creates ~/.config/convo-analysis/.env from .env.example: fill in CLICKHOUSE_URL
+make clickhouse         # this machine's sessions into it (its own rows only), then the check
+make clickhouse-forget  # take this machine's rows out again
+```
+
+(Without a checkout, through the plugin: `session_export.py warehouse --init-env`, `--clickhouse --check`,
+`--clickhouse-forget`.)
+
+Many people load into one database, each from their own machines, and nobody's load touches anyone else's rows.
+Every row carries `source` — this machine and Claude config directory, as a hash: derived from the hardware id,
+so it survives a wiped config, and never the id itself — and `person` (`CLICKHOUSE_PERSON`, else the git email).
+The tables are partitioned by `source`: a load writes its rows to a staging table, checks the count, and swaps
+them in with `ALTER TABLE … REPLACE PARTITION`, atomically, so a dashboard reading mid-load sees that machine's
+old rows or its new ones, and every other machine's rows are untouched. The taxonomy tables (`de_topics`,
+`de_layers`) are the same for everyone and are replaced whole. A second machine, or a second Claude config
+directory, is a second source; a session copied between machines is counted once per machine that loads it.
+
+`CLICKHOUSE_URL` is the cluster's HTTPS endpoint with a user and password and the database at the end
+(`https://<user>:<password>@<host>:8443/sessions`) — or the JDBC string the ClickHouse Cloud console gives,
+as it is; `CLICKHOUSE_PASSWORD` takes a password a URL would need escaped. It lives in
+`~/.config/convo-analysis/.env` (owner-only), outside any checkout or plugin directory, so an update never takes
+it; a checkout's `.env` from before is still read, with a note to move it. Nothing reads it from the environment
+or from the directory a session ran in, so another project's `CLICKHOUSE_URL` can't redirect the load. The loader
+speaks ClickHouse's HTTP interface with the standard library — no driver to install.
+
+The same tables and rows as the Postgres load, with the views rewritten in ClickHouse SQL (`clickhouse.py`) over
+every source's rows; on the same transcripts every view and every dashboard card returns the same numbers in both.
+The database must already exist — nothing creates one. Everything written carries a `convo-analysis` comment; a
+same-named table without it belongs to someone else and stops the load before anything is written, and nothing
+else in the database is touched. A newer version's columns are added to the tables in place (never dropped), and a
+table from before per-source loads is rebuilt once. `make clickhouse-dev-test` tries the whole path on a throwaway
+local ClickHouse (docker compose, profile `clickhouse`; `make clickhouse-dev-down` removes it).
+
+### A Metabase dashboard on either
+
+`scripts/metabase_dashboard.py` builds a Metabase dashboard on the warehouse — Overview, Skill versions,
+Interview, Question topics, Skill files & CLI, with Skill, Data-engineering topic and Layer filters — once the
+warehouse is a database in that Metabase:
+
+```bash
+python3 scripts/metabase_dashboard.py --test [--clickhouse]     # every card's SQL against the warehouse
+python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
+```
+
+`--sync` creates the dashboard in the collection, or updates it in place: everything is found by name, so ids,
+links and bookmarks survive. The SQL dialect follows the Metabase database's engine (Postgres or ClickHouse;
+`--ch-database` names the ClickHouse database, default `sessions`). New cards are created inside the dashboard, so
+the collection lists only the dashboard, the model and the metrics. Every card is then run once through Metabase
+and reported. The cards are native SQL on table and view names, so reloading the warehouse keeps them working.
+
+The Question topics tab sits on a semantic layer: a model, **Interview questions** (`v_interview_questions`:
+one row per question, with its data-engineering topic and layer, what came back, whether the recommended option
+was offered and taken, the wait), and metrics on it — Questions, Questions asked with AskUserQuestion,
+Recommended option taken, Typed-answer rate, Came back empty, Median wait for an answer — so a question asked
+of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic × layer
+matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run by
+layer and version, the layers never asked about, and every question with its topic and layer, with
+Data-engineering topic and Layer filters.
 
 ## Accuracy
 
@@ -115,7 +283,10 @@ permission prompt.
 
 Exports contain your prompts, commands and file paths. Secret-looking strings (API keys, tokens, private keys,
 passwords, credentials in URLs) are masked by default; `--no-redact` turns that off. Previews are truncated
-unless you pass `--full`. Nothing is sent anywhere: the files stay where they are written.
+unless you pass `--full`. Nothing is sent anywhere unless you load a warehouse: the files stay where they are
+written. A ClickHouse load (and a Metabase dashboard on it) puts prompt previews, questions and answers, command
+summaries, error messages and file paths, with your name on them, wherever that cluster and that collection are
+readable; `--clickhouse-forget` takes them out.
 
 ## Development
 

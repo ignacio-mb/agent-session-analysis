@@ -1,0 +1,17 @@
+{
+  "name": "agent-session-analysis",
+  "owner": {
+    "name": "ignacio",
+    "email": "ignacio@metabase.com"
+  },
+  "metadata": {
+    "description": "Claude Code session analytics: export any session as JSON, CSV, Markdown and an HTML dashboard."
+  },
+  "plugins": [
+    {
+      "name": "session-export",
+      "source": "./",
+      "description": "Export and analyze Claude Code sessions: skills, tools, tokens, cost, subagents, files, timing."
+    }
+  ]
+}

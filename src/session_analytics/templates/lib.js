@@ -87,6 +87,12 @@ const F = {
     return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " +
       d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   },
+  since(ms) { return ms === null || ms === undefined ? "—" : "+" + F.dur(ms); },
+  ranges(lines, limit = 4) {
+    if (!lines || !lines.length) return "—";
+    const parts = lines.slice(0, limit).map(([a, b]) => (a === b ? String(a) : `${a}–${b}`));
+    return parts.join(", ") + (lines.length > limit ? ` +${lines.length - limit} more` : "");
+  },
   short(s, n) {
     if (s === null || s === undefined) return "";
     s = String(s).replace(/\s+/g, " ").trim();
@@ -592,4 +598,456 @@ function downloadLink(label, filename, getText, type = "application/json") {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
   return a;
+}
+
+/* ------------------------------------------------------------------ status marks (symbol + text, never colour alone) */
+
+const STATUS_MARK = { pass: ["✓", "good"], ok: ["✓", "good"], fail: ["✗", "critical"], error: ["✗", "critical"],
+  denied: ["⊘", "serious"], interrupted: ["‖", "warning"], "n/a": ["–", "muted"], pending: ["…", "muted"] };
+
+function statusMark(status, withText = true) {
+  const [sym, tone] = STATUS_MARK[status] || ["?", "muted"];
+  return h("span", { class: `smark ${tone}`, title: status }, h("b", null, sym), withText ? " " + status : null);
+}
+
+/* ------------------------------------------------------------------ strip plot: one dot per run, grouped */
+
+function stripPlot(width, groups, { value, fmt = F.num, tip, height = 170 } = {}) {
+  /* groups: [{label, items: [run...]}]; one hue — the x position carries identity */
+  const m = { l: 56, r: 10, t: 10, b: 34 };
+  const W = width, H = height, pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const svg = sv("svg", { class: "chart", width: W, height: H, role: "img" });
+  const all = groups.flatMap((g) => g.items.map(value)).filter((v) => v !== null && v !== undefined);
+  const ticks = niceTicks(Math.max(...all, 0), 3);
+  const top = ticks[ticks.length - 1] || 1;
+  const y = (v) => m.t + ph - (v / top) * ph;
+  const grid = sv("g", { class: "grid" });
+  for (const tk of ticks) {
+    grid.appendChild(sv("line", { x1: m.l, x2: W - m.r, y1: y(tk), y2: y(tk) }));
+    svg.appendChild(sv("text", { x: m.l - 6, y: y(tk) + 3.5, "text-anchor": "end" }, fmt(tk)));
+  }
+  svg.insertBefore(grid, svg.firstChild);
+  const bw = pw / Math.max(1, groups.length);
+  groups.forEach((g, gi) => {
+    const cx = m.l + gi * bw + bw / 2;
+    svg.appendChild(sv("text", { x: cx, y: H - 18, "text-anchor": "middle" }, F.short(g.label, Math.max(6, Math.floor(bw / 7)))));
+    svg.appendChild(sv("text", { x: cx, y: H - 5, "text-anchor": "middle" }, `n=${g.items.length}`));
+    const vals = g.items.map(value).filter((v) => v !== null && v !== undefined).sort((a, b) => a - b);
+    if (vals.length) {
+      const mid = vals.length >> 1;
+      const med = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+      svg.appendChild(sv("line", { x1: cx - Math.min(28, bw / 3), x2: cx + Math.min(28, bw / 3), y1: y(med), y2: y(med),
+        stroke: "var(--ink)", "stroke-width": 2, "stroke-linecap": "round" }));
+    }
+    g.items.forEach((it, i) => {
+      const v = value(it);
+      if (v === null || v === undefined) return;
+      const jitter = g.items.length > 1 ? ((i % 7) - 3) * Math.min(6, bw / 16) : 0;
+      const dot = sv("circle", { class: "dot", cx: cx + jitter, cy: y(v), r: 5, tabindex: "0" });
+      Tip.bind(dot, () => (tip ? tip(it, v) : { title: g.label, rows: [[fmt(v), ""]] }));
+      svg.appendChild(dot);
+    });
+  });
+  svg.appendChild(sv("line", { x1: m.l, x2: W - m.r, y1: m.t + ph, y2: m.t + ph, stroke: "var(--axis)" }));
+  return svg;
+}
+
+/* ------------------------------------------------------------------ trace view */
+
+const KIND_LABEL = { prompt: "you", request: "claude", tool: "tool", skill: "skill", event: "event" };
+
+function traceView(steps, { limit = 400, showScope = true } = {}) {
+  const state = { q: "", kind: "", status: "", errorsOnly: false, show: limit };
+  const root = h("div", { class: "trace" });
+  const tools = h("div", { class: "tbl-tools" });
+  const q = h("input", { type: "search", placeholder: "Filter steps…", "aria-label": "Filter steps" });
+  q.addEventListener("input", () => { state.q = q.value.trim().toLowerCase(); state.show = limit; draw(); });
+  const kind = h("select", { "aria-label": "Step kind" }, h("option", { value: "" }, "All steps"),
+    ["prompt", "request", "tool", "skill", "event"].map((k) => h("option", { value: k }, k === "request" ? "Claude API requests" : k === "prompt" ? "your prompts" : k + "s")));
+  kind.addEventListener("change", () => { state.kind = kind.value; state.show = limit; draw(); });
+  const errs = h("label", { class: "tbl-count" }, h("input", { type: "checkbox" }), " problems only");
+  errs.firstChild.addEventListener("change", (e) => { state.errorsOnly = e.target.checked; state.show = limit; draw(); });
+  const count = h("span", { class: "tbl-count" });
+  tools.append(q, kind, errs, count);
+  const list = h("div", { class: "trace-list" });
+  const more = h("div", { class: "more" });
+  root.append(tools, list, more);
+
+  const text = (st) => [st.text, st.input, st.result, st.name, st.model, (st.sigs || []).join(" "), (st.res || []).join(" "), st.what, st.args]
+    .filter(Boolean).join(" ").toLowerCase();
+  const problem = (st) => ["error", "denied", "interrupted"].includes(st.status) || st.what === "api_error" || st.what === "interrupt" || st.ok === false;
+
+  function row(st) {
+    const k = st.k;
+    const main = h("div", { class: "tr-main" });
+    const meta = h("div", { class: "tr-meta" });
+    let detail = null;
+    if (k === "prompt") {
+      main.append(h("span", { class: "tr-text" }, st.text || "(empty)"));
+      meta.append(h("span", { class: "chip" }, st.trigger));
+    } else if (k === "request") {
+      main.append(h("span", { class: "tr-text" }, st.text || (st.tools && st.tools.length ? "→ " + st.tools.join(", ") : `thinking ${F.num(st.think || 0)} chars`)));
+      meta.append(h("span", { class: "chip" }, (st.model || "").replace("claude-", "")), h("span", { class: "chip" }, `ctx ${F.tok(st.ctx)}`),
+        h("span", { class: "chip" }, `out ${F.tok(st.out)}`), h("span", { class: "chip" }, F.dur(st.dur)), h("span", { class: "chip" }, F.usd(st.usd)));
+      if (st.miss) meta.append(h("span", { class: "chip" }, `cache miss: ${st.miss}`));
+      if (st.text && st.text.length > 160) detail = st.text;
+    } else if (k === "tool") {
+      main.append(statusMark(st.status || "pending", false), h("b", null, " " + st.name + " "), h("span", { class: "tr-text mono" }, st.input || ""));
+      meta.append(h("span", { class: "chip" }, F.dur(st.dur)));
+      for (const sgn of st.sigs || []) meta.append(h("span", { class: "chip strong" }, sgn));
+      for (const r of st.res || []) meta.append(h("span", { class: "chip" }, r));
+      if (st.batch > 1) meta.append(h("span", { class: "chip" }, `parallel ×${st.batch}`));
+      if (st.denial) meta.append(h("span", { class: "chip" }, st.denial));
+      detail = [st.input, st.result ? "→ " + st.result : ""].filter(Boolean).join("\n\n");
+    } else if (k === "skill") {
+      main.append(h("b", null, st.name), " ", modeBadge(st.mode), st.args ? h("span", { class: "tr-text" }, " " + st.args) : null);
+      if (st.version) meta.append(h("span", { class: "chip" }, "v " + st.version.slice(0, 8)));
+      if (st.ok === false) meta.append(statusMark("fail"));
+    } else {
+      main.append(h("span", { class: "tr-text" }, st.text || st.what));
+      meta.append(h("span", { class: "chip" }, st.what));
+    }
+    if (showScope && st.scope && st.scope !== "main") meta.append(h("span", { class: "chip" }, `${st.scope} ${(st.agent || "").slice(0, 8)}`));
+    if (st.inherited) meta.append(h("span", { class: "chip" }, "inherited"));
+    const body = h("div", { class: "tr-body" }, main, meta);
+    const r = h("div", { class: `tr-row k-${k}` + (problem(st) ? " problem" : ""), tabindex: "0" },
+      h("span", { class: "tr-time mono" }, F.time(st.t)), h("span", { class: `tr-kind k-${k}` }, KIND_LABEL[k] || k), body);
+    if (detail) {
+      const box = h("pre", { class: "tr-detail", hidden: true }, detail);
+      body.appendChild(box);
+      r.addEventListener("click", () => { box.hidden = !box.hidden; });
+      r.classList.add("expandable");
+    }
+    return r;
+  }
+
+  function draw() {
+    let data = steps;
+    if (state.kind) data = data.filter((s) => s.k === state.kind);
+    if (state.errorsOnly) data = data.filter(problem);
+    if (state.q) data = data.filter((s) => text(s).includes(state.q));
+    list.replaceChildren(...data.slice(0, state.show).map(row));
+    count.textContent = `${data.length.toLocaleString()} of ${steps.length.toLocaleString()} steps`;
+    more.replaceChildren();
+    if (data.length > state.show) {
+      const b = h("button", { class: "linkbtn", type: "button" }, `Show ${Math.min(limit, data.length - state.show)} more`);
+      b.addEventListener("click", () => { state.show += limit; draw(); });
+      more.appendChild(b);
+    }
+  }
+  draw();
+  return root;
+}
+
+/* ------------------------------------------------------------------ one skill run, in detail */
+
+function runDetail(run, steps) {
+  const v = run.version || {};
+  const checks = run.checks || [];
+  const head = kv([
+    ["Run", `${run.run_id} · ${run.skill} invoked by ${run.mode === "model" ? "Claude (Skill tool)" : run.mode === "user" ? "you (/slash)" : "Claude Code"}`],
+    ["Version", v.status === "commit" ? `${v.commit} · ${v.subject} (${F.datetime(v.date)})` : v.label],
+    ["Asked", run.prompt || run.args || "—"],
+    ["Ran", `${F.datetime(run.start_ms)} · ${F.dur(run.duration_ms)} · ${run.turn_count} turns (${run.follow_up_turns} follow-up) · ended: ${run.end_reason}`],
+    ["Work", `${run.requests} Claude requests (${run.attributed_requests} attributed) · ${run.tool_calls} tool calls · ${run.tool_errors} errors · ${run.cli_calls} CLI calls · ${run.help_lookups} help lookups · ${run.retries_after_error} retries after an error`],
+    ["Cost", `${F.usd(run.cost_usd)} · context ${F.tok(run.context_start)} → ${F.tok(run.context_end)} (peak ${F.tok(run.context_peak)}) · cache hit ${F.pct(run.cache_hit_ratio)}`],
+    ["Questions", `${run.questions_asked} asked in ${run.question_calls} rounds` + (run.prose_questions ? `, ${run.prose_questions} in prose` : "") +
+      (run.recommended_rate !== null && run.recommended_rate !== undefined ? ` · recommended option picked ${F.pct(run.recommended_rate)}` : "") +
+      (run.typed_answers ? ` · ${run.typed_answers} typed` : "")],
+    ["Created", run.objects_created ? `${run.objects_created} objects` : "nothing reported"],
+  ]);
+  const checkList = checks.length ? h("div", { class: "checks" }, checks.map((c) =>
+    h("div", { class: "check-row" }, statusMark(c.status), h("span", null, " " + (c.desc || c.id)), c.detail ? h("span", { class: "muted" }, " — " + c.detail) : null)))
+    : h("div", { class: "empty" }, "No checks defined for this skill (add checks/<skill>.json).");
+  const expected = h("div", { class: "note" },
+    (run.missing_expected || []).length ? `Named by a playbook's "Read first" but never read: ${run.missing_expected.join(", ")}. ` : "",
+    (run.not_named_by_playbooks || []).length ? `Read without a playbook naming it: ${run.not_named_by_playbooks.join(", ")}.` : "");
+  const cli = (run.cli || []).length ? dataTable({ search: false, limit: 40, rows: run.cli, columns: [
+    { key: "signature", label: "Command", cls: "code" }, { key: "calls", label: "Calls", num: true }, { key: "errors", label: "Errors", num: true },
+    { key: "help", label: "--help", num: true }] }) : h("div", { class: "empty" }, "No CLI subcommands.");
+  const iv = run.interview || null;
+  const objects = (run.objects || []).length ? dataTable({ search: false, rows: run.objects, columns: [
+    { key: "t", label: "When", fmt: F.time }, { key: "verb", label: "Verb" }, { key: "type", label: "Type" }, { key: "id", label: "Id" },
+    { key: "name", label: "Name", cls: "wrap" }] }) : h("div", { class: "empty" }, "No objects reported by CLI output.");
+  const errors = (run.errors || []).length ? dataTable({ search: false, rows: run.errors, columns: [
+    { key: "t", label: "When", fmt: F.time }, { key: "tool", label: "Tool" }, { key: "category", label: "Category" },
+    { key: "input", label: "Input", cls: "code" }, { key: "message", label: "Message", cls: "code" }] }) : h("div", { class: "empty" }, "No errors.");
+  const actionsList = (run.actions || []).length ? h("ol", { class: "actions" }, run.actions.map((a) =>
+    h("li", { class: a.action.includes("✗") ? "problem" : null }, a.action + (a.times > 1 ? `  ×${a.times}` : "")))) : null;
+  return h("div", { class: "grid" },
+    card({ title: "Run", span: 7 }, head, run.final_message ? h("details", { class: "raw", open: true }, h("summary", null, "Final hand-back"), h("pre", { class: "tr-detail" }, run.final_message)) : null),
+    card({ title: `Checks (${run.checks_passed || 0} passed, ${run.checks_failed || 0} failed)`, span: 5 }, checkList),
+    skillFilesCard(run, expected),
+    card({ title: "CLI commands", span: 6 }, cli),
+    iv && (iv.questions || []).length ? card({ title: "Interview", sub: `Every question the run put to you, by the skill's ${iv.taxonomy === "skill" ? "own" : "generic"} topics · ● recommended ○ another option ◆ typed □ no preference ✕ declined/unanswered ▲ prose`, span: 12 },
+      interviewFacts(iv), questionTable(iv.questions, { limit: 60 })) : card({ title: "Interview", span: 6 }, h("div", { class: "empty" }, "No questions asked.")),
+    card({ title: "Objects the CLI reported", span: 6 }, objects),
+    card({ title: "Errors", span: 12 }, errors),
+    actionsList ? card({ title: "What it did", sub: "Actions in order (repeats collapsed) — the sequence the compare view diffs", span: 12 }, actionsList) : null,
+    card({ title: "Trace", sub: "Every prompt, Claude API request and tool call in the run — click a row for its input and output", span: 12 }, traceView(steps)));
+}
+
+/* ------------------------------------------------------------------ skill files: which documents a run was shown */
+
+const HOW_MARK = { injected: "◆", "injected + re-read": "◆", full: "●", partial: "◐", hits: "◔", "not shown": "○", "no hits": "○",
+  missing: "✗", listed: "☰", resolved: "→", size: "#" };
+
+function howChip(how) {
+  if (!how) return h("span", { class: "muted" }, "—");
+  const key = how.startsWith("searched") ? "listed" : how;
+  return h("span", { class: "chip how", title: how }, `${HOW_MARK[key] || "·"} ${how}`);
+}
+
+function versionMark(v) {
+  if (!v) return h("span", { class: "muted", title: "not checked: only whole-file reads can be" }, "—");
+  if (v === "match" || v === "as installed now") return h("span", { class: "smark good", title: v }, h("b", null, "✓"), " " + v);
+  return h("span", { class: "smark serious", title: "the text shown is not the version the run is labelled with" }, h("b", null, "≠"), " " + v);
+}
+
+/* A file as a strip, one pixel column per slice of lines: filled where Claude was shown the lines. */
+function coverageStrip(lines, total, { width = 110, height = 8, label = true } = {}) {
+  const wrap = h("span", { class: "cov" });
+  if (!total) { wrap.append(h("span", { class: "t" }, "—")); return wrap; }
+  const svg = sv("svg", { width, height, viewBox: `0 0 ${width} ${height}`, role: "img",
+    "aria-label": `lines ${F.ranges(lines, 12)} of ${total}` });
+  svg.appendChild(sv("rect", { class: "cov-track", x: 0, y: 0, width, height, rx: 2 }));
+  let seen = 0;
+  for (const [a, b] of lines || []) {
+    seen += b - a + 1;
+    const x = ((a - 1) / total) * width, w = Math.max(1.5, ((b - a + 1) / total) * width);
+    svg.appendChild(sv("rect", { class: "cov-seg", x: x.toFixed(2), y: 0, width: Math.min(w, width - x).toFixed(2), height, rx: 1.5 }));
+  }
+  Tip.bind(svg, () => ({ title: `${F.num(seen)} of ${F.num(total)} lines shown`, rows: [[F.pct(seen / total), "of the file"]], body: `lines ${F.ranges(lines, 30)}` }));
+  wrap.append(svg);
+  if (label) wrap.append(h("span", { class: "t" }, F.pct(Math.min(1, seen / total)).replace(".0%", "%")));
+  return wrap;
+}
+
+/* The first `n` items of a list, the rest counted and kept in the hover title. */
+function capped(items, n, sep) {
+  const more = items.length - n;
+  return h("span", { title: more > 0 ? items.join("\n") : null }, items.slice(0, n).join(sep), more > 0 ? h("span", { class: "muted" }, `${sep}+${more} more`) : null);
+}
+
+function skillFilesCard(run, expectedNote) {
+  const sf = run.skill_files;
+  if (!sf) return card({ title: "Skill files", span: 12 }, h("div", { class: "empty" }, "No skill-file data in this export."));
+  const t = sf.totals || {}, own = run.skill;
+  const label = (r) => (r.owner === own ? r.path || "./" : `${r.owner}:${r.path}`);
+  const others = (t.other_owners || []).join(", ");
+  const summary = h("div", { class: "facts" },
+    h("span", null, h("b", null, `${F.num(t.own_shown)} of ${F.num(t.own_inventory)}`), ` ${own} files shown (${F.num(t.own_full)} whole, ${F.num(t.own_partial)} in part)`),
+    h("span", null, h("b", null, F.num(t.other_files)), ` other docs${others ? ` (${others})` : ""}`),
+    h("span", null, h("b", null, "≈" + F.tok(t.doc_tokens)), " tokens of docs read"),
+    h("span", null, h("b", null, F.num(t.listings)), " listings"),
+    h("span", null, h("b", null, F.num(t.rereads)), " re-reads"),
+    t.missing ? h("span", null, h("b", null, F.num(t.missing)), " paths that do not exist") : null,
+    t.version_mismatches ? h("span", { class: "warn" }, h("b", null, F.num(t.version_mismatches)), " not the version that ran") : null);
+  const files = (sf.files || []).length ? dataTable({ search: false, limit: 100, sortKey: "order", sortDir: "asc",
+    rows: sf.files.map((f) => Object.assign({ label: label(f), pointer: (f.named_by || []).length ? f.named_by.join(", ") : f.found_by }, f)),
+    columns: [
+      { key: "order", label: "#", num: true },
+      { key: "label", label: "File", cls: "path" },
+      { key: "how", label: "How", render: (r) => howChip(r.how) },
+      { key: "coverage", label: "Lines shown", num: true, render: (r) => coverageStrip(r.lines, r.total) },
+      { key: "sections", label: "Sections seen", cls: "wrap", render: (r) => (r.sections && r.sections.length ? capped(r.sections, 3, " · ")
+        : h("span", { class: "muted" }, !r.seen ? "—" : (r.how || "").startsWith("injected") ? "whole body" : "whole file")) },
+      { key: "first_dt", label: "First", num: true, fmt: F.since },
+      { key: "accesses", label: "Reads", num: true },
+      { key: "via", label: "Via", fmt: (v) => Object.keys(v || {}).join(", ") || "—" },
+      { key: "pointer", label: "Pointed to by", cls: "wrap", render: (r) => ((r.named_by || []).length ? capped(r.named_by, 2, ", ")
+        : h("span", { class: "muted" }, r.found_by || "—")) },
+      { key: "version", label: "Version", render: (r) => versionMark(r.version) },
+      { key: "tokens", label: "≈ Tokens", num: true, fmt: F.tok }] })
+    : h("div", { class: "empty" }, "No skill documents were touched.");
+  const acc = sf.accesses || [];
+  const accTable = h("details", { class: "raw" }, h("summary", null, `Every access, in order (${acc.length})`),
+    dataTable({ limit: 200, rows: acc.map((a) => Object.assign({ label: label(a) }, a)), columns: [
+      { key: "dt", label: "When", num: true, fmt: F.since }, { key: "label", label: "File", cls: "path" }, { key: "op", label: "Op" },
+      { key: "how", label: "How", render: (r) => howChip(r.how) }, { key: "lines", label: "Lines", fmt: (v, r) => (v && v.length ? `${F.ranges(v)} of ${r.total || "?"}` : "—") },
+      { key: "detail", label: "Command", cls: "code" }, { key: "status", label: "Status", render: (r) => statusMark(r.status || "n/a", false) }] }));
+  const never = (sf.inventory || {}).never || [];
+  const neverList = never.length ? h("details", { class: "raw" }, h("summary", null, `Never shown in this run (${never.length} of ${(sf.inventory.files || []).length} files)`),
+    h("div", { class: "pills" }, never.map((p) => h("span", { class: "pill mono" }, p)))) : null;
+  const cs = run.changes_seen;
+  let changes = null;
+  if (cs && (cs.files || []).length) {
+    changes = h("div", { class: "sub-block" }, h("h3", null, `What ${cs.from} → ${cs.to} changed, and whether this run was shown it`),
+      dataTable({ search: false, limit: 60, rows: cs.files, sortKey: "changed_lines", columns: [
+        { key: "path", label: "File", cls: "path" }, { key: "added", label: "+", num: true }, { key: "removed", label: "−", num: true },
+        { key: "ranges", label: "Changed lines", fmt: (v) => F.ranges(v, 6) },
+        { key: "changed_lines", label: "Seen", num: true, fmt: (v, r) => (v ? `${r.seen_lines}/${v}` : "—") },
+        { key: "status", label: "Status", render: (r) => exposureMark(r.status) }] }));
+  }
+  return card({ title: "Skill files", sub: "Every document of the skill, and the CLI docs it sends Claude to, that entered the run's context, measured by what Claude was shown", span: 12 },
+    summary, files, expectedNote || null, changes, accTable, neverList);
+}
+
+function exposureMark(status) {
+  const map = { seen: ["good", "✓"], "partly seen": ["warning", "◐"], "not in the lines read": ["serious", "○"], "file not read": ["serious", "○"],
+    "deletions only": ["muted", "–"], "frontmatter only": ["muted", "–"] };
+  const [tone, sym] = map[status] || ["muted", "?"];
+  return h("span", { class: `smark ${tone}`, title: status }, h("b", null, sym), " " + status);
+}
+
+/* ------------------------------------------------------------------ the interview: questions Claude asked */
+
+const OUTCOME_MARK = { recommended: "●", "other option": "○", picked: "○", typed: "◆", "typed + picked": "◆",
+  "no preference": "□", declined: "✕", unanswered: "✕", interrupted: "✕", error: "✕", replied: "▲", accepted: "▲", "turned down": "▲" };
+const OUTCOME_FAILED = new Set(["declined", "unanswered", "interrupted", "error"]);
+
+function outcomeChip(q) {
+  const o = typeof q === "string" ? q : q.outcome;
+  return h("span", { class: "chip outcome" + (OUTCOME_FAILED.has(o) ? " failed" : ""), title: o }, `${OUTCOME_MARK[o] || "·"} ${o}`);
+}
+
+function questionCell(q) {
+  return h("div", { class: "qcell" }, q.header ? h("span", { class: "chip" }, q.header) : null,
+    q.kind !== "ask" ? h("span", { class: "chip" }, q.kind === "checkpoint" ? "printed checkpoint" : "in prose") : null,
+    h("div", null, q.question || "—"));
+}
+
+function optionsCell(q) {
+  if (!(q.options || []).length) return h("span", { class: "muted" }, q.kind === "ask" ? "no options" : "—");
+  return h("ul", { class: "opts" }, q.options.map((o) =>
+    h("li", { class: (o.chosen ? "chosen" : "") + (o.recommended ? " rec" : ""), title: o.description || "" },
+      o.chosen ? "✓ " : "", o.label, o.preview ? h("span", { class: "muted" }, " (preview)") : null)));
+}
+
+function answerCell(q) {
+  if (q.kind !== "ask") return q.reply ? h("div", null, h("span", { class: "muted" }, "next prompt: "), q.reply) : h("span", { class: "muted" }, "no reply");
+  if (q.outcome === "declined") return h("div", null, h("span", { class: "muted" }, "declined"), q.feedback ? ": " + q.feedback : "");
+  if (q.typed) return h("div", null, h("span", { class: "chip" }, "typed"), " “" + q.typed + "”");
+  return h("div", null, q.answer || h("span", { class: "muted" }, q.outcome), q.notes ? h("div", { class: "muted" }, "note: " + q.notes) : null);
+}
+
+function questionTable(rows, { showRun = false, showVersion = false, limit = 100 } = {}) {
+  const cols = [{ key: "dt", label: "When", num: true, fmt: F.since }];
+  if (showVersion) cols.push({ key: "commit", label: "Version" });
+  if (showRun) cols.push({ key: "run_id", label: "Run", fmt: (v) => v || "—" });
+  cols.push(
+    { key: "topic_label", label: "Topic", cls: "wrap" },
+    { key: "de_topic_label", label: "DE topic · layer", cls: "wrap", render: (r) => h("div", null, r.de_topic_label || "—",
+      r.layer_label ? h("div", { class: "muted" }, r.layer_label) : null) },
+    { key: "question", label: "Question", cls: "wrap", render: questionCell },
+    { key: "options", label: "Options", render: optionsCell, sort: (r) => (r.options || []).length },
+    { key: "answer", label: "Answer", cls: "wrap", render: answerCell },
+    { key: "outcome", label: "Outcome", render: outcomeChip },
+    { key: "wait_ms", label: "Wait", num: true, fmt: F.dur },
+    { key: "flags", label: "Flags", cls: "wrap", render: (r) => ((r.flags || []).length ? h("span", null, r.flags.map((f) => h("span", { class: "chip flag" }, f))) : h("span", { class: "muted" }, "—")) });
+  return dataTable({ rows, limit, columns: cols, selects: [{ key: "topic_label", label: "topics" }, { key: "de_topic_label", label: "DE topics" },
+    { key: "layer_label", label: "layers" }, { key: "outcome", label: "outcomes" }, { key: "kind", label: "channels" }] });
+}
+
+function interviewFacts(s) {
+  if (!s) return null;
+  return h("div", { class: "facts" },
+    h("span", null, h("b", null, F.num(s.asked)), ` asked in ${F.num(s.calls)} rounds`),
+    s.prose ? h("span", null, h("b", null, F.num(s.prose)), " in prose") : null,
+    s.checkpoints_unasked ? h("span", { class: "warn" }, h("b", null, F.num(s.checkpoints_unasked)), " printed checkpoints with no question") : null,
+    s.recommended_offered ? h("span", null, h("b", null, `${s.recommended_picked}/${s.recommended_offered}`), " took the recommended option") : null,
+    s.typed ? h("span", null, h("b", null, F.num(s.typed)), " typed answers") : null,
+    s.no_preference + s.declined + s.unanswered ? h("span", { class: "warn" }, h("b", null, F.num(s.no_preference + s.declined + s.unanswered)), " came back empty") : null,
+    s.reasked ? h("span", { class: "warn" }, h("b", null, F.num(s.reasked)), " asked again") : null,
+    s.wait_p50_ms !== null && s.wait_p50_ms !== undefined ? h("span", null, h("b", null, F.dur(s.wait_p50_ms)), " median wait") : null);
+}
+
+/* One column per round (an AskUserQuestion call, or a reply asking in prose), one lane per topic; the mark's
+   shape is the outcome, so identity never rests on colour. Dashed lines: where a run started, and its first create. */
+function interviewMap(width, rows, { order = [], markers = [] } = {}) {
+  const rounds = [];
+  const roundOf = new Map();
+  for (const q of rows) {
+    const key = q.call || String(q.qid).split("#")[0];
+    if (!roundOf.has(key)) { roundOf.set(key, rounds.length); rounds.push({ key, t: q.t, dt: q.dt, run: q.run_id }); }
+  }
+  const present = Array.from(new Set(rows.map((q) => q.topic)));
+  const lanes = order.filter((t) => present.includes(t)).concat(present.filter((t) => !order.includes(t)));
+  const label = Object.fromEntries(rows.map((q) => [q.topic, q.topic_label]));
+  const m = { l: 190, r: 14, t: 14, b: 30 }, laneH = 24;
+  const colW = Math.max(16, Math.min(44, (width - m.l - m.r) / Math.max(1, rounds.length)));
+  const W = Math.max(width, m.l + m.r + colW * rounds.length), H = m.t + m.b + laneH * lanes.length;
+  const svg = sv("svg", { class: "chart", width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Questions by round and topic" });
+  const x = (i) => m.l + colW * (i + 0.5), y = (topic) => m.t + laneH * (lanes.indexOf(topic) + 0.5);
+  lanes.forEach((t, i) => {
+    if (i % 2 === 0) svg.appendChild(sv("rect", { class: "lane-bg", x: m.l, y: m.t + laneH * i, width: W - m.l - m.r, height: laneH }));
+    svg.appendChild(sv("text", { class: "lane-label", x: m.l - 8, y: m.t + laneH * (i + 0.5) + 4, "text-anchor": "end" }, F.short(label[t] || t, 30)));
+  });
+  const step = Math.max(1, Math.ceil(rounds.length / Math.max(1, Math.floor((W - m.l - m.r) / 36))));
+  rounds.forEach((r, i) => { if (i % step === 0) svg.appendChild(sv("text", { x: x(i), y: H - m.b + 16, "text-anchor": "middle" }, String(i + 1))); });
+  svg.appendChild(sv("text", { x: m.l, y: H - 4 }, "round →"));
+  for (const mk of markers) {
+    const i = rounds.findIndex((r) => (r.t || 0) >= mk.t && (!mk.run || r.run === mk.run));
+    if (i < 0) continue;
+    const xx = m.l + colW * i;
+    svg.appendChild(sv("line", { class: "marker-line", x1: xx, x2: xx, y1: m.t - 6, y2: H - m.b, "stroke-dasharray": "3 3" }));
+    svg.appendChild(sv("text", { x: xx + 3, y: m.t - 3 }, mk.label));
+  }
+  const seen = {};
+  for (const q of rows) {
+    const i = roundOf.get(q.call || String(q.qid).split("#")[0]);
+    const k = `${i}|${q.topic}`;
+    const off = (seen[k] = (seen[k] || 0) + 1) - 1;
+    const cx = x(i) + (off ? (off % 2 ? 1 : -1) * 7 * Math.ceil(off / 2) : 0), cy = y(q.topic);
+    const o = q.outcome, failed = OUTCOME_FAILED.has(o);
+    let mark;
+    if (q.kind !== "ask") mark = sv("path", { d: `M${cx},${cy - 6}L${cx + 6},${cy + 5}L${cx - 6},${cy + 5}Z`, class: "qm hollow" });
+    else if (failed) mark = sv("path", { d: `M${cx - 5},${cy - 5}L${cx + 5},${cy + 5}M${cx + 5},${cy - 5}L${cx - 5},${cy + 5}`, class: "qm cross" });
+    else if (o === "typed" || o === "typed + picked") mark = sv("path", { d: `M${cx},${cy - 6}L${cx + 6},${cy}L${cx},${cy + 6}L${cx - 6},${cy}Z`, class: "qm" });
+    else if (o === "no preference") mark = sv("rect", { x: cx - 5, y: cy - 5, width: 10, height: 10, class: "qm hollow" });
+    else if (o === "recommended") mark = sv("circle", { cx, cy, r: 5.5, class: "qm" });
+    else mark = sv("circle", { cx, cy, r: 5, class: "qm hollow" });
+    mark.setAttribute("tabindex", "0");
+    Tip.bind(mark, () => ({ title: `Round ${i + 1} · ${F.since(q.dt)}${q.run_id ? " · " + q.run_id : ""}`,
+      rows: [[o, q.topic_label], ...(q.wait_ms !== null && q.wait_ms !== undefined ? [[F.dur(q.wait_ms), "to answer"]] : []), ...(q.flags || []).map((f) => [f, "flag"])],
+      body: `${q.question || ""}\n→ ${q.typed ? "“" + q.typed + "”" : q.answer || q.reply || q.feedback || o}` }));
+    svg.appendChild(mark);
+  }
+  return svg;
+}
+
+function interviewLegend() {
+  return h("div", { class: "legend" }, [["●", "recommended option"], ["○", "another option"], ["◆", "typed an answer"], ["□", "no preference"],
+    ["✕", "declined or unanswered"], ["▲", "asked in prose"]].map(([sym, label]) => h("span", { class: "k" }, h("b", { class: "sym" + (sym === "✕" ? " failed" : "") }, sym), label)));
+}
+
+const OUTCOME_GROUPS = [
+  ["recommended", "recommended option", "var(--s1)"], ["another", "another option", "var(--s2)"], ["typed", "typed", "var(--s3)"],
+  ["nopref", "no preference", "var(--s4)"], ["failed", "declined or unanswered", "var(--s5)"], ["prose", "in prose", "var(--s6)"]];
+
+function outcomeGroup(q) {
+  if (q.kind !== "ask") return "prose";
+  if (q.outcome === "recommended") return "recommended";
+  if (q.outcome === "typed" || q.outcome === "typed + picked") return "typed";
+  if (q.outcome === "no preference") return "nopref";
+  if (OUTCOME_FAILED.has(q.outcome)) return "failed";
+  return "another";
+}
+
+/* Questions per topic, split by what came back. */
+function topicOutcomeBars(rows, order = []) {
+  const topics = Array.from(new Set(rows.map((q) => q.topic)));
+  topics.sort((a, b) => (order.indexOf(a) + 1 || 999) - (order.indexOf(b) + 1 || 999));
+  const data = topics.map((t) => {
+    const qs = rows.filter((q) => q.topic === t);
+    const values = {};
+    for (const q of qs) values[outcomeGroup(q)] = (values[outcomeGroup(q)] || 0) + 1;
+    return { label: qs[0].topic_label, values };
+  });
+  return stackedBars(data, OUTCOME_GROUPS.map(([key, label, color]) => ({ key, label, color })));
+}
+
+function flagBars(flags) {
+  const items = Object.entries(flags || {}).map(([name, n]) => ({ name, n }));
+  if (!items.length) return h("div", { class: "empty" }, "No question broke a rule.");
+  return barList(items, { label: (it) => it.name, value: (it) => it.n });
+}
+
+function interviewMarkers(runs) {
+  const out = [];
+  for (const r of runs || []) {
+    out.push({ t: r.start_ms, label: `${r.skill || ""} ${String(r.run_id || "").split(":")[1] || ""}`.trim(), run: r.run_id });
+    if (r.first_create_dt !== null && r.first_create_dt !== undefined) out.push({ t: r.start_ms + r.first_create_dt, label: "first create", run: r.run_id });
+  }
+  return out;
 }

@@ -703,6 +703,62 @@ function buildRaw() {
       h("details", { class: "raw", style: "margin-top:12px" }, h("summary", null, "Totals as JSON"), h("pre", { class: "json" }, JSON.stringify(D.totals, null, 2)))));
 }
 
+
+/* ------------------------------------------------------------------ skill runs & trace */
+
+function buildInterview() {
+  const iv = D.interview;
+  if (!iv || !(iv.questions || []).length) return h("div", { class: "empty" }, "Claude asked you no questions in this session.");
+  const rows = iv.questions;
+  const order = Array.from(new Set(rows.map((q) => q.topic)));
+  const empty = iv.no_preference + iv.declined + iv.unanswered;
+  const tiles = [
+    ["Questions", F.num(iv.total), `${iv.asked} through AskUserQuestion · ${iv.prose} in prose`],
+    ["Rounds", F.num(iv.calls), "AskUserQuestion calls"],
+    ["Recommended option taken", iv.recommended_offered ? `${iv.recommended_picked}/${iv.recommended_offered}` : "—",
+      iv.recommended_offered ? `${F.pct(iv.recommended_rate)} of the questions that offered one` : "no question offered one"],
+    ["Typed answers", F.num(iv.typed), "none of the options fit"],
+    ["Came back empty", F.num(empty), `${iv.no_preference} no preference · ${iv.declined} declined · ${iv.unanswered} unanswered`],
+    ["Median wait", F.dur(iv.wait_p50_ms), iv.wait_max_ms ? `longest ${F.dur(iv.wait_max_ms)}` : "for an answer"],
+  ];
+  const kpiRow = h("div", { class: "kpis" }, tiles.map(([l, v, sub]) => h("div", { class: "kpi" }, h("div", { class: "label" }, l), h("div", { class: "value" }, v), h("div", { class: "sub" }, sub))));
+  return h("div", null, kpiRow, h("div", { class: "grid" },
+    chartCard({ title: "The interview, round by round", sub: "One column per round (an AskUserQuestion call, or a reply asking in prose), one lane per topic; dashed lines mark where a skill run started and its first create",
+      span: 12, legendEl: interviewLegend(), chart: (w) => interviewMap(w, rows, { order, markers: interviewMarkers(iv.runs) }),
+      table: () => questionTable(rows, { showRun: true, limit: 200 }) }),
+    card({ title: "By topic", sub: "What came back, per topic", span: 7 }, topicOutcomeBars(rows, order)),
+    card({ title: "Against the skill's rules", sub: "Questions flagged: a missing recommendation, no measured numbers, jargon, asked again, in prose…", span: 5 }, flagBars(iv.flags)),
+    card({ title: "Every question", sub: "In order; the options show what was offered (✓ the pick), the answer what came back", span: 12 }, questionTable(rows, { showRun: true, limit: 200 }))));
+}
+
+function buildSkillRuns() {
+  const runs = D.skill_runs || [];
+  if (!runs.length) return h("div", { class: "empty" }, "No skill was invoked in this session.");
+  const steps = D.trace.steps;
+  const panel = h("div");
+  const open = (id) => {
+    const run = runs.find((r) => r.run_id === id);
+    panel.replaceChildren(h("h2", { style: "font-size:15px;margin:18px 0 10px" }, `Run ${id} · ${run.skill}`), runDetail(run, run.steps.map((i) => steps[i])));
+    requestAnimationFrame(() => Charts.renderVisible());
+  };
+  const table = dataTable({ search: false, rows: runs, sortKey: "start_ms", sortDir: "asc", columns: [
+    { key: "run_id", label: "Run", render: (r) => { const b = h("button", { class: "linkbtn", type: "button" }, r.run_id); b.addEventListener("click", () => open(r.run_id)); return b; } },
+    { key: "skill", label: "Skill" }, { key: "mode", label: "Invoked by", render: (r) => modeBadge(r.mode) },
+    { key: "version", label: "Version", fmt: (v) => (v.status === "commit" ? v.commit : v.label) },
+    { key: "start_ms", label: "Started", fmt: F.time }, { key: "turn_count", label: "Turns", num: true },
+    { key: "tool_calls", label: "Tools", num: true }, { key: "tool_errors", label: "Errors", num: true }, { key: "cli_calls", label: "CLI", num: true },
+    { key: "question_calls", label: "Asked", num: true }, { key: "objects_created", label: "Created", num: true },
+    { key: "cost_usd", label: "Cost", num: true, fmt: F.usd }, { key: "checks_failed", label: "Checks ✗", num: true },
+    { key: "end_reason", label: "Ended" }] });
+  setTimeout(() => open(runs[0].run_id), 0);
+  return h("div", null, card({ title: "Skill runs", sub: "A run lasts from the invocation until another skill takes over or the session ends, follow-up turns included", span: 12 }, table), panel);
+}
+
+function buildTrace() {
+  return h("div", { class: "grid" }, card({ title: "Trace", sub: "Every prompt, Claude API request, tool call and notable event in order — click a row for its input and output", span: 12 },
+    traceView(D.trace.steps)));
+}
+
 /* ------------------------------------------------------------------ mount */
 
 (function mount() {
@@ -710,7 +766,10 @@ function buildRaw() {
   const t = tabs([
     { id: "overview", label: "Overview", build: buildOverview },
     { id: "timeline", label: "Timeline", build: buildTimeline },
+    { id: "trace", label: "Trace", count: D.trace.count, build: buildTrace },
     { id: "skills", label: "Skills", count: T.skills_invoked, build: buildSkills },
+    { id: "runs", label: "Skill runs", count: (D.skill_runs || []).length, build: buildSkillRuns },
+    { id: "interview", label: "Interview", count: (D.interview || {}).total || 0, build: buildInterview },
     { id: "tools", label: "Tools", count: T.tool_calls, build: buildTools },
     { id: "cost", label: "Tokens & cost", build: buildCost },
     { id: "turns", label: "Turns", count: T.turns, build: buildTurns },

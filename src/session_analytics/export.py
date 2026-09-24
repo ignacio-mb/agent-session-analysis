@@ -46,11 +46,12 @@ def parse_formats(value):
 
 
 def export_session(path, out_dir=None, formats=FORMATS, full=False, redact=True, pricing=None,
-                   current_id=None, now_ms=None, root=None, own_only=False):
+                   current_id=None, now_ms=None, root=None, own_only=False, checks=(), skill_sources=()):
     session = parse_session(path, own_only=own_only)
     redactor = Redactor(enabled=redact)
     a = analyze(session, pricing or Pricing(), redactor=redactor, full=full, current_id=current_id,
-                now_ms=now_ms if now_ms is not None else time.time() * 1000)
+                now_ms=now_ms if now_ms is not None else time.time() * 1000, checks=checks,
+                skill_sources=skill_sources)
     out = Path(out_dir) if out_dir else default_out_dir(a, root)
     out.mkdir(parents=True, exist_ok=True)
     paths = {}
