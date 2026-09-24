@@ -20,6 +20,7 @@ import re
 from collections import Counter, defaultdict
 
 from . import checks as checks_mod
+from . import questions as questions_mod
 from . import skillfiles, util, versions
 
 READ_FIRST_RE = re.compile(r"^\s*\**Read first\**\s*:(.*)$", re.I | re.M)
@@ -137,11 +138,26 @@ def _changes_seen(src, version, sf, key, docs):
     return {"from": prev["short"], "to": version.get("commit"), "subject": version.get("subject"), "files": files}
 
 
-def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=None):
+def taxonomy_for(skill, check_files=(), cache=None):
+    """The interview taxonomy a skill declares in its checks file, or the generic one."""
+    cache = {} if cache is None else cache
+    if skill not in cache:
+        try:
+            spec = checks_mod.load_interview(check_files, skill=skill)
+        except (OSError, ValueError):
+            spec = None
+        cache[skill] = questions_mod.Taxonomy(spec, skill)
+    return cache[skill]
+
+
+def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=None, raw_qs=None):
     from .analyze import categorize_error, cli_calls, summarize_input, usage_totals
 
     s = ctx.s
     docs = docs or skillfiles.DocSet.for_session(s)
+    if raw_qs is None:
+        raw_qs = questions_mod.raw_questions(s, reqs, calls, ctx.text)
+    taxonomies = {}
     skill_dirs = defaultdict(set)
     for inv in s.skills:
         if inv.base_dir:
@@ -213,14 +229,21 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
             prev_failed_sigs = sigs if c.status == "error" else None
 
         errors = [c for c in cl if c.status == "error"]
-        questions = []
-        for c in main_cl:
-            if c.name == "AskUserQuestion":
-                ans = c.facts.get("answers") or {}
-                for q in c.facts.get("questions") or []:
-                    questions.append({"t": c.ts_call, "status": c.status, "header": q.get("header"),
-                                      "question": ctx.text(q.get("question"), 300),
-                                      "answer": ctx.text(ans.get(q.get("question")), 300) if ans else None})
+        # The interview: the run's questions, named in the skill's own terms, placed against its first create.
+        run_qs = questions_mod.classify([dict(q) for q in raw_qs if inside(q["t"], q["agent"])
+                                         and (agent is not None or q["scope"] == "main")],
+                                        taxonomy_for(key, check_files, taxonomies))
+        first_create = next((c.ts_call for c in sorted(main_cl, key=lambda c: c.ts_call or 0) if c.name == "Bash"
+                             and any(x["signature"].endswith(" create") and not x["help"]
+                                     for x in cli_calls(c.input.get("command")))), None)
+        for q in run_qs:
+            q["dt"] = (q["t"] - start) if q["t"] is not None else None
+            q["before_create"] = (q["t"] < first_create) if first_create is not None and q["t"] is not None else None
+        interview = questions_mod.summarize(run_qs)
+        q_by_call = defaultdict(list)
+        for q in run_qs:
+            if q["call"]:
+                q_by_call[q["call"]].append(q)
         objects = []
         for c in main_cl:
             for o in created_objects(c, cli_calls):
@@ -250,6 +273,8 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
                                  and a["op"] in ("read", "search") and a["path"] and not a["path"].endswith("/")],
                    "files": [{"file": f"{a['owner']}:{a['path']}", "op": a["op"], "how": a["how"] or ""}
                              for a in by_call.get(c.id, ())],
+                   "topics": [q["topic"] for q in q_by_call.get(c.id, ())],
+                   "flags": [f for q in q_by_call.get(c.id, ()) for f in q["flags"]],
                    "input": summarize_input(c), "status": c.status} for c in main_cl]
         if key not in checks_cache:
             try:
@@ -311,7 +336,17 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
             "expected_by_playbooks": sorted(expected),
             "missing_expected": sorted(expected - read_set),
             "not_named_by_playbooks": sorted(p for p in read_set - expected if p.startswith("references/")),
-            "questions": questions, "questions_asked": len(questions),
+            "interview": dict(interview, questions=[questions_mod.public(q, run_id=f"{s.session_id[:8]}:{n}")
+                                                    for q in run_qs],
+                              taxonomy=taxonomy_for(key, check_files, taxonomies).source,
+                              first_create_dt=(first_create - start) if first_create is not None else None),
+            "questions_asked": interview["asked"], "prose_questions": interview["prose"],
+            "recommended_rate": interview["recommended_rate"], "typed_answers": interview["typed"],
+            "unanswered_questions": interview["unanswered"] + interview["declined"],
+            "question_wait_p50_ms": interview["wait_p50_ms"], "questions_reasked": interview["reasked"],
+            "questions_flagged": interview["flagged"],
+            "questions_before_create": sum(1 for q in run_qs if q["before_create"] and q["kind"] == "ask"),
+            "first_question_dt": next((q["dt"] for q in run_qs if q["kind"] == "ask"), None),
             "question_calls": sum(1 for c in main_cl if c.name == "AskUserQuestion"),
             "objects": objects, "objects_created": sum(1 for o in objects if o["verb"] == "create"),
             "files_written": written,

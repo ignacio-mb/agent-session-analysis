@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__, locate, render_html, skillfiles, util, versions
+from . import questions as questions_mod
 from .analyze import analyze
 from .export import _slug, default_root
 from .parse import parse_session
@@ -31,13 +32,15 @@ from .pricing import Pricing
 from .redact import Redactor
 from .render_csv import skill_file_rows
 from .rollup import parse_since
-from .skillruns import skill_key
+from .skillruns import skill_key, taxonomy_for
 
 SCHEMA = "convo-analysis/skill-v1"
 RUN_METRICS = ("cost_usd", "requests", "tool_calls", "tool_errors", "error_rate", "cli_calls", "help_lookups",
                "retries_after_error", "question_calls", "objects_created", "duration_ms", "active_ms", "turn_count",
                "follow_up_turns", "context_peak", "output_tokens", "checks_failed", "docs_read", "cli_docs_read",
-               "doc_tokens", "doc_listings", "doc_rereads")
+               "doc_tokens", "doc_listings", "doc_rereads", "questions_asked", "prose_questions", "recommended_rate",
+               "typed_answers", "unanswered_questions", "question_wait_p50_ms", "questions_flagged",
+               "questions_before_create")
 FULL = ("full", "injected", "injected + re-read")
 
 
@@ -155,7 +158,7 @@ def _version_key(r):
     return v.get("sha") or v.get("fingerprint") or "unknown"
 
 
-def build_report(name, runs, meta, since, project):
+def build_report(name, runs, meta, since, project, check_files=()):
     key = skill_key(name)
     by_version = defaultdict(list)
     for r in runs:
@@ -236,7 +239,9 @@ def build_report(name, runs, meta, since, project):
             "context_end", "context_peak", "output_tokens", "cache_hit_ratio", "playbooks", "references", "missing_expected",
             "not_named_by_playbooks", "checks_passed", "checks_failed", "denials", "interrupted", "subagents", "models",
             "docs_read", "docs_total", "docs_never", "cli_docs_read", "doc_tokens", "doc_rereads", "doc_listings",
-            "doc_unprompted", "doc_version_mismatches")}
+            "doc_unprompted", "doc_version_mismatches", "prose_questions", "recommended_rate", "typed_answers",
+            "unanswered_questions", "question_wait_p50_ms", "questions_reasked", "questions_flagged",
+            "questions_before_create", "first_question_dt")}
                         | {"version": r["version"].get("label"), "version_key": _version_key(r),
                            "commit": r["version"].get("commit"),
                            "checks": {c["id"]: c["status"] for c in r["checks"]}})
@@ -261,12 +266,128 @@ def build_report(name, runs, meta, since, project):
         "runs": run_rows,
         "failures": failure_rows,
         "details": {r["run_id"]: {k: r.get(k) for k in (
-            "skill_files", "changes_seen", "cli", "questions", "objects", "files_written", "final_message", "errors",
+            "skill_files", "changes_seen", "cli", "interview", "objects", "files_written", "final_message", "errors",
             "checks", "turns", "nested_skills", "failed_invocations", "actions", "steps", "version",
             "expected_by_playbooks", "tools", "error_categories", "transcript")} for r in runs},
     }
+    report["interview"] = _interview(runs, version_rows, taxonomy_for(key, check_files))
     report["insights"] = _insights(report)
     return report
+
+
+def _interview(runs, version_rows, taxonomy):
+    """Every question of every run, by topic and by version: what the skill asks, and what comes back."""
+    vkey = {r["run_id"]: _version_key(r) for r in runs}
+    commit = {r["run_id"]: r["version"].get("commit") or r["version"].get("label") for r in runs}
+    rows = [dict(q, version_key=vkey[r["run_id"]], commit=commit[r["run_id"]], session_title=r.get("session_title"))
+            for r in runs for q in r["interview"]["questions"]]
+    order = {t: i for i, t in enumerate(taxonomy.order())}
+    catalog = {}
+    for q in rows:
+        c = catalog.setdefault(q["topic"], {"topic": q["topic"], "label": q["topic_label"], "rows": []})
+        c["rows"].append(q)
+    cat_rows = []
+    for c in catalog.values():
+        qs = c.pop("rows")
+        summ = questions_mod.summarize(qs)
+        topic = next((t for t in summ["topics"] if t["topic"] == c["topic"]), {})
+        per_version = {}
+        for v in version_rows:
+            vq = [q for q in qs if q["version_key"] == v["key"]]
+            vs = questions_mod.summarize(vq) if vq else None
+            per_version[v["key"]] = {"runs": v["runs"], "runs_asking": len({q["run_id"] for q in vq}),
+                                     "asked": vs["asked"] if vs else 0, "prose": vs["prose"] if vs else 0,
+                                     "recommended": vs["recommended_picked"] if vs else 0,
+                                     "offered": vs["recommended_offered"] if vs else 0,
+                                     "typed": vs["typed"] if vs else 0, "outcomes": vs["outcomes"] if vs else {}}
+        headers = Counter(q["header"] for q in qs if q.get("header"))
+        examples = list(dict.fromkeys(q["question"] for q in qs if q.get("question")))[:4]
+        cat_rows.append(dict(c, asked=summ["asked"], prose=summ["prose"], checkpoints=summ["checkpoints_unasked"],
+                             runs=len({q["run_id"] for q in qs}), offered=summ["recommended_offered"],
+                             recommended=summ["recommended_picked"], recommended_rate=summ["recommended_rate"],
+                             typed=summ["typed"], no_preference=summ["no_preference"],
+                             declined=summ["declined"], unanswered=summ["unanswered"] + summ["prose_unanswered"],
+                             reasked=summ["reasked"], wait_p50_ms=summ["wait_p50_ms"], outcomes=summ["outcomes"],
+                             answers=topic.get("answers") or {}, flags=summ["flags"], headers=dict(headers.most_common(6)),
+                             examples=examples, per_version=per_version,
+                             once=next((t["once"] for t in taxonomy.topics if t["id"] == c["topic"]), False),
+                             must_ask=next((t["must_ask"] for t in taxonomy.topics if t["id"] == c["topic"]), False)))
+    cat_rows.sort(key=lambda c: (order.get(c["topic"], 99), -(c["asked"] + c["prose"])))
+    for v in version_rows:
+        vq = [q for q in rows if q["version_key"] == v["key"]]
+        v["interview"] = questions_mod.summarize(vq)
+        del v["interview"]["topics"]
+    typed = [{"run_id": q["run_id"], "commit": q["commit"], "topic": q["topic"], "topic_label": q["topic_label"],
+              "header": q["header"], "question": q["question"], "typed": q["typed"],
+              "options": [o["label"] for o in q["options"]]} for q in rows if q["typed"]]
+    return {"taxonomy": {"source": taxonomy.source, "prose": "avoid" if taxonomy.prose_is_a_miss else None,
+                         "jargon": taxonomy.jargon_words,
+                         "topics": [{"id": t["id"], "label": t["label"], "once": t["once"], "evidence": t["evidence"],
+                                     "must_ask": t["must_ask"]} for t in taxonomy.topics]},
+            "summary": questions_mod.summarize(rows), "catalog": cat_rows, "questions": rows, "typed": typed}
+
+
+def _n(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def _interview_insights(rep):
+    """What the interview says about tuning the skill's questions."""
+    iv = rep.get("interview") or {}
+    s, cat = iv.get("summary") or {}, iv.get("catalog") or []
+    if not s.get("total"):
+        return []
+    notes = [f"{s['total']} questions across {rep['totals']['runs']} runs: {s['asked']} through AskUserQuestion in "
+             f"{s['calls']} rounds" + (f", {s['prose']} in prose" if s["prose"] else "") +
+             (f"; the recommended option was picked for {s['recommended_picked']}/{s['recommended_offered']} "
+              f"({util.fmt_pct(s['recommended_rate'])})" if s["recommended_offered"] else "") + "."]
+    always = [c for c in cat if c["offered"] >= 3 and c["recommended"] == c["offered"] and not c["must_ask"]]
+    if always:
+        notes.append("Always answered with the recommended option: " + ", ".join(
+            f"{c['label']} ({c['recommended']}/{c['offered']} in {c['runs']} runs)" for c in always[:3]) +
+            ". If these decisions are reversible, they could be decided and shown instead of asked.")
+    vs = [v for v in rep["versions"] if (v.get("interview") or {}).get("total", 0) >= 3]  # enough to compare
+    if len(vs) >= 2:
+        a, b = vs[-2]["interview"], vs[-1]["interview"]
+        if abs(util.ratio(a["prose"], a["total"]) - util.ratio(b["prose"], b["total"])) >= 0.25:
+            notes.append(f"Questions asked in prose: {a['prose']}/{a['total']} on {vs[-2]['commit'] or vs[-2]['label']} → "
+                         f"{b['prose']}/{b['total']} on {vs[-1]['commit'] or vs[-1]['label']}.")
+        ra, rb = a["recommended_rate"], b["recommended_rate"]
+        if ra is not None and rb is not None and abs(ra - rb) >= 0.2:
+            notes.append(f"Recommended option picked: {util.fmt_pct(ra)} on {vs[-2]['commit'] or vs[-2]['label']} → "
+                         f"{util.fmt_pct(rb)} on {vs[-1]['commit'] or vs[-1]['label']}.")
+    missed = [c for c in cat if c["offered"] >= 2 and (c["recommended_rate"] or 0) <= 0.5]
+    for c in missed[:2]:
+        answers = ", ".join(f"“{a}” ×{n}" for a, n in list(c["answers"].items())[:3])
+        notes.append(f"The recommendation missed for {c['label']}: picked {c['recommended']}/{c['offered']}; "
+                     f"answers given: {answers}.")
+    if iv.get("typed"):
+        ex = iv["typed"][:3]
+        notes.append(f"{_n(len(iv['typed']), 'answer')} typed instead of picked (the options did not fit): " + "; ".join(
+            f"“{util.one_line(t['typed'], 60)}” for “{util.one_line(t['question'], 70)}”" for t in ex) + ".")
+    lost = s["no_preference"] + s["declined"] + s["unanswered"]
+    if lost:
+        notes.append(f"{_n(lost, 'question')} came back empty: {s['no_preference']} with no preference, {s['declined']} "
+                     f"declined, {s['unanswered']} unanswered.")
+    reasked = [c for c in cat if c["reasked"]]
+    if reasked:
+        notes.append("Asked again within a run: " + ", ".join(f"{c['label']} ×{c['reasked']}" for c in reasked[:4]) + ".")
+    fl = s.get("flags") or {}
+    if fl.get("asked in prose") or fl.get("checkpoint with no AskUserQuestion"):
+        ex = next((q for q in iv["questions"] if "asked in prose" in q["flags"]), None)
+        notes.append(f"{_n(fl.get('asked in prose', 0), 'question')} asked in prose and "
+                     f"{_n(fl.get('checkpoint with no AskUserQuestion', 0), 'checkpoint block')} printed with no "
+                     f"AskUserQuestion behind them" +
+                     (f" (e.g. “{util.one_line(ex['question'], 90)}”)" if ex else "") + ".")
+    rules = {k: fl[k] for k in ("no recommendation", "recommendation not first", "fewer than two options",
+                                "no measured numbers", "jargon", "code in the question", "after an error") if fl.get(k)}
+    if rules:
+        notes.append("Questions against the skill's own rules: " + ", ".join(f"{k} ×{n}" for k, n in rules.items()) + ".")
+    if s.get("wait_p50_ms"):
+        slow = max((q for q in iv["questions"] if q["kind"] == "ask" and q["wait_ms"]), key=lambda q: q["wait_ms"])
+        notes.append(f"Median wait for an answer {util.fmt_duration(s['wait_p50_ms'])}; the longest "
+                     f"{util.fmt_duration(slow['wait_ms'])}, for “{util.one_line(slow['question'], 80)}”.")
+    return notes
 
 
 def _file_stats(rs, fkey):
@@ -362,7 +483,8 @@ def _insights(rep):
                              f"{vb['commit'] or vb['label']}.")
         for m, label in (("cost_usd", "cost"), ("tool_calls", "tool calls"), ("tool_errors", "tool errors"),
                          ("question_calls", "questions"), ("help_lookups", "help lookups"), ("duration_ms", "duration"),
-                         ("docs_read", "skill files read"), ("doc_tokens", "≈ tokens of skill docs read")):
+                         ("docs_read", "skill files read"), ("doc_tokens", "≈ tokens of skill docs read"),
+                         ("questions_asked", "questions asked")):
             x, y = a["median"].get(m), b["median"].get(m)
             if x and y and (y / x >= 1.5 or y / x <= 0.67):
                 fmt = util.fmt_usd if m == "cost_usd" else (util.fmt_duration if m == "duration_ms" else
@@ -370,6 +492,7 @@ def _insights(rep):
                 notes.append(f"Median {label} per run moved {fmt(x)} → {fmt(y)} from {a['commit'] or a['label']} to "
                              f"{b['commit'] or b['label']} (n={a['runs']} → {b['runs']}).")
     notes += _file_insights(rep)
+    notes += _interview_insights(rep)
     worst = sorted(((c["id"], sum(v["checks"].get(c["id"], {}).get("fail", 0) for v in vs)) for c in rep["checks"]),
                    key=lambda x: -x[1])
     if worst and worst[0][1]:
@@ -510,6 +633,7 @@ def render_markdown(rep):
                                 if v["checks"][c["id"]]["pass"] + v["checks"][c["id"]]["fail"] else "n/a"
                                 for v in rep["versions"]) for c in rep["checks"]])]
     lines += _files_markdown(rep)
+    lines += _interview_markdown(rep)
     lines += ["## Runs", "", table(
         ["Run", "Started", "Version", "How", "Turns", "Tools", "Errors", "mb/CLI", "Help", "Asked", "Created",
          "Cost", "Checks ✗", "Prompt"],
@@ -555,6 +679,31 @@ def _files_markdown(rep):
     return out
 
 
+def _interview_markdown(rep):
+    from .render_md import table
+    iv = rep.get("interview") or {}
+    if not (iv.get("summary") or {}).get("total"):
+        return []
+    vs = rep["versions"]
+    out = ["## Interview", "", table(
+        ["Version", "Runs", "Questions", "In prose", "Recommended taken", "Typed", "Empty", "Median wait"],
+        [(v["commit"] or v["label"][:14], v["runs"], v["interview"]["asked"], v["interview"]["prose"],
+          f"{v['interview']['recommended_picked']}/{v['interview']['recommended_offered']}" if v["interview"]["recommended_offered"] else "—",
+          v["interview"]["typed"], v["interview"]["no_preference"] + v["interview"]["declined"] + v["interview"]["unanswered"],
+          util.fmt_duration(v["interview"]["wait_p50_ms"]) if v["interview"]["wait_p50_ms"] is not None else "—")
+         for v in vs]),
+        "### Question catalog", "", table(
+        ["Topic", "Asked", "In prose", "Runs", "Recommended taken", "Typed", "Asked again", "Median wait", "Answers given"],
+        [(c["label"], c["asked"], c["prose"], c["runs"], f"{c['recommended']}/{c['offered']}" if c["offered"] else "—",
+          c["typed"], c["reasked"], util.fmt_duration(c["wait_p50_ms"]) if c["wait_p50_ms"] is not None else "—",
+          "; ".join(f"{k} ×{n}" for k, n in list(c["answers"].items())[:3])) for c in iv["catalog"]])]
+    if iv.get("typed"):
+        out += ["### Where the options fell short", ""]
+        out += [f"- {t['run_id']} ({t['topic_label']}): “{util.one_line(t['question'], 100)}” — offered "
+                f"{' / '.join(t['options'])}; typed “{t['typed']}”" for t in iv["typed"]] + [""]
+    return out
+
+
 def _csv(path, rows):
     if not rows:
         Path(path).write_text("", encoding="utf-8")
@@ -572,7 +721,7 @@ def run_skill_report(name, claude_dir=None, project=None, since="30d", limit=500
                      formats=("json", "md", "html", "csv"), redact=True, pricing=None, check_files=(), sources=(),
                      now_ms=None):
     runs, meta = collect_runs(name, claude_dir, project, since, limit, redact, pricing, check_files, sources, now_ms)
-    rep = build_report(name, runs, meta, since, project)
+    rep = build_report(name, runs, meta, since, project, check_files=check_files)
     out = Path(out_dir) if out_dir else (default_root() / "_skills" /
                                          f"{_slug(rep['skill'])}_{_slug(rep['scope']['label'])}_{since}_"
                                          f"{datetime.now().strftime('%Y-%m-%d')}")
@@ -599,6 +748,12 @@ def run_skill_report(name, claude_dir=None, project=None, since="30d", limit=500
                                 for r in rep["runs"]])
         _csv(d / "failures.csv", rep["failures"])
         _csv(d / "skill_files.csv", skill_file_rows(runs))
+        _csv(d / "questions.csv", [{k: q.get(k) for k in ("qid", "run_id", "commit", "t", "dt", "kind", "form", "topic",
+                                                          "topic_label", "header", "question", "options", "multi",
+                                                          "recommended_label", "outcome", "answer", "typed", "reply",
+                                                          "notes", "feedback", "wait_ms", "flags", "before_create",
+                                                          "reask_of")}
+                                   for q in rep["interview"]["questions"]])
         paths["csv"] = str(d)
     summary = render_markdown(rep).split("## Checks by version")[0].split("## Runs")[0].rstrip() + "\n"
     if paths:

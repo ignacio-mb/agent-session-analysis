@@ -134,7 +134,7 @@ def test_harness_skill_nests_instead_of_owning_the_run(claude_dir, skill_repo, c
     (run,) = a["skill_runs"]
     assert run["skill"] == "demo" and run["version"]["subject"] == "v2: ask first"
     assert [n["name"] for n in run["nested_skills"]] == ["workflow-authoring"]
-    assert run["question_calls"] == 1 and run["questions"][0]["answer"] == "Yes"
+    assert run["question_calls"] == 1 and run["interview"]["questions"][0]["answer"] == "Yes"
     assert {c["id"]: c["status"] for c in run["checks"]}["ask-first"] == "pass"
 
 

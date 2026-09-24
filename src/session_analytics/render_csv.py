@@ -35,6 +35,10 @@ TABLES = {
                                     "tool_errors", "skills", "final_context_tokens", "reported_final_context_tokens",
                                     "reported_tool_uses", "task_prompt", "transcript"]),
     "errors.csv": ("errors", ["ts", "turn", "tool", "scope", "category", "input", "message"]),
+    "questions.csv": ("questions", ["qid", "run_id", "skill", "t", "dt", "turn", "kind", "form", "topic", "topic_label",
+                                    "header", "question", "options", "multi", "recommended_label", "outcome", "answer",
+                                    "typed", "reply", "notes", "feedback", "wait_ms", "batch_size", "flags",
+                                    "before_create", "reask_of"]),
     "skill_files.csv": ("skill_files", ["run_id", "skill", "version", "owner", "path", "kind", "order", "how",
                                         "coverage", "seen", "total", "lines", "sections", "first_dt", "accesses",
                                         "reads", "searches", "rereads", "via", "named_by", "found_by", "version_check",
@@ -57,6 +61,8 @@ def _rows(a, key):
         return a["subagents"]["rows"]
     if key == "errors":
         return a["errors"]["rows"]
+    if key == "questions":
+        return (a.get("interview") or {}).get("questions") or []
     if key == "skill_files":
         return skill_file_rows(a.get("skill_runs") or [])
     return []

@@ -1,6 +1,6 @@
 {
   "skill": "rde",
-  "about": "Rules from skills/rde/SKILL.md, checked on every rde run. Edit freely: see src/session_analytics/checks.py for the check types.",
+  "about": "Rules from skills/rde/SKILL.md and references/collaboration-contract.md, checked on every rde run; \"interview\" names the topics of rde's questions. Edit freely: see src/session_analytics/checks.py for the check types and src/session_analytics/questions.py for the interview.",
   "checks": [
     {
       "id": "state-first",
@@ -152,6 +152,153 @@
         "op": "read",
         "how": "^full$"
       }
+    },
+    {
+      "id": "sign-off-once",
+      "desc": "Asks who signs off on what a number means at most once (contract: record owner and mode in STATE.md; never re-ask)",
+      "type": "count",
+      "match": {
+        "topic": "^sign-off$"
+      },
+      "max": 1
+    },
+    {
+      "id": "environment-once",
+      "desc": "Asks where the work lands at most once (SKILL.md: ask once, record in STATE.md as environment)",
+      "type": "count",
+      "match": {
+        "topic": "^environment$"
+      },
+      "max": 1
+    },
+    {
+      "id": "personal-data-once",
+      "desc": "Asks about personal data at most once (contract: ask once per job; apply the answer everywhere)",
+      "type": "count",
+      "match": {
+        "topic": "^personal-data$"
+      },
+      "max": 1
+    },
+    {
+      "id": "recommendation-first",
+      "desc": "Every question has two or more options and one recommendation, first (contract: the checkpoint block)",
+      "type": "never",
+      "match": {
+        "tool": "^AskUserQuestion$",
+        "flag": "no recommendation|recommendation not first|fewer than two options"
+      }
+    },
+    {
+      "id": "plain-language",
+      "desc": "Questions in plain language: no grain, fact table, dimension table, surrogate key… (contract: plain language)",
+      "type": "never",
+      "match": {
+        "tool": "^AskUserQuestion$",
+        "flag": "^jargon"
+      }
     }
-  ]
+  ],
+  "interview": {
+    "about": "What rde's questions are about, in its own terms: SKILL.md (the pre-create gate, where the work lands) and references/collaboration-contract.md (owner and mode, checkpoints, personal data, the decision memo, the hand-back). Topics are tried in order; the first whose `match` finds the header or question wins. `once`: the skill says ask it once per job and never again. `evidence`: a decision the contract wants measured numbers behind ('profile first, then ask'). `prose: avoid`: stops belong in AskUserQuestion, not in prose. `must_ask`: the skill requires the question (a pre-create gate item or an irreversible stop), so an always-accepted recommendation is not a reason to stop asking it.",
+    "prose": "avoid",
+    "jargon": [
+      "grain",
+      "fact table",
+      "dimension table",
+      "denormali[sz]e",
+      "surrogate key",
+      "materiali[sz]e"
+    ],
+    "topics": [
+      {
+        "id": "working-files",
+        "label": "Working files: keep a copy",
+        "match": "working files|save a copy|keep a copy|temporary folder",
+        "once": true
+      },
+      {
+        "id": "sign-off",
+        "label": "Sign-off: who owns what a number means (sets autonomy)",
+        "match": "sign.?off|who (decides|owns|signs|approves)|autonomy|how much .*steer|check (every|each)|just go",
+        "once": true,
+        "must_ask": true
+      },
+      {
+        "id": "environment",
+        "label": "Where the work lands: production, staging or sandbox",
+        "match": "production|staging|sandbox|git.?review|remote sync|anyone else use|others use",
+        "once": true,
+        "must_ask": true
+      },
+      {
+        "id": "profile",
+        "label": "Which instance or profile",
+        "match": "which (instance|profile|metabase)|working instance|mb auth",
+        "once": true,
+        "must_ask": true
+      },
+      {
+        "id": "delivery",
+        "label": "Subscriptions, recipients, alerts",
+        "match": "subscri|recipient|\\balerts?\\b|send (it|them) to",
+        "must_ask": true
+      },
+      {
+        "id": "personal-data",
+        "label": "Personal data: shown, masked or counts only",
+        "match": "personal|\\bpii\\b|e-?mail (addresses|address|list)|emails and|\\bnames\\b|phone|addresses|contact details",
+        "once": true,
+        "must_ask": true
+      },
+      {
+        "id": "freshness",
+        "label": "Freshness: pinned to the extract or to today",
+        "match": "freshness|as-of|last complete|'now'|treat as .now|stops on|runs to|pinned",
+        "once": true,
+        "evidence": true,
+        "must_ask": true
+      },
+      {
+        "id": "existing-build",
+        "label": "Existing build: replace, supersede or alongside",
+        "match": "existing (build|transforms?)|collid|replac|supersed|alongside",
+        "once": true,
+        "must_ask": true
+      },
+      {
+        "id": "memo",
+        "label": "The decision memo: accept the defaults or review them",
+        "match": "defaults|accept all|review each|memo|decisions (listed|above)",
+        "must_ask": true
+      },
+      {
+        "id": "publish",
+        "label": "Publish or go live (irreversible)",
+        "match": "publish|move out of drafts|ready to|canonical|library|verified|go live",
+        "must_ask": true
+      },
+      {
+        "id": "scope",
+        "label": "What to build first or next",
+        "match": "\\bfirst\\b|\\bnext\\b|focus|headline story|which (part|area|report|number|question)|what should i (build|model)|phases?"
+      },
+      {
+        "id": "reference",
+        "label": "A reference number to match",
+        "match": "already exist|\\bmatch\\b|finance|known total|reference|reconcil"
+      },
+      {
+        "id": "placement",
+        "label": "Where tables and objects live",
+        "match": "schema|where should .*(live|land)|writable|which database|collection|land in"
+      },
+      {
+        "id": "definition",
+        "label": "A business rule or definition",
+        "evidence": true,
+        "match": "\\bcount(s|ed)?\\b|what counts|defin|revenue|positive|\\bactive\\b|churn|flagged|include|exclude|split by|which plan|rating|threshold"
+      }
+    ]
+  }
 }

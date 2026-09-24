@@ -371,6 +371,42 @@ frontmatter decides when the skill triggers and is never injected).
 
 `skill_files.csv` flattens `files` across runs.
 
+## `interview`
+
+Every question Claude put to you, from `questions.py`. Questions inside a skill run are named by that skill's
+own topics (`checks/<skill>.json`, `"interview"`); the rest by generic ones (permission, scope, definition,
+setup, data handling, preference).
+
+- **Channels** (`kind`): `ask` (AskUserQuestion), `prose` (a sentence ending in "?" in the reply that ends a
+  turn; answered by the next prompt), `checkpoint` (a printed `[CHECKPOINT]` block with no AskUserQuestion
+  behind it). Prose offers ("Want me to …?") get the topic `offer`.
+- `questions[]`: `qid`, `t`, `dt`, `turn`, `run_id`, `skill`, `call`, `batch_size`, `batch_index`, `header`,
+  `question`, `options` (`label`, `description`, `preview`, `recommended` — "(Recommended)" in the label —
+  and `chosen`), `multi`, `form` (`confirm`, `choice`, `multi`, `offer`, `prose`, `checkpoint`),
+  `recommended_index`, `recommended_label`, `status`, `outcome` (`recommended`, `other option`, `picked` when
+  no recommendation was offered, `typed`, `typed + picked`, `no preference`, `declined`, `unanswered`,
+  `interrupted`, `error`; for prose `accepted`, `turned down`, `replied`, `unanswered`), `answer`, `typed`
+  (text typed instead of an option), `notes` (your notes on an answer), `feedback` (what you said when
+  declining), `reply` (the next prompt, for prose), `wait_ms`, `topic`, `topic_label`, `taxonomy`,
+  `before_create` (asked before the run's first `… create`), `checkpoint_block`, `after_error`, `reask_of`,
+  `words`, `has_numbers`, and `flags`: `no recommendation`, `recommendation not first`, `fewer than two
+  options`, `no measured numbers` (a topic marked `evidence` with no digits in the question or its reply),
+  `jargon: …`, `code in the question`, `asked again` (a topic marked `once`), `like an earlier question`,
+  `after an error`, `asked in prose` (when the skill says `"prose": "avoid"`), `checkpoint with no
+  AskUserQuestion`.
+- Totals: `total`, `asked`, `calls` (rounds), `prose`, `checkpoints_unasked`, `answered`,
+  `recommended_offered`, `recommended_picked`, `recommended_rate`, `typed`, `no_preference`, `declined`,
+  `unanswered`, `prose_unanswered`, `flagged`, `reasked`, `wait_p50_ms` (per round), `wait_max_ms`,
+  `wait_total_ms`, `prose_wait_p50_ms`, `outcomes`, `flags`, `topics[]` (per topic: `asked`, `prose`,
+  `outcomes`, `offered`, `recommended`, `recommended_rate`, `wait_p50_ms`, `typed`, `answers`, `flags`),
+  `runs[]` (runs with questions: start and first create, for the interview map).
+
+Each skill run carries its own `interview` (the same fields, plus `taxonomy` and `first_create_dt`) and the
+flat fields `questions_asked`, `question_calls`, `prose_questions`, `recommended_rate`, `typed_answers`,
+`unanswered_questions`, `question_wait_p50_ms`, `questions_reasked`, `questions_flagged`,
+`questions_before_create`, `first_question_dt`. Checks can match a call's questions with `topic` and `flag`.
+`questions.csv` has one row per question.
+
 ## `shell.signatures`
 
 Per CLI signature (`mb card create`, `git commit`, `gh pr view`…): `calls` (Bash calls using it), `uses`
@@ -389,4 +425,9 @@ file, the lines it gained and how many runs saw all, some or none of them), `fil
 versions, with `per_version` stats, `in_version` and `changed`), `runs` (one row per run),
 `details.<run_id>` (skill_files, changes_seen, cli, questions, objects, final message, errors, checks, turns,
 actions, steps), `failures` (tool errors grouped by what the message says), `insights`. `csv/skill_files.csv`
-has one row per run and file.
+has one row per run and file. `interview`: the skill's `taxonomy`, a `summary`, the `catalog` (per topic:
+`asked`, `prose`, `runs`, `offered`, `recommended`, `recommended_rate`, `typed`, `no_preference`,
+`declined`, `unanswered`, `reasked`, `wait_p50_ms`, `answers`, `headers`, `examples`, `once`, `must_ask`,
+and `per_version`), `questions` (every question of every run, with `version_key` and `commit`) and `typed`
+(answers typed instead of picked, with the options offered); each version also has `interview` totals.
+`csv/questions.csv` has one row per question.

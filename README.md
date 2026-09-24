@@ -107,9 +107,17 @@ session-analytics compare b3734789:1 d085f38b:1    # two runs side by side, with
 - **Did a change reach the runs?** For every file a version changed, the lines it added, and how many of that
   version's runs were shown them. A rule added to a reference no run opens, or below the part a `head -40`
   prints, cannot have changed anything.
+- **The interview.** Every question a run put to you — through AskUserQuestion, in prose at the end of a
+  turn, or as a printed `[CHECKPOINT]` with no question behind it — named by the skill's own topics
+  (`checks/rde.json` carries RDE's: sign-off, where the work lands, freshness, the decision memo, definitions,
+  publishing…). For each: the options offered, whether you took the recommended one, picked another, typed
+  your own answer, had no preference, declined or never answered, how long you took, and flags against the
+  skill's rules for questions (a recommendation, first; measured numbers behind a decision; plain language;
+  asked once). Across runs: which topics each version asks, where the recommendation misses, what people type
+  when no option fits, and what could be decided and shown instead of asked.
 - **What a run did.** Every CLI call by subcommand (`mb transform create`), `--help` lookups, retries after a
-  failure; the questions it asked and your answers; the objects the CLI reported creating; cost, context and
-  the final hand-back; and a step-by-step trace of every Claude API request and tool call.
+  failure; the objects the CLI reported creating; cost, context and the final hand-back; and a step-by-step
+  trace of every Claude API request and tool call.
 - **Checks.** `checks/<skill>.json` declares what the skill should do, and every run is checked against it.
   `checks/rde.json` encodes RDE's own rules: state first, `mb --version` and `mb auth list` before work,
   a playbook before building, ask before creating anything, `--json`/`--profile` on every `mb` call, bodies
@@ -119,10 +127,12 @@ session-analytics compare b3734789:1 d085f38b:1    # two runs side by side, with
   `src/session_analytics/checks.py`.
 
 The skill report has per-version strip plots (one dot per run), check pass rates by version, a run × check
-matrix, drill-down into any run, a **Skill files** tab (files × versions, how each file was read, which
+matrix, an **Interview** tab (questions per version, the topic × version matrix, a question catalog with the
+answers people gave, where the options fell short, an interview map per run), drill-down into any run, a
+**Skill files** tab (files × versions, how each file was read, which
 changes the runs saw, files never shown, paths tried that do not exist), CLI calls and grouped failures, and a
 compare view. Single-session exports gain a **Skill runs** tab (with each run's files, drawn as strips of the
-lines shown) and a **Trace** tab.
+lines shown), an **Interview** tab and a **Trace** tab.
 
 ### Several sessions
 

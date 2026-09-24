@@ -284,3 +284,17 @@ svg .cov-seg { fill: var(--s1); }
 .vcell.absent { color: var(--muted); }
 .pill.mono { font-family: var(--mono); font-size: 12px; }
 .muted { color: var(--muted); }
+
+/* Interview */
+.qcell .chip { margin-right: 4px; }
+.qcell div { margin-top: 2px; }
+ul.opts { margin: 0; padding: 0; list-style: none; font-size: 12px; min-width: 180px; }
+ul.opts li { padding: 1px 0; color: var(--ink-2); }
+ul.opts li.chosen { color: var(--ink); font-weight: 600; }
+.chip.outcome.failed, .legend .sym.failed { color: var(--critical); }
+.chip.flag { margin: 0 4px 2px 0; }
+.legend .sym { font-size: 12px; color: var(--s1); }
+svg .qm { fill: var(--s1); stroke: var(--s1); stroke-width: 1.5; }
+svg .qm.hollow { fill: var(--surface); }
+svg .qm.cross { stroke: var(--critical); stroke-width: 2; fill: none; }
+

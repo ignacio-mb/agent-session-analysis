@@ -751,7 +751,9 @@ function runDetail(run, steps) {
     ["Ran", `${F.datetime(run.start_ms)} · ${F.dur(run.duration_ms)} · ${run.turn_count} turns (${run.follow_up_turns} follow-up) · ended: ${run.end_reason}`],
     ["Work", `${run.requests} Claude requests (${run.attributed_requests} attributed) · ${run.tool_calls} tool calls · ${run.tool_errors} errors · ${run.cli_calls} CLI calls · ${run.help_lookups} help lookups · ${run.retries_after_error} retries after an error`],
     ["Cost", `${F.usd(run.cost_usd)} · context ${F.tok(run.context_start)} → ${F.tok(run.context_end)} (peak ${F.tok(run.context_peak)}) · cache hit ${F.pct(run.cache_hit_ratio)}`],
-    ["Questions", `${run.question_calls} AskUserQuestion calls (${run.questions_asked} questions)`],
+    ["Questions", `${run.questions_asked} asked in ${run.question_calls} rounds` + (run.prose_questions ? `, ${run.prose_questions} in prose` : "") +
+      (run.recommended_rate !== null && run.recommended_rate !== undefined ? ` · recommended option picked ${F.pct(run.recommended_rate)}` : "") +
+      (run.typed_answers ? ` · ${run.typed_answers} typed` : "")],
     ["Created", run.objects_created ? `${run.objects_created} objects` : "nothing reported"],
   ]);
   const checkList = checks.length ? h("div", { class: "checks" }, checks.map((c) =>
@@ -763,9 +765,7 @@ function runDetail(run, steps) {
   const cli = (run.cli || []).length ? dataTable({ search: false, limit: 40, rows: run.cli, columns: [
     { key: "signature", label: "Command", cls: "code" }, { key: "calls", label: "Calls", num: true }, { key: "errors", label: "Errors", num: true },
     { key: "help", label: "--help", num: true }] }) : h("div", { class: "empty" }, "No CLI subcommands.");
-  const questions = (run.questions || []).length ? dataTable({ search: false, rows: run.questions, columns: [
-    { key: "t", label: "When", fmt: F.time }, { key: "header", label: "Topic" }, { key: "question", label: "Question", cls: "wrap" },
-    { key: "answer", label: "Answer", cls: "wrap" }] }) : h("div", { class: "empty" }, "No questions asked.");
+  const iv = run.interview || null;
   const objects = (run.objects || []).length ? dataTable({ search: false, rows: run.objects, columns: [
     { key: "t", label: "When", fmt: F.time }, { key: "verb", label: "Verb" }, { key: "type", label: "Type" }, { key: "id", label: "Id" },
     { key: "name", label: "Name", cls: "wrap" }] }) : h("div", { class: "empty" }, "No objects reported by CLI output.");
@@ -779,7 +779,8 @@ function runDetail(run, steps) {
     card({ title: `Checks (${run.checks_passed || 0} passed, ${run.checks_failed || 0} failed)`, span: 5 }, checkList),
     skillFilesCard(run, expected),
     card({ title: "CLI commands", span: 6 }, cli),
-    card({ title: "Questions asked", span: 6 }, questions),
+    iv && (iv.questions || []).length ? card({ title: "Interview", sub: `Every question the run put to you, by the skill's ${iv.taxonomy === "skill" ? "own" : "generic"} topics · ● recommended ○ another option ◆ typed □ no preference ✕ declined/unanswered ▲ prose`, span: 12 },
+      interviewFacts(iv), questionTable(iv.questions, { limit: 60 })) : card({ title: "Interview", span: 6 }, h("div", { class: "empty" }, "No questions asked.")),
     card({ title: "Objects the CLI reported", span: 6 }, objects),
     card({ title: "Errors", span: 12 }, errors),
     actionsList ? card({ title: "What it did", sub: "Actions in order (repeats collapsed) — the sequence the compare view diffs", span: 12 }, actionsList) : null,
@@ -887,4 +888,163 @@ function exposureMark(status) {
     "deletions only": ["muted", "–"], "frontmatter only": ["muted", "–"] };
   const [tone, sym] = map[status] || ["muted", "?"];
   return h("span", { class: `smark ${tone}`, title: status }, h("b", null, sym), " " + status);
+}
+
+/* ------------------------------------------------------------------ the interview: questions Claude asked */
+
+const OUTCOME_MARK = { recommended: "●", "other option": "○", picked: "○", typed: "◆", "typed + picked": "◆",
+  "no preference": "□", declined: "✕", unanswered: "✕", interrupted: "✕", error: "✕", replied: "▲", accepted: "▲", "turned down": "▲" };
+const OUTCOME_FAILED = new Set(["declined", "unanswered", "interrupted", "error"]);
+
+function outcomeChip(q) {
+  const o = typeof q === "string" ? q : q.outcome;
+  return h("span", { class: "chip outcome" + (OUTCOME_FAILED.has(o) ? " failed" : ""), title: o }, `${OUTCOME_MARK[o] || "·"} ${o}`);
+}
+
+function questionCell(q) {
+  return h("div", { class: "qcell" }, q.header ? h("span", { class: "chip" }, q.header) : null,
+    q.kind !== "ask" ? h("span", { class: "chip" }, q.kind === "checkpoint" ? "printed checkpoint" : "in prose") : null,
+    h("div", null, q.question || "—"));
+}
+
+function optionsCell(q) {
+  if (!(q.options || []).length) return h("span", { class: "muted" }, q.kind === "ask" ? "no options" : "—");
+  return h("ul", { class: "opts" }, q.options.map((o) =>
+    h("li", { class: (o.chosen ? "chosen" : "") + (o.recommended ? " rec" : ""), title: o.description || "" },
+      o.chosen ? "✓ " : "", o.label, o.preview ? h("span", { class: "muted" }, " (preview)") : null)));
+}
+
+function answerCell(q) {
+  if (q.kind !== "ask") return q.reply ? h("div", null, h("span", { class: "muted" }, "next prompt: "), q.reply) : h("span", { class: "muted" }, "no reply");
+  if (q.outcome === "declined") return h("div", null, h("span", { class: "muted" }, "declined"), q.feedback ? ": " + q.feedback : "");
+  if (q.typed) return h("div", null, h("span", { class: "chip" }, "typed"), " “" + q.typed + "”");
+  return h("div", null, q.answer || h("span", { class: "muted" }, q.outcome), q.notes ? h("div", { class: "muted" }, "note: " + q.notes) : null);
+}
+
+function questionTable(rows, { showRun = false, showVersion = false, limit = 100 } = {}) {
+  const cols = [{ key: "dt", label: "When", num: true, fmt: F.since }];
+  if (showVersion) cols.push({ key: "commit", label: "Version" });
+  if (showRun) cols.push({ key: "run_id", label: "Run", fmt: (v) => v || "—" });
+  cols.push(
+    { key: "topic_label", label: "Topic", cls: "wrap" },
+    { key: "question", label: "Question", cls: "wrap", render: questionCell },
+    { key: "options", label: "Options", render: optionsCell, sort: (r) => (r.options || []).length },
+    { key: "answer", label: "Answer", cls: "wrap", render: answerCell },
+    { key: "outcome", label: "Outcome", render: outcomeChip },
+    { key: "wait_ms", label: "Wait", num: true, fmt: F.dur },
+    { key: "flags", label: "Flags", cls: "wrap", render: (r) => ((r.flags || []).length ? h("span", null, r.flags.map((f) => h("span", { class: "chip flag" }, f))) : h("span", { class: "muted" }, "—")) });
+  return dataTable({ rows, limit, columns: cols, selects: [{ key: "topic_label", label: "topics" }, { key: "outcome", label: "outcomes" }, { key: "kind", label: "channels" }] });
+}
+
+function interviewFacts(s) {
+  if (!s) return null;
+  return h("div", { class: "facts" },
+    h("span", null, h("b", null, F.num(s.asked)), ` asked in ${F.num(s.calls)} rounds`),
+    s.prose ? h("span", null, h("b", null, F.num(s.prose)), " in prose") : null,
+    s.checkpoints_unasked ? h("span", { class: "warn" }, h("b", null, F.num(s.checkpoints_unasked)), " printed checkpoints with no question") : null,
+    s.recommended_offered ? h("span", null, h("b", null, `${s.recommended_picked}/${s.recommended_offered}`), " took the recommended option") : null,
+    s.typed ? h("span", null, h("b", null, F.num(s.typed)), " typed answers") : null,
+    s.no_preference + s.declined + s.unanswered ? h("span", { class: "warn" }, h("b", null, F.num(s.no_preference + s.declined + s.unanswered)), " came back empty") : null,
+    s.reasked ? h("span", { class: "warn" }, h("b", null, F.num(s.reasked)), " asked again") : null,
+    s.wait_p50_ms !== null && s.wait_p50_ms !== undefined ? h("span", null, h("b", null, F.dur(s.wait_p50_ms)), " median wait") : null);
+}
+
+/* One column per round (an AskUserQuestion call, or a reply asking in prose), one lane per topic; the mark's
+   shape is the outcome, so identity never rests on colour. Dashed lines: where a run started, and its first create. */
+function interviewMap(width, rows, { order = [], markers = [] } = {}) {
+  const rounds = [];
+  const roundOf = new Map();
+  for (const q of rows) {
+    const key = q.call || String(q.qid).split("#")[0];
+    if (!roundOf.has(key)) { roundOf.set(key, rounds.length); rounds.push({ key, t: q.t, dt: q.dt, run: q.run_id }); }
+  }
+  const present = Array.from(new Set(rows.map((q) => q.topic)));
+  const lanes = order.filter((t) => present.includes(t)).concat(present.filter((t) => !order.includes(t)));
+  const label = Object.fromEntries(rows.map((q) => [q.topic, q.topic_label]));
+  const m = { l: 190, r: 14, t: 14, b: 30 }, laneH = 24;
+  const colW = Math.max(16, Math.min(44, (width - m.l - m.r) / Math.max(1, rounds.length)));
+  const W = Math.max(width, m.l + m.r + colW * rounds.length), H = m.t + m.b + laneH * lanes.length;
+  const svg = sv("svg", { class: "chart", width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Questions by round and topic" });
+  const x = (i) => m.l + colW * (i + 0.5), y = (topic) => m.t + laneH * (lanes.indexOf(topic) + 0.5);
+  lanes.forEach((t, i) => {
+    if (i % 2 === 0) svg.appendChild(sv("rect", { class: "lane-bg", x: m.l, y: m.t + laneH * i, width: W - m.l - m.r, height: laneH }));
+    svg.appendChild(sv("text", { class: "lane-label", x: m.l - 8, y: m.t + laneH * (i + 0.5) + 4, "text-anchor": "end" }, F.short(label[t] || t, 30)));
+  });
+  const step = Math.max(1, Math.ceil(rounds.length / Math.max(1, Math.floor((W - m.l - m.r) / 36))));
+  rounds.forEach((r, i) => { if (i % step === 0) svg.appendChild(sv("text", { x: x(i), y: H - m.b + 16, "text-anchor": "middle" }, String(i + 1))); });
+  svg.appendChild(sv("text", { x: m.l, y: H - 4 }, "round →"));
+  for (const mk of markers) {
+    const i = rounds.findIndex((r) => (r.t || 0) >= mk.t && (!mk.run || r.run === mk.run));
+    if (i < 0) continue;
+    const xx = m.l + colW * i;
+    svg.appendChild(sv("line", { class: "marker-line", x1: xx, x2: xx, y1: m.t - 6, y2: H - m.b, "stroke-dasharray": "3 3" }));
+    svg.appendChild(sv("text", { x: xx + 3, y: m.t - 3 }, mk.label));
+  }
+  const seen = {};
+  for (const q of rows) {
+    const i = roundOf.get(q.call || String(q.qid).split("#")[0]);
+    const k = `${i}|${q.topic}`;
+    const off = (seen[k] = (seen[k] || 0) + 1) - 1;
+    const cx = x(i) + (off ? (off % 2 ? 1 : -1) * 7 * Math.ceil(off / 2) : 0), cy = y(q.topic);
+    const o = q.outcome, failed = OUTCOME_FAILED.has(o);
+    let mark;
+    if (q.kind !== "ask") mark = sv("path", { d: `M${cx},${cy - 6}L${cx + 6},${cy + 5}L${cx - 6},${cy + 5}Z`, class: "qm hollow" });
+    else if (failed) mark = sv("path", { d: `M${cx - 5},${cy - 5}L${cx + 5},${cy + 5}M${cx + 5},${cy - 5}L${cx - 5},${cy + 5}`, class: "qm cross" });
+    else if (o === "typed" || o === "typed + picked") mark = sv("path", { d: `M${cx},${cy - 6}L${cx + 6},${cy}L${cx},${cy + 6}L${cx - 6},${cy}Z`, class: "qm" });
+    else if (o === "no preference") mark = sv("rect", { x: cx - 5, y: cy - 5, width: 10, height: 10, class: "qm hollow" });
+    else if (o === "recommended") mark = sv("circle", { cx, cy, r: 5.5, class: "qm" });
+    else mark = sv("circle", { cx, cy, r: 5, class: "qm hollow" });
+    mark.setAttribute("tabindex", "0");
+    Tip.bind(mark, () => ({ title: `Round ${i + 1} · ${F.since(q.dt)}${q.run_id ? " · " + q.run_id : ""}`,
+      rows: [[o, q.topic_label], ...(q.wait_ms !== null && q.wait_ms !== undefined ? [[F.dur(q.wait_ms), "to answer"]] : []), ...(q.flags || []).map((f) => [f, "flag"])],
+      body: `${q.question || ""}\n→ ${q.typed ? "“" + q.typed + "”" : q.answer || q.reply || q.feedback || o}` }));
+    svg.appendChild(mark);
+  }
+  return svg;
+}
+
+function interviewLegend() {
+  return h("div", { class: "legend" }, [["●", "recommended option"], ["○", "another option"], ["◆", "typed an answer"], ["□", "no preference"],
+    ["✕", "declined or unanswered"], ["▲", "asked in prose"]].map(([sym, label]) => h("span", { class: "k" }, h("b", { class: "sym" + (sym === "✕" ? " failed" : "") }, sym), label)));
+}
+
+const OUTCOME_GROUPS = [
+  ["recommended", "recommended option", "var(--s1)"], ["another", "another option", "var(--s2)"], ["typed", "typed", "var(--s3)"],
+  ["nopref", "no preference", "var(--s4)"], ["failed", "declined or unanswered", "var(--s5)"], ["prose", "in prose", "var(--s6)"]];
+
+function outcomeGroup(q) {
+  if (q.kind !== "ask") return "prose";
+  if (q.outcome === "recommended") return "recommended";
+  if (q.outcome === "typed" || q.outcome === "typed + picked") return "typed";
+  if (q.outcome === "no preference") return "nopref";
+  if (OUTCOME_FAILED.has(q.outcome)) return "failed";
+  return "another";
+}
+
+/* Questions per topic, split by what came back. */
+function topicOutcomeBars(rows, order = []) {
+  const topics = Array.from(new Set(rows.map((q) => q.topic)));
+  topics.sort((a, b) => (order.indexOf(a) + 1 || 999) - (order.indexOf(b) + 1 || 999));
+  const data = topics.map((t) => {
+    const qs = rows.filter((q) => q.topic === t);
+    const values = {};
+    for (const q of qs) values[outcomeGroup(q)] = (values[outcomeGroup(q)] || 0) + 1;
+    return { label: qs[0].topic_label, values };
+  });
+  return stackedBars(data, OUTCOME_GROUPS.map(([key, label, color]) => ({ key, label, color })));
+}
+
+function flagBars(flags) {
+  const items = Object.entries(flags || {}).map(([name, n]) => ({ name, n }));
+  if (!items.length) return h("div", { class: "empty" }, "No question broke a rule.");
+  return barList(items, { label: (it) => it.name, value: (it) => it.n });
+}
+
+function interviewMarkers(runs) {
+  const out = [];
+  for (const r of runs || []) {
+    out.push({ t: r.start_ms, label: `${r.skill || ""} ${String(r.run_id || "").split(":")[1] || ""}`.trim(), run: r.run_id });
+    if (r.first_create_dt !== null && r.first_create_dt !== undefined) out.push({ t: r.start_ms + r.first_create_dt, label: "first create", run: r.run_id });
+  }
+  return out;
 }

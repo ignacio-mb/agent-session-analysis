@@ -72,12 +72,20 @@ or `head` count only the lines they printed. The insights say which changed file
 not see, which files no run was shown, and when the text read was not the version that ran (a stale installed
 copy reads as `older <commit>`). A change a run never saw cannot explain a difference in that run.
 
+For "how is the interview going" or "are the questions good": every question a run asked is recorded with its
+topic (the skill's own, from `checks/<name>.json` "interview"), the options, what came back (the recommended
+option, another one, a typed answer, no preference, declined, unanswered), the wait, and flags against the
+skill's rules for questions. Report the recommended-taken rate by topic (always taken: could be decided and
+shown instead, unless the skill requires asking; rarely taken: the default is wrong), the typed answers (what
+the options missed), questions asked again or in prose, and how the numbers moved between versions.
+
 ## 3. Show the dashboard
 
 `report.html` (or `rollup.html`, `skill.html`) is a self-contained, offline page: timeline, step-by-step trace
 of every Claude API request and tool call, skill runs with their checks, tool and skill breakdowns, cost and
 context charts, sortable tables, light and dark themes. `skill.html` adds per-version strip plots, the checks
-matrix, a Skill files tab (files × versions, how each was read, which changes the runs saw) and a compare
+matrix, an Interview tab (questions by topic and version, the answers people gave, where the options fell
+short), a Skill files tab (files × versions, how each was read, which changes the runs saw) and a compare
 view.
 
 - If a tool that sends a file to the user is available (`SendUserFile`), send the HTML with display
@@ -91,12 +99,13 @@ them anywhere unless the user asks.
 
 Answer from `session.json` (or the CSVs in `csv/`) with a short `python3 -c` or `jq` query instead of
 re-running the export. Useful keys: `totals`, `insights`, `skill_runs` (per run: version, checks,
-`skill_files` with `files` / `accesses` / `inventory`, `changes_seen`, cli, questions, objects, errors,
-final_message), `trace.steps`, `skills.invocations`, `skills.per_skill`,
+`skill_files` with `files` / `accesses` / `inventory`, `changes_seen`, `interview`, cli, objects, errors,
+final_message), `interview` (every question: topic, options, outcome, wait, flags), `trace.steps`, `skills.invocations`, `skills.per_skill`,
 `tools.by_tool`, `tools.rows`, `shell.signatures`, `turns.rows`, `requests.rows`, `subagents.rows`, `cost`,
 `reported`, `lineage`, `errors`, `timing`, `files.rows`, `git`. For a skill report, `skill.json` has
-`versions` (with `files`, `never` and `changes.exposure`), `files`, `runs`, `details.<run_id>` and
-`failures`; `csv/skill_files.csv` has one row per run and file. `docs/metrics.md` in the project describes every field.
+`versions` (with `files`, `never`, `changes.exposure` and `interview`), `files`, `interview` (`catalog`,
+`questions`, `typed`), `runs`, `details.<run_id>` and `failures`; `csv/skill_files.csv` and
+`csv/questions.csv` have one row per run and file, and per question. `docs/metrics.md` in the project describes every field.
 
 After a Claude Code upgrade, `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" schema` lists transcript event types this version does
 not recognise yet.

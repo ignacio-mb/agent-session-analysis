@@ -113,6 +113,9 @@ def summary(a, paths=None):
     if runs:
         lines += ["", "## Skill runs: the skill files each run was shown"]
         lines += [run_files_line(r) for r in runs[:12]]
+    iv = a.get("interview") or {}
+    if iv.get("total"):
+        lines += ["", "## Interview", interview_line(iv)]
     tools = a["tools"]["by_tool"][:10]
     if tools:
         lines += ["", "## Top tools"]
@@ -152,6 +155,43 @@ def run_files_line(r):
         if missed:
             line += " (not: " + ", ".join(missed[:3]) + (" …" if len(missed) > 3 else "") + ")"
     return line
+
+
+def interview_line(iv):
+    """The session's questions in one line: how many, how asked, what came back."""
+    parts = [f"{_plural(iv['total'], 'question')}: {iv['asked']} through AskUserQuestion in {_plural(iv['calls'], 'round')}"]
+    if iv["prose"]:
+        parts.append(f"{iv['prose']} in prose")
+    if iv["recommended_offered"]:
+        parts.append(f"recommended option taken {iv['recommended_picked']}/{iv['recommended_offered']}")
+    if iv["typed"]:
+        parts.append(f"{iv['typed']} typed")
+    empty = iv["no_preference"] + iv["declined"] + iv["unanswered"]
+    if empty:
+        parts.append(f"{empty} came back empty")
+    if iv.get("wait_p50_ms") is not None:
+        parts.append(f"median wait {dur(iv['wait_p50_ms'])}")
+    if iv["flags"]:
+        parts.append("flags: " + _kv(iv["flags"], 5))
+    return "- " + "; ".join(parts)
+
+
+def _options(q):
+    return " / ".join(("✓ " if o["chosen"] else "") + (o["label"] or "") for o in q["options"]) or "—"
+
+
+def _interview(a):
+    iv = a.get("interview") or {}
+    if not iv.get("total"):
+        return []
+    rows = iv["questions"]
+    return ["## Interview", "", interview_line(iv), "", table(
+        ["#", "When", "Run", "Topic", "Question", "Options", "Answer", "Outcome", "Wait", "Flags"],
+        [(i + 1, "+" + dur(q["dt"]) if q.get("dt") is not None else "—", q.get("run_id") or "—", q["topic_label"],
+          one_line(q["question"], 140), one_line(_options(q), 140),
+          one_line(q["typed"] and f"typed: {q['typed']}" or q["answer"] or q["reply"] or q["feedback"] or "", 100),
+          q["outcome"], dur(q["wait_ms"]) if q["wait_ms"] is not None else "—", ", ".join(q["flags"]) or "—")
+         for i, q in enumerate(rows)])]
 
 
 def _skill_runs(a):
@@ -216,6 +256,7 @@ def report(a):
         out += ["### Re-injected after compaction", "",
                 ", ".join(f"{r['name']} ({_t(r['ts'])})" for r in sk["restored_after_compaction"]), ""]
     out += _skill_runs(a)
+    out += _interview(a)
 
     # ---------------- tools
     tl = a["tools"]

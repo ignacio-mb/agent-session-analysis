@@ -21,6 +21,12 @@ Matchers (every key given must hold; values are regular expressions unless noted
             file  "<owner>:<path>", e.g. "rde:references/state.md" or "mb:dashboard/SKILL.md"
             op    read | search | list | resolve | stat
             how   full | partial | hits | not shown | no hits | missing | listed | resolved
+  topic     the topic of a question the call asked (AskUserQuestion; topics come from the file's "interview")
+  flag      a flag on a question the call asked: "no recommendation", "recommendation not first", "fewer than
+            two options", "no measured numbers", "jargon: …", "asked again", "after an error" (see questions.py)
+
+A checks file may also carry "interview": {"topics": [{"id", "label", "match", "once", "evidence"}], "jargon":
+[...], "prose": "avoid"}, the skill's own names for what its questions are about (see questions.py).
 """
 
 from __future__ import annotations
@@ -53,6 +59,22 @@ def load(paths=(), skill=None):
     return checks
 
 
+def load_interview(paths=(), skill=None):
+    """The "interview" section of the skill's checks file (topics of its questions), or None."""
+    files = [Path(p).expanduser() for p in paths]
+    if not files and skill:
+        candidate = PACKAGE_CHECKS / f"{skill}.json"
+        if candidate.is_file():
+            files = [candidate]
+    for f in files:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if skill and data.get("skill") and data["skill"] != skill:
+            continue
+        if data.get("interview"):
+            return data["interview"]
+    return None
+
+
 def _matches(event, m, text_override=None):
     if not m:
         return False
@@ -72,6 +94,12 @@ def _matches(event, m, text_override=None):
                 return False
         elif key == "status":
             if event.get("status") != pattern:
+                return False
+        elif key == "topic":
+            if not any(re.search(pattern, t) for t in event.get("topics", ())):
+                return False
+        elif key == "flag":
+            if not any(re.search(pattern, f) for f in event.get("flags", ())):
                 return False
         elif key in FILE_KEYS:
             continue

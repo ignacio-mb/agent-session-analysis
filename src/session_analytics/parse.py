@@ -176,6 +176,7 @@ class Request:
     text_chars: int = 0
     thinking_chars: int = 0
     text_preview: str = ""          # the start of what the model said in this response
+    text_full: str = ""             # all of it (capped), for the questions it asks in prose
     tool_use_ids: list = field(default_factory=list)
     cache_miss_reason: str = None
     cache_missed_tokens: int = 0
@@ -231,6 +232,8 @@ class Request:
         if isinstance(u.get("iterations"), list):
             self.iterations = max(self.iterations, len(u["iterations"]))
 
+
+TEXT_CAP = 60_000
 
 # Tools whose whole output is kept: skillfiles matches it line by line against skill documents.
 OUTPUT_KEPT = {"Bash", "Grep", "Glob"}
@@ -857,6 +860,8 @@ class Session:
                 req.text_chars += len(t)
                 if len(req.text_preview) < 1200 and t.strip():
                     req.text_preview = (req.text_preview + "\n" + t).strip()[:1200]
+                if t.strip() and t not in req.text_full and len(req.text_full) < TEXT_CAP:
+                    req.text_full = (req.text_full + "\n\n" + t).strip()[:TEXT_CAP]
             elif bt == "thinking":
                 req.thinking_chars += len(b.get("thinking") or "")
             elif bt == "tool_use":
@@ -1063,9 +1068,14 @@ class Session:
         elif name == "AskUserQuestion":
             qs = d.get("questions") or inp.get("questions") or []
             f["questions"] = [{"header": q.get("header"), "question": q.get("question"),
-                               "options": len(q.get("options") or []), "multi": bool(q.get("multiSelect"))}
+                               "options": [{"label": o.get("label"), "description": o.get("description"),
+                                            "preview": bool(o.get("preview"))}
+                                           for o in q.get("options") or () if isinstance(o, dict)],
+                               "multi": bool(q.get("multiSelect"))}
                               for q in qs if isinstance(q, dict)]
+            # A multi-select answer is a list; typed text ("Other") arrives in place of an option label.
             f["answers"] = d.get("answers") if isinstance(d.get("answers"), dict) else None
+            f["annotations"] = d.get("annotations") if isinstance(d.get("annotations"), dict) else None
         elif name == "ExitPlanMode":
             f["plan_chars"] = len(inp.get("plan") or d.get("plan") or "")
             f["plan_path"] = d.get("filePath") or inp.get("planFilePath")

@@ -15,7 +15,7 @@ import time
 from collections import Counter, defaultdict
 from urllib.parse import urlparse
 
-from . import __version__, skillfiles, skillruns, util
+from . import __version__, questions, skillfiles, skillruns, util
 from .parse import BUILTIN_COMMANDS, mcp_parts, tool_category
 from .pricing import COMPONENTS
 from .redact import Redactor
@@ -483,8 +483,10 @@ def analyze(session, pricing, redactor=None, full=False, current_id=None, now_ms
     out["timeline"] = _timeline(ctx, reqs, calls, out)
     docs = skillfiles.DocSet.for_session(ctx.s)
     out["trace"] = _trace(ctx, reqs, calls, docs)
+    raw_qs = questions.raw_questions(ctx.s, reqs, calls, ctx.text)
     out["skill_runs"] = skillruns.build_runs(ctx, reqs, calls, out["trace"], check_files=ctx.checks,
-                                             sources_extra=ctx.skill_sources, docs=docs)
+                                             sources_extra=ctx.skill_sources, docs=docs, raw_qs=raw_qs)
+    out["interview"] = _interview(ctx, raw_qs, out["skill_runs"])
     out["schema_coverage"] = _schema(ctx)
     out["totals"] = _totals(out)
     out["insights"] = _insights(out)
@@ -1517,6 +1519,26 @@ def _web(ctx, calls, reqs):
     }
 
 
+def _interview(ctx, raw_qs, runs):
+    """Every question of the session: those inside a skill run as that run classified them (the skill's own
+    topics), the rest against the generic topics."""
+    by_qid = {}
+    for r in runs:
+        for q in r["interview"]["questions"]:
+            by_qid.setdefault(q["qid"], dict(q, skill=r["skill"]))
+    rest = questions.classify([dict(q) for q in raw_qs if q["qid"] not in by_qid], questions.Taxonomy())
+    rows = sorted(list(by_qid.values()) + [questions.public(q, run_id=None, skill=None) for q in rest],
+                  key=lambda q: (q["t"] or 0, q["qid"]))
+    s0 = ctx.s.first_ts
+    for q in rows:
+        q["dt"] = (q["t"] - s0) if q["t"] is not None and s0 is not None else None
+    summary = questions.summarize(rows)
+    return dict(summary, questions=rows,
+                runs=[{"run_id": r["run_id"], "skill": r["skill"], "start_ms": r["start_ms"],
+                       "first_create_dt": r["interview"]["first_create_dt"], "asked": r["interview"]["asked"],
+                       "prose": r["interview"]["prose"]} for r in runs if r["interview"]["questions"]])
+
+
 def _planning(ctx, calls):
     s = ctx.s
     created = [c for c in calls if c.name == "TaskCreate"]
@@ -1532,7 +1554,7 @@ def _planning(ctx, calls):
         questions.append({
             "ts": util.iso(c.ts_call), "turn": c.turn, "status": c.status,
             "questions": [{"header": q.get("header"), "question": ctx.text(q.get("question"), 300),
-                           "options": q.get("options"), "multi_select": q.get("multi")}
+                           "options": len(q.get("options") or ()), "multi_select": q.get("multi")}
                           for q in c.facts.get("questions") or []],
             "answers": {ctx.text(k, 200): ctx.text(v if isinstance(v, str) else str(v), 300)
                         for k, v in answers.items()} if answers else None,

@@ -80,6 +80,90 @@ function versionsTab() {
     ...charts, ...changes);
 }
 
+/* ------------------------------------------------------------------ interview */
+
+const IV_METRICS = [
+  ["questions_asked", "Questions asked per run", F.num], ["prose_questions", "Asked in prose per run", F.num],
+  ["recommended_rate", "Recommended option taken, per run", F.pct], ["typed_answers", "Typed answers per run", F.num],
+  ["question_wait_p50_ms", "Median wait for an answer, per run", F.dur], ["questions_flagged", "Questions flagged per run", F.num],
+];
+
+function topicCell(st, v) {
+  if (!st || !st.runs_asking) return h("span", { class: "vcell absent", title: `no run of ${vShort(v)} asked this` }, `0/${v.runs}`);
+  const bar = h("span", { class: "bar", "aria-hidden": "true" }, h("i", { style: `width:${(100 * st.runs_asking) / (v.runs || 1)}%` }));
+  const tip = [`${st.runs_asking} of ${v.runs} runs asked it (${st.asked} through AskUserQuestion, ${st.prose} in prose)`];
+  if (st.offered) tip.push(`recommended option taken ${st.recommended}/${st.offered}`);
+  if (st.typed) tip.push(`${st.typed} typed answers`);
+  tip.push("outcomes: " + Object.entries(st.outcomes || {}).map(([k, n]) => `${k} ×${n}`).join(", "));
+  return h("span", { class: "vcell", title: tip.join("\n") }, `${st.runs_asking}/${v.runs}`, bar);
+}
+
+function interviewTab() {
+  const IV = D.interview || {};
+  const s = IV.summary || {};
+  if (!s.total) return h("div", { class: "empty" }, "No run of this skill asked a question in this window.");
+  const order = ((IV.taxonomy || {}).topics || []).map((t) => t.id).concat(["other"]);
+  const empty = s.no_preference + s.declined + s.unanswered;
+  const tiles = [
+    ["Questions", F.num(s.total), `${s.asked} through AskUserQuestion · ${s.prose} in prose`],
+    ["Runs that asked", `${RUNS.filter((r) => (r.questions_asked || 0) + (r.prose_questions || 0) > 0).length}/${RUNS.length}`,
+      (() => { const xs = RUNS.map((r) => (r.questions_asked || 0) + (r.prose_questions || 0)).filter((n) => n > 0).sort((a, b) => a - b);
+        if (!xs.length) return "none"; const m = Math.floor(xs.length / 2); return `median ${F.num(xs.length % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2)} questions in those`; })()],
+    ["Recommended option taken", s.recommended_offered ? `${s.recommended_picked}/${s.recommended_offered}` : "—", s.recommended_offered ? F.pct(s.recommended_rate) : "none offered"],
+    ["Typed answers", F.num(s.typed), "none of the options fit"],
+    ["Came back empty", F.num(empty), `${s.no_preference} no preference · ${s.declined} declined · ${s.unanswered} unanswered`],
+    ["Median wait", F.dur(s.wait_p50_ms), s.wait_max_ms ? `longest ${F.dur(s.wait_max_ms)}` : ""],
+  ];
+  const kpiRow = h("div", { class: "kpis" }, tiles.map(([l, v, sub]) => h("div", { class: "kpi" }, h("div", { class: "label" }, l), h("div", { class: "value" }, v), h("div", { class: "sub" }, sub))));
+  const groups = VERS.map((v) => ({ label: vShort(v), version: v, items: RUNS.filter((r) => r.version_key === v.key) }));
+  const strips = IV_METRICS.map(([key, title, fmt]) => chartCard({
+    title, sub: "One dot per run · line = median", span: 4,
+    chart: (w) => stripPlot(w, groups, { value: (r) => r[key], fmt,
+      tip: (r, v) => ({ title: `${r.run_id} · ${r.commit || ""}`, rows: [[fmt(v), title.toLowerCase()]], body: r.args || r.prompt }) }),
+    table: () => dataTable({ search: false, rows: RUNS, columns: [{ key: "run_id", label: "Run" }, { key: "commit", label: "Version" }, { key, label: title, num: true, fmt }] }) }));
+  const flagOf = (c) => h("span", null, c.label, c.once ? h("span", { class: "chip", title: "the skill says: ask once" }, "once") : null,
+    c.must_ask ? h("span", { class: "chip", title: "the skill requires this question" }, "must ask") : null);
+  const matrix = dataTable({ rows: IV.catalog, limit: 60, search: false, columns: [{ key: "label", label: "Topic", cls: "wrap", render: flagOf }]
+    .concat(VERS.map((v) => ({ key: "v_" + v.key, label: vShort(v), num: true, sort: (c) => ((c.per_version[v.key] || {}).runs_asking || 0) / (v.runs || 1),
+      render: (c) => topicCell(c.per_version[v.key], v) })))
+    .concat([{ key: "runs", label: "All runs", num: true }]) });
+  const catalog = dataTable({ rows: IV.catalog, limit: 60, columns: [
+    { key: "label", label: "Topic", cls: "wrap", render: flagOf },
+    { key: "asked", label: "Asked", num: true }, { key: "prose", label: "In prose", num: true }, { key: "runs", label: "Runs", num: true },
+    { key: "recommended_rate", label: "Recommended taken", num: true, fmt: (v, c) => (c.offered ? `${c.recommended}/${c.offered}` : "—") },
+    { key: "typed", label: "Typed", num: true }, { key: "declined", label: "Empty", num: true, fmt: (v, c) => F.num(c.no_preference + c.declined + c.unanswered) },
+    { key: "reasked", label: "Asked again", num: true }, { key: "wait_p50_ms", label: "Median wait", num: true, fmt: F.dur },
+    { key: "answers", label: "Answers given", cls: "wrap", fmt: (o) => topList(o, 3, " · ") },
+    { key: "headers", label: "Headers used", cls: "wrap", fmt: (o) => Object.keys(o || {}).join(", ") || "—" },
+    { key: "examples", label: "Example question", cls: "wrap", fmt: (a) => (a && a[0]) || "—" }] });
+  const typed = (IV.typed || []).length ? dataTable({ search: false, limit: 60, rows: IV.typed, columns: [
+    { key: "run_id", label: "Run" }, { key: "topic_label", label: "Topic", cls: "wrap" }, { key: "question", label: "Question", cls: "wrap" },
+    { key: "options", label: "Options offered", cls: "wrap", fmt: (a) => (a || []).join(" · ") }, { key: "typed", label: "What was typed", cls: "wrap" }] })
+    : h("div", { class: "empty" }, "Every answer was one of the options offered.");
+  const withQs = RUNS.filter((r) => IV.questions.some((q) => q.run_id === r.run_id));
+  const pick = h("select", { "aria-label": "Run" }, withQs.slice().reverse().map((r) => h("option", { value: r.run_id }, `${r.run_id} · ${r.commit || "?"} · ${F.short(r.args || r.prompt, 40)}`)));
+  const mapHost = h("div");
+  const drawMap = () => {
+    const rows = IV.questions.filter((q) => q.run_id === pick.value);
+    const run = RUNS.find((r) => r.run_id === pick.value) || {};
+    const d = (D.details[pick.value] || {}).interview || {};
+    const markers = d.first_create_dt !== null && d.first_create_dt !== undefined ? [{ t: run.start_ms + d.first_create_dt, label: "first create" }] : [];
+    mapHost.replaceChildren(chartCard({ title: `The interview of ${pick.value}, round by round`, span: 12, legendEl: interviewLegend(),
+      sub: "One column per round, one lane per topic; the dashed line is the run's first create", chart: (w) => interviewMap(w, rows, { order, markers }),
+      table: () => questionTable(rows) }));
+    requestAnimationFrame(() => Charts.renderVisible());
+  };
+  pick.addEventListener("change", drawMap);
+  if (withQs.length) setTimeout(drawMap, 0);
+  return h("div", null, kpiRow, h("div", { class: "grid" },
+    ...strips,
+    card({ title: "Which topics each version asks about", sub: "Runs that asked the topic / runs of that version; hover a cell for what came back", span: 12 }, matrix),
+    card({ title: "Question catalog", sub: `Every question grouped by the skill's ${(IV.taxonomy || {}).source === "skill" ? "own topics (checks file)" : "generic topics"}: how often, what people answered, how long it took`, span: 12 }, catalog),
+    card({ title: "Where the options fell short", sub: "Answers typed instead of picked: what the options missed", span: 12 }, typed),
+    card({ title: "One run's interview", span: 12, tools: pick }, mapHost),
+    card({ title: "Every question", sub: "Across runs and versions; filter by topic, outcome or channel", span: 12 }, questionTable(IV.questions, { showRun: true, showVersion: true, limit: 200 }))));
+}
+
 /* ------------------------------------------------------------------ checks */
 
 function checksTab() {
@@ -314,6 +398,7 @@ function compareTab() {
   const t = tabs([
     { id: "versions", label: "Versions", count: VERS.length, build: versionsTab },
     { id: "checks", label: "Checks", count: D.checks.length, build: checksTab },
+    { id: "interview", label: "Interview", count: ((D.interview || {}).summary || {}).total || 0, build: interviewTab },
     { id: "runs", label: "Runs", count: RUNS.length, build: runsTab },
     { id: "files", label: "Skill files", build: filesTab },
     { id: "cli", label: "CLI & failures", count: D.failures.length, build: cliTab },
