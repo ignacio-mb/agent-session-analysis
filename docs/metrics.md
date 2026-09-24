@@ -431,3 +431,17 @@ has one row per run and file. `interview`: the skill's `taxonomy`, a `summary`, 
 and `per_version`), `questions` (every question of every run, with `version_key` and `commit`) and `typed`
 (answers typed instead of picked, with the options offered); each version also has `interview` totals.
 `csv/questions.csv` has one row per question.
+
+## Warehouse (Postgres)
+
+`session-analytics warehouse --up --load` writes and loads one table per kind of fact; `schema.sql` and
+`views.sql` sit beside the CSVs it loads, and every table and column that needs it carries a `COMMENT`.
+Keys: `sessions.session_id`; `turns (session_id, turn)`; `api_requests (session_id, request_no)`;
+`tool_calls (session_id, tool_use_id)` with `run_id` and `program`; `cli_calls (session_id, tool_use_id, seq)`
+with `signature` and `is_help`; `skill_invocations (session_id, invocation_no)`; `skill_runs.run_id` with
+`version`; `skill_run_checks (run_id, check_id)`; `skill_run_files (run_id, owner, path)`; `questions.qid`
+(`<session8>:<qid>`); `question_options (qid, option_no)`; `subagents (session_id, agent_id)`;
+`files_touched (session_id, path)`; `tool_errors (session_id, error_no)`. Views: `v_daily`, `v_skill_versions`,
+`v_check_rates`, `v_question_topics`, `v_question_outcomes`, `v_typed_answers`, `v_question_flags`,
+`v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`.
+

@@ -1,0 +1,23 @@
+# A local Postgres for the session warehouse (`make warehouse`). Bound to 127.0.0.1 only; trust auth, no password
+# to keep. From a Metabase running in Docker, connect to host.docker.internal:55432, database claude_sessions,
+# user convo, any password.
+services:
+  warehouse:
+    image: postgres:16
+    container_name: convo-analysis-pg
+    environment:
+      POSTGRES_DB: claude_sessions
+      POSTGRES_USER: convo
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - convo-analysis-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U convo -d claude_sessions"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  convo-analysis-pg:

@@ -146,6 +146,30 @@ The rollup adds cost and activity per day, a weekday × hour heatmap, cost by pr
 skills across sessions. A resumed or continued session starts with a copy of the earlier conversation, so
 the rollup counts every API request exactly once.
 
+### A warehouse, for SQL and Metabase
+
+```bash
+make warehouse                                   # start Postgres (docker compose) and load every session
+python3 -m session_analytics warehouse --up --load --since 90d
+```
+
+Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432`, database
+`claude_sessions`, user `convo`, no password) as plain tables — `sessions`, `turns`, `api_requests`,
+`tool_calls`, `cli_calls` (every program in every shell command, by signature), `skill_invocations`,
+`skill_runs`, `skill_run_checks`, `skill_run_files`, `questions`, `question_options`, `subagents`,
+`files_touched`, `tool_errors` — and views that answer the usual questions: `v_skill_versions` (each version
+of a skill compared), `v_check_rates`, `v_question_topics`, `v_question_outcomes`, `v_typed_answers`,
+`v_question_flags`, `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`, `v_daily`. Tables and columns
+carry comments, which Metabase shows as descriptions. A Metabase running in Docker reaches it at
+`host.docker.internal:55432`. Each fact belongs to one session (transcripts are read own-only), and every load
+drops and recreates the tables. `make warehouse-psql` opens a shell.
+
+`scripts/metabase_dashboard.py` builds a Metabase dashboard on it — Overview, Skill versions, Interview, Skill
+files & CLI, with a Skill filter — once the warehouse is added to that Metabase as a database:
+`python3 scripts/metabase_dashboard.py --test` checks every card's SQL against the warehouse, and
+`--build --profile <mb profile> --database <id>` creates the collection, cards and dashboard. The cards are
+native SQL on table and view names, so reloading the warehouse keeps them working.
+
 ## Accuracy
 
 Checked against every transcript on the machine this was built on (180 sessions, 700 subagent files):

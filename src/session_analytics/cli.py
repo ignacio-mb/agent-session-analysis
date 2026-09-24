@@ -5,6 +5,7 @@
     session-analytics rollup --since 7d     aggregate many sessions
     session-analytics skill rde             every run of a skill across sessions, by version, with checks
     session-analytics compare A B           two skill runs side by side (run ids like b3734789:1)
+    session-analytics warehouse --up --load  every session into a local Postgres (tables + views)
     session-analytics schema [SESSION]      event-type inventory; flags what this version does not know
     session-analytics pricing               the price table used for estimates
 """
@@ -97,6 +98,18 @@ def build_parser():
     cp.add_argument("--out", help="also write the comparison to this Markdown file")
     cp.add_argument("--no-redact", action="store_true")
     _common(cp)
+
+    wh = sub.add_parser("warehouse", help="load every session into a local Postgres, as tables and views")
+    wh.add_argument("--since", default="all", help="all (default), 90d, 7d, or a date (YYYY-MM-DD)")
+    wh.add_argument("--project", help="only sessions of this project directory (default: every project)")
+    wh.add_argument("--out", help="where to write the CSVs and SQL (default: ~/claude-session-exports/_warehouse/<time>/)")
+    wh.add_argument("--up", action="store_true", help="start the Postgres in docker-compose.yml first")
+    wh.add_argument("--load", action="store_true", help="load the tables into Postgres (default: only write files)")
+    wh.add_argument("--container", default="convo-analysis-pg", help="the Postgres container to load through")
+    wh.add_argument("--dsn", help="load with a local psql to this DSN instead of the container")
+    wh.add_argument("--no-redact", action="store_true")
+    wh.add_argument("--json", action="store_true")
+    _common(wh)
 
     sc = sub.add_parser("schema", help="inventory event types; flag ones this version does not recognise")
     sc.add_argument("session", nargs="?", help="a session (default: every transcript)")
@@ -228,6 +241,37 @@ def cmd_compare(args):
     return 0
 
 
+def cmd_warehouse(args):
+    from . import warehouse
+    log = (lambda *_: None) if args.json else (lambda m: print(m, file=sys.stderr))
+    try:
+        res = warehouse.run_warehouse(args.claude_dir, args.project, args.since, args.out, do_load=args.load,
+                                      start=args.up, container=args.container, dsn=args.dsn,
+                                      redact=not args.no_redact, pricing=Pricing(args.pricing), log=log)
+    except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
+        detail = getattr(exc, "stderr", None) or str(exc)
+        print(f"session-analytics: warehouse: {detail}".strip(), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(res, indent=1, default=str))
+        return 0
+    c, conn = res["counts"], res["connection"]
+    print(f"# Session warehouse\n\n{res['meta']['transcripts']} transcripts → {c['sessions']:,} sessions, "
+          f"{c['turns']:,} turns, {c['api_requests']:,} API requests, {c['tool_calls']:,} tool calls, "
+          f"{c['cli_calls']:,} CLI calls, {c['skill_runs']:,} skill runs, {c['questions']:,} questions.")
+    if res["meta"]["failed"]:
+        print(f"\n{len(res['meta']['failed'])} transcripts could not be read: "
+              + ", ".join(f["transcript"] for f in res["meta"]["failed"][:5]))
+    if res["loaded"]:
+        print(f"\nLoaded into Postgres: postgresql://{conn['user']}@{conn['host']}:{conn['port']}/{conn['database']} "
+              f"(from a Metabase in Docker: {conn['from_docker']['host']}:{conn['port']}). Tables: "
+              + ", ".join(k for k, n in c.items()) + "; views: v_daily, v_skill_versions, v_check_rates, "
+              "v_question_topics, v_question_outcomes, v_typed_answers, v_question_flags, v_skill_files, "
+              "v_cli_signatures, v_tools, v_models.")
+    print(f"\nFiles: {res['out_dir']} (schema.sql, views.sql, one CSV per table)")
+    return 0
+
+
 def cmd_schema(args):
     from .schema_scan import scan
     cdir = locate.claude_dir(args.claude_dir)
@@ -277,7 +321,7 @@ def main(argv=None):
         args = build_parser().parse_args(["export"] + list(argv or sys.argv[1:]))
     started = time.time()
     code = {"export": cmd_export, "list": cmd_list, "rollup": cmd_rollup, "skill": cmd_skill, "compare": cmd_compare,
-            "schema": cmd_schema, "pricing": cmd_pricing}[args.cmd](args)
+            "schema": cmd_schema, "pricing": cmd_pricing, "warehouse": cmd_warehouse}[args.cmd](args)
     if os.environ.get("SESSION_ANALYTICS_TIMING"):
         print(f"({time.time() - started:.2f}s)", file=sys.stderr)
     return code
