@@ -91,7 +91,34 @@ def _psql(psql, sql):
     return res.stdout
 
 
-def warehouse_counts(psql):
+# The same counts from a ClickHouse load (clickhouse.py): one pass per table instead of a subquery per session.
+_CH_SQL = """SELECT s.session_id AS session_id,
+  ifNull(a.requests, 0) AS api_requests, ifNull(a.output_tokens, 0) AS output_tokens,
+  ifNull(a.input_tokens, 0) AS input_tokens, ifNull(a.cache_read_tokens, 0) AS cache_read_tokens,
+  ifNull(t.calls, 0) AS tool_calls, ifNull(t.failed, 0) AS tool_errors, ifNull(q.asked, 0) AS ask_questions,
+  ifNull(t.skill_calls, 0) AS skill_calls
+FROM {db}.sessions AS s
+LEFT JOIN (SELECT r.session_id AS session_id, count() AS requests, sum(r.output_tokens) AS output_tokens,
+                  sum(r.input_tokens) AS input_tokens, sum(r.cache_read_tokens) AS cache_read_tokens
+           FROM {db}.api_requests AS r GROUP BY r.session_id) AS a ON a.session_id = s.session_id
+LEFT JOIN (SELECT c.session_id AS session_id, countIf(c.tool != '(unmatched)') AS calls,
+                  countIf(c.tool != '(unmatched)' AND c.status IN ('error', 'denied', 'interrupted')) AS failed,
+                  countIf(c.tool = 'Skill') AS skill_calls
+           FROM {db}.tool_calls AS c GROUP BY c.session_id) AS t ON t.session_id = s.session_id
+LEFT JOIN (SELECT x.session_id AS session_id, countIf(x.channel = 'ask') AS asked
+           FROM {db}.questions AS x GROUP BY x.session_id) AS q ON q.session_id = s.session_id"""
+
+
+def warehouse_counts(source):
+    """{session: {count: n}} and when the warehouse was loaded (ms), from Postgres (a psql command) or ClickHouse
+    (a clickhouse.Client)."""
+    if hasattr(source, "rows"):
+        from .clickhouse import ident
+        db = ident(source.t.database)
+        rows = {r["session_id"]: {k: int(r[k] or 0) for k in FIELDS} for r in source.rows(_CH_SQL.format(db=db))}
+        loaded = source.rows(f"SELECT toUnixTimestamp64Milli(max(loaded_at)) AS ms FROM {db}.warehouse_load")
+        return rows, (float(loaded[0]["ms"]) if loaded else None)
+    psql = source
     rows = {}
     for line in _psql(psql, _SQL).splitlines():
         parts = line.split("\t")
@@ -101,9 +128,10 @@ def warehouse_counts(psql):
     return rows, (float(loaded) if loaded else None)
 
 
-def check(psql, claude_dir=None):
-    """Every session in scope, recounted from its transcript and compared with the warehouse."""
-    wh, loaded_ms = warehouse_counts(psql)
+def check(source, claude_dir=None):
+    """Every session in scope, recounted from its transcript and compared with the warehouse (a psql command, or a
+    clickhouse.Client)."""
+    wh, loaded_ms = warehouse_counts(source)
     out = {"loaded_ms": loaded_ms, "checked": 0, "matched": 0, "live": [], "differ": [], "missing": [],
            "raw": dict.fromkeys(FIELDS, 0), "warehouse": dict.fromkeys(FIELDS, 0)}
     for p in locate.iter_transcripts(locate.claude_dir(claude_dir)):
@@ -129,8 +157,8 @@ def check(psql, claude_dir=None):
     return out
 
 
-def render(res):
-    lines = [f"# Warehouse check\n\n{res['checked']} sessions recounted from their raw JSONL: {res['matched']} match on "
+def render(res, title="Warehouse check"):
+    lines = [f"# {title}\n\n{res['checked']} sessions recounted from their raw JSONL: {res['matched']} match on "
              f"every count, {len(res['differ'])} differ, {len(res['live'])} written since the load (live, not "
              f"compared), {len(res['missing'])} with activity the warehouse does not have.\n",
              "| Count | Raw JSONL | Warehouse |", "|---|---:|---:|"]

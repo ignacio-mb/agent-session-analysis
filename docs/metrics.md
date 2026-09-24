@@ -453,8 +453,13 @@ with `signature` and `is_help`; `skill_invocations (session_id, invocation_no)`;
 (the taxonomy, with `label`, `description`, `sort_order`); `warehouse_load` (the load that produced
 the tables: `loaded_at`, `transcripts`, `sessions`, `since`, `generator_version`). `v_skill_versions` carries
 per-run averages (`avg_questions_asked`, `avg_prose_questions`, `avg_question_rounds`) beside the totals.
-`warehouse --check` (reconcile.py) recounts every session from its raw JSONL and compares; a session any of whose
-files was written after the load is live, not compared. Views: `v_daily`, `v_skill_versions`, `v_check_rates`,
+`warehouse --check` (reconcile.py) recounts every session from its raw JSONL and compares — with Postgres, or after
+`--clickhouse` with ClickHouse; a session any of whose files was written after the load is live, not compared.
+`warehouse --clickhouse` (clickhouse.py) loads the same rows into ClickHouse: text → `String`, integers → `Int64`,
+numerics → `Float64`, timestamps → `DateTime64(3, 'UTC')`, booleans → `Bool`; primary-key columns required and
+the table's `ORDER BY`, every other column `Nullable`; empty text is NULL, as in the Postgres load. Its views have
+the same names and columns in ClickHouse SQL (medians are `quantileExactInclusive`, the interpolation Postgres's
+`percentile_cont` uses; rounding goes through Decimal so both round half away from zero). Views: `v_daily`, `v_skill_versions`, `v_check_rates`,
 `v_question_topics`, `v_question_semantics` (per skill, version, topic and layer: questions, asked, in prose,
 runs, recommended offered and taken, typed, came back empty, median wait), `v_interview_questions` (one row per
 question with friendly columns: `channel` as `AskUserQuestion` / `In prose` / `Checkpoint`, `de_topic`,

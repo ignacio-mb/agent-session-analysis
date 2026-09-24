@@ -198,13 +198,45 @@ dashboard on it) holds what the last load read. To reload whenever a session end
 `scripts/warehouse_hook.sh` runs `warehouse --load` in the background (closing a session is never held up), one
 load at a time (a session that ends mid-load gets one more pass after it), logs to
 `~/claude-session-exports/_warehouse/hook.log` and overwrites `_warehouse/latest` instead of adding a folder per
-load.
+load. Once `.env` holds a ClickHouse connection (below), the same load goes there too.
 
-`scripts/metabase_dashboard.py` builds a Metabase dashboard on it — Overview, Skill versions, Interview,
-Question topics, Skill files & CLI, with a Skill filter — once the warehouse is added to that Metabase as a
-database: `python3 scripts/metabase_dashboard.py --test` checks every card's SQL against the warehouse, and
-`--build --profile <mb profile> --database <id>` creates the collection, cards and dashboard. The cards are
-native SQL on table and view names, so reloading the warehouse keeps them working.
+### The same warehouse in ClickHouse
+
+```bash
+make env          # creates .env from .env.example (never over an existing one): fill in CLICKHOUSE_URL
+make clickhouse   # every session into that ClickHouse, then the check against the raw transcripts
+```
+
+`CLICKHOUSE_URL` is the cluster's HTTPS endpoint with a user and password and the database at the end
+(`https://<user>:<password>@<host>:8443/sessions`); `CLICKHOUSE_PASSWORD` takes a password a URL would need
+escaped. It is read from this checkout's `.env` only (git-ignored), never from the environment or the directory a
+session ran in, so another project's `CLICKHOUSE_URL` can't redirect the load. The loader speaks ClickHouse's HTTP
+interface with the standard library — no driver to install.
+
+The same tables and rows as the Postgres load, with the views rewritten in ClickHouse SQL (`clickhouse.py`); on the
+same transcripts every view and every dashboard card returns the same numbers in both. The database must already
+exist — nothing creates one. Each table is loaded beside the live one, its row count checked, and swapped in with
+`EXCHANGE TABLES`, so a dashboard reading mid-load sees the old rows or the new ones, never an empty table.
+Everything written carries a `convo-analysis` comment; a same-named table without it belongs to someone else and
+stops the load before anything is written, and nothing else in the database is touched. `make clickhouse-dev-test`
+tries the whole path on a throwaway local ClickHouse (docker compose, profile `clickhouse`).
+
+### A Metabase dashboard on either
+
+`scripts/metabase_dashboard.py` builds a Metabase dashboard on the warehouse — Overview, Skill versions,
+Interview, Question topics, Skill files & CLI, with Skill, Data-engineering topic and Layer filters — once the
+warehouse is a database in that Metabase:
+
+```bash
+python3 scripts/metabase_dashboard.py --test [--clickhouse]     # every card's SQL against the warehouse
+python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
+```
+
+`--sync` creates the dashboard in the collection, or updates it in place: everything is found by name, so ids,
+links and bookmarks survive. The SQL dialect follows the Metabase database's engine (Postgres or ClickHouse;
+`--ch-database` names the ClickHouse database, default `sessions`). New cards are created inside the dashboard, so
+the collection lists only the dashboard, the model and the metrics. Every card is then run once through Metabase
+and reported. The cards are native SQL on table and view names, so reloading the warehouse keeps them working.
 
 The Question topics tab sits on a semantic layer: a model, **Interview questions** (`v_interview_questions`:
 one row per question, with its data-engineering topic and layer, what came back, whether the recommended option
@@ -213,8 +245,7 @@ Recommended option taken, Typed-answer rate, Came back empty, Median wait for an
 of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic × layer
 matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run by
 layer and version, the layers never asked about, and every question with its topic and layer, with
-Data-engineering topic and Layer filters. `--semantic --profile <p> --database <id> --dashboard <id>
---collection <id>` adds (or updates in place) the model, metrics and tab on an existing dashboard.
+Data-engineering topic and Layer filters.
 
 ## Accuracy
 
@@ -237,7 +268,9 @@ permission prompt.
 
 Exports contain your prompts, commands and file paths. Secret-looking strings (API keys, tokens, private keys,
 passwords, credentials in URLs) are masked by default; `--no-redact` turns that off. Previews are truncated
-unless you pass `--full`. Nothing is sent anywhere: the files stay where they are written.
+unless you pass `--full`. Nothing is sent anywhere unless you load a warehouse: the files stay where they are
+written. A ClickHouse load (and a Metabase dashboard on it) puts prompt previews, questions and answers, command
+summaries, error messages and file paths wherever that cluster and that collection are readable.
 
 ## Development
 

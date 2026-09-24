@@ -69,3 +69,17 @@ def test_the_matrix_has_a_column_per_layer_and_the_tab_fits_the_grid():
         assert not cells & box, (x, y, w, h)
         cells |= box
     assert any(x + w == 24 for x, _, w, _ in boxes)
+
+
+def test_every_native_card_has_clickhouse_sql():
+    md = load()
+    ch = md.clickhouse_sql("sessions")
+    keys = [key for key, *_ in md.CARDS] + [key for key, _n, _d, q, *_ in md.topic_cards() if q[0] == "sql"]
+    assert sorted(keys) == sorted(ch)
+    for key, sql in ch.items():
+        # nothing Postgres-only: ::numeric would be Decimal(10, 0) in ClickHouse
+        assert not re.search(r"::|percentile_cont|string_agg|interval '|FILTER \(WHERE|NOT EXISTS|LATERAL", sql), key
+        assert re.search(r"\bFROM sessions\.", sql), key  # tables are database.table in ClickHouse
+    for key, _name, _display, (kind, q), *_ in md.topic_cards("clickhouse", "sessions"):
+        if kind == "sql":
+            assert q == ch[key]

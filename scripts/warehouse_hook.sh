@@ -1,6 +1,7 @@
 #!/bin/sh
 # Claude Code SessionEnd hook: reload the session warehouse (`session-analytics warehouse --load`) in the
-# background, so ending a session is never held up by the ~30 s load.
+# background, so ending a session is never held up by the ~30 s load. With CLICKHOUSE_URL filled in the checkout's
+# .env, the same load also goes to ClickHouse (--clickhouse=auto: skipped while it is empty).
 #
 #   ~/.claude/settings.json
 #   {"hooks": {"SessionEnd": [{"hooks": [{"type": "command",
@@ -25,7 +26,8 @@ if [ "$1" = "--run" ]; then
     while :; do
       rm -f "$AGAIN"
       echo "== $(date '+%Y-%m-%d %H:%M:%S') load"
-      PYTHONPATH="$REPO/src" /usr/bin/python3 -m session_analytics warehouse --load --out "$OUT/latest" 2>&1 |
+      PYTHONPATH="$REPO/src" /usr/bin/python3 -m session_analytics warehouse --load --clickhouse=auto \
+        --out "$OUT/latest" 2>&1 |
         grep -v '^  [0-9]*/[0-9]* transcripts$'
       [ -e "$AGAIN" ] || break
     done

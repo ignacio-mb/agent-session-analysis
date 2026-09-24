@@ -623,7 +623,9 @@ def load(out_dir, psql):
 
 
 def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_load=False, start=False,
-                  container=CONTAINER, dsn=None, redact=True, pricing=None, log=print):
+                  container=CONTAINER, dsn=None, redact=True, pricing=None, log=print, clickhouse_target=None):
+    """Analyze once; write the files; load Postgres (do_load) and/or ClickHouse (clickhouse_target). A target that
+    fails does not stop the other: its error is in `errors`."""
     out = Path(out_dir) if out_dir else default_root() / "_warehouse" / datetime.now().strftime("%Y-%m-%d_%H%M")
     if start:
         log("Starting Postgres (docker compose up -d --wait)…")
@@ -631,11 +633,22 @@ def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_l
     log("Analyzing transcripts…")
     tables, meta = build(claude_dir, project, since, redact=redact, pricing=pricing, log=log)
     counts = write_bundle(tables, out)
-    loaded = False
+    res = {"out_dir": str(out), "counts": counts, "meta": meta, "loaded": False, "clickhouse": None, "errors": {},
+           "connection": {"host": "127.0.0.1", "port": PORT, "database": DATABASE, "user": USER,
+                          "from_docker": {"host": "host.docker.internal", "port": PORT}}}
     if do_load:
         log("Loading Postgres…")
-        load(out, psql_command(container=container, dsn=dsn))
-        loaded = True
-    return {"out_dir": str(out), "counts": counts, "meta": meta, "loaded": loaded,
-            "connection": {"host": "127.0.0.1", "port": PORT, "database": DATABASE, "user": USER,
-                           "from_docker": {"host": "host.docker.internal", "port": PORT}}}
+        try:
+            load(out, psql_command(container=container, dsn=dsn))
+            res["loaded"] = True
+        except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
+            res["errors"]["postgres"] = (getattr(exc, "stderr", None) or str(exc)).strip()
+    if clickhouse_target is not None:
+        from . import clickhouse
+        log(f"Loading ClickHouse ({clickhouse_target!r})…")
+        try:
+            res["clickhouse"] = {"target": repr(clickhouse_target),
+                                 "counts": clickhouse.load(tables, clickhouse_target, log=log)}
+        except (clickhouse.ClickHouseError, OSError) as exc:
+            res["errors"]["clickhouse"] = str(exc)
+    return res

@@ -1,6 +1,7 @@
 PY39 := /usr/bin/python3
 
-.PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-check warehouse-up warehouse-down warehouse-psql
+.PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-check warehouse-up warehouse-down warehouse-psql \
+	env clickhouse clickhouse-dev clickhouse-dev-test clickhouse-dev-down
 
 test: test39
 	uv run --no-project --with pytest python -m pytest -q
@@ -43,3 +44,24 @@ warehouse-down:
 warehouse-psql:
 	docker exec -it convo-analysis-pg psql -U convo -d claude_sessions
 
+# The ClickHouse connection string lives in .env: create it from .env.example (never over an existing one).
+env:
+	@if [ -f .env ]; then echo ".env exists: fill in CLICKHOUSE_URL there"; \
+	else cp .env.example .env && echo "created .env from .env.example: fill in CLICKHOUSE_URL"; fi
+
+# Every session into the ClickHouse named in .env, then the check against the raw transcripts.
+clickhouse:
+	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse --check
+
+# A throwaway local ClickHouse (docker-compose.yml, profile clickhouse) to try the load and every card's SQL on.
+clickhouse-dev:
+	docker compose --profile clickhouse up -d --wait clickhouse
+
+clickhouse-dev-test: clickhouse-dev
+	@mkdir -p .preview && printf 'CLICKHOUSE_URL=http://convo:convo@127.0.0.1:18123/sessions\n' > .preview/clickhouse-dev.env
+	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse --env-file .preview/clickhouse-dev.env --check \
+		--out .preview/clickhouse-dev
+	python3 scripts/metabase_dashboard.py --test --clickhouse --env-file .preview/clickhouse-dev.env
+
+clickhouse-dev-down:
+	docker compose --profile clickhouse down

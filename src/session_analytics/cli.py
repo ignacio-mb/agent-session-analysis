@@ -99,14 +99,19 @@ def build_parser():
     cp.add_argument("--no-redact", action="store_true")
     _common(cp)
 
-    wh = sub.add_parser("warehouse", help="load every session into a local Postgres, as tables and views")
+    wh = sub.add_parser("warehouse", help="load every session into Postgres and/or ClickHouse, as tables and views")
     wh.add_argument("--since", default="all", help="all (default), 90d, 7d, or a date (YYYY-MM-DD)")
     wh.add_argument("--project", help="only sessions of this project directory (default: every project)")
     wh.add_argument("--out", help="where to write the CSVs and SQL (default: ~/claude-session-exports/_warehouse/<time>/)")
     wh.add_argument("--up", action="store_true", help="start the Postgres in docker-compose.yml first")
     wh.add_argument("--load", action="store_true", help="load the tables into Postgres (default: only write files)")
+    wh.add_argument("--clickhouse", nargs="?", const="yes", choices=["yes", "auto"],
+                    help="load into ClickHouse: CLICKHOUSE_URL in the checkout's .env (see .env.example); "
+                         "--clickhouse=auto skips it while that is empty (the SessionEnd hook)")
+    wh.add_argument("--env-file", help="read CLICKHOUSE_URL from this file instead of the checkout's .env")
     wh.add_argument("--check", action="store_true",
-                    help="recount every session from its raw transcript and compare with the warehouse (after --load)")
+                    help="recount every session from its raw transcript and compare with what was loaded "
+                         "(alone: with the Postgres warehouse)")
     wh.add_argument("--container", default="convo-analysis-pg", help="the Postgres container to load through")
     wh.add_argument("--dsn", help="load with a local psql to this DSN instead of the container")
     wh.add_argument("--no-redact", action="store_true")
@@ -244,9 +249,17 @@ def cmd_compare(args):
 
 
 def cmd_warehouse(args):
-    from . import reconcile, warehouse
+    from . import clickhouse, reconcile, warehouse
     log = (lambda *_: None) if args.json else (lambda m: print(m, file=sys.stderr))
-    if args.check and not args.load:
+    target = None
+    if args.clickhouse and (args.clickhouse == "yes" or clickhouse.settings(args.env_file)[0]["CLICKHOUSE_URL"]):
+        try:
+            target = clickhouse.target_from_settings(args.env_file)
+        except clickhouse.ClickHouseError as exc:
+            print(f"session-analytics: warehouse --clickhouse: {exc}", file=sys.stderr)
+            if args.clickhouse == "yes":
+                return 1  # asked for: fail; auto: the Postgres load still runs
+    if args.check and not args.load and target is None:
         try:
             res = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn), args.claude_dir)
         except (RuntimeError, OSError) as exc:
@@ -257,14 +270,25 @@ def cmd_warehouse(args):
     try:
         res = warehouse.run_warehouse(args.claude_dir, args.project, args.since, args.out, do_load=args.load,
                                       start=args.up, container=args.container, dsn=args.dsn,
-                                      redact=not args.no_redact, pricing=Pricing(args.pricing), log=log)
+                                      redact=not args.no_redact, pricing=Pricing(args.pricing), log=log,
+                                      clickhouse_target=target)
     except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
         detail = getattr(exc, "stderr", None) or str(exc)
         print(f"session-analytics: warehouse: {detail}".strip(), file=sys.stderr)
         return 1
+    checks = {}
+    if args.check and res["loaded"]:
+        checks["Postgres"] = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn),
+                                             args.claude_dir)
+    if args.check and res["clickhouse"]:
+        try:
+            checks["ClickHouse"] = reconcile.check(clickhouse.Client(target), args.claude_dir)
+        except clickhouse.ClickHouseError as exc:
+            res["errors"]["clickhouse check"] = str(exc)
+    ok = not res["errors"] and all(c["ok"] for c in checks.values())
     if args.json:
-        print(json.dumps(res, indent=1, default=str))
-        return 0
+        print(json.dumps(dict(res, checks=checks), indent=1, default=str))
+        return 0 if ok else 1
     c, conn = res["counts"], res["connection"]
     print(f"# Session warehouse\n\n{res['meta']['transcripts']} transcripts → {c['sessions']:,} sessions, "
           f"{c['turns']:,} turns, {c['api_requests']:,} API requests, {c['tool_calls']:,} tool calls, "
@@ -276,12 +300,16 @@ def cmd_warehouse(args):
         print(f"\nLoaded into Postgres: postgresql://{conn['user']}@{conn['host']}:{conn['port']}/{conn['database']} "
               f"(from a Metabase in Docker: {conn['from_docker']['host']}:{conn['port']}). Tables: "
               + ", ".join(k for k, n in c.items()) + "; views: " + ", ".join(warehouse.VIEW_COMMENTS) + ".")
+    if res["clickhouse"]:
+        print(f"\nLoaded into ClickHouse: {res['clickhouse']['target']} — "
+              f"{sum(res['clickhouse']['counts'].values()):,} rows in {len(res['clickhouse']['counts'])} tables, "
+              f"and {len(clickhouse.VIEWS)} views.")
     print(f"\nFiles: {res['out_dir']} (schema.sql, views.sql, one CSV per table)")
-    if args.check and res["loaded"]:
-        chk = reconcile.check(warehouse.psql_command(container=args.container, dsn=args.dsn), args.claude_dir)
-        print("\n" + reconcile.render(chk))
-        return 0 if chk["ok"] else 1
-    return 0
+    for name, err in res["errors"].items():
+        print(f"\n{name} failed: {err}", file=sys.stderr)
+    for name, chk in checks.items():
+        print("\n" + reconcile.render(chk, title=f"{name} check"))
+    return 0 if ok else 1
 
 
 def cmd_schema(args):
