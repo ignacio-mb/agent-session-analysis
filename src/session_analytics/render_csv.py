@@ -35,6 +35,10 @@ TABLES = {
                                     "tool_errors", "skills", "final_context_tokens", "reported_final_context_tokens",
                                     "reported_tool_uses", "task_prompt", "transcript"]),
     "errors.csv": ("errors", ["ts", "turn", "tool", "scope", "category", "input", "message"]),
+    "skill_files.csv": ("skill_files", ["run_id", "skill", "version", "owner", "path", "kind", "order", "how",
+                                        "coverage", "seen", "total", "lines", "sections", "first_dt", "accesses",
+                                        "reads", "searches", "rereads", "via", "named_by", "found_by", "version_check",
+                                        "tokens"]),
 }
 
 
@@ -53,7 +57,19 @@ def _rows(a, key):
         return a["subagents"]["rows"]
     if key == "errors":
         return a["errors"]["rows"]
+    if key == "skill_files":
+        return skill_file_rows(a.get("skill_runs") or [])
     return []
+
+
+def skill_file_rows(runs):
+    """One row per skill run and file it touched (skillfiles.run_files()["files"])."""
+    rows = []
+    for r in runs:
+        for f in (r.get("skill_files") or {}).get("files") or ():
+            rows.append(dict(f, run_id=r["run_id"], skill=r["skill"], version_check=f.get("version"),
+                             version=(r.get("version") or {}).get("commit") or (r.get("version") or {}).get("label")))
+    return rows
 
 
 def _flat(v):

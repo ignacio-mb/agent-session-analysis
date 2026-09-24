@@ -4,8 +4,10 @@
 
 Runs come from skillruns.build_runs (one per invocation, including the follow-up turns it steered).
 Versions come from versions.resolve (git commit of the skill source). For each version: how many runs,
-median cost / tool calls / errors / questions / duration, check pass rates, which skill files were read,
-which CLI commands ran and failed, and what changed in git since the previous version.
+median cost / tool calls / errors / questions / duration, check pass rates, which CLI commands ran and
+failed, what changed in git since the previous version, and for every file of the skill (and every bundled
+CLI doc it sent Claude to) how the runs used it: read whole or in part, which sections, in what order, what
+named it, and whether the lines a change added were ever shown to a run (skillfiles.exposure).
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import csv
 import difflib
 import json
+import os
 import re
 import statistics
 import time
@@ -20,19 +23,22 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, locate, render_html, util, versions
+from . import __version__, locate, render_html, skillfiles, util, versions
 from .analyze import analyze
 from .export import _slug, default_root
 from .parse import parse_session
 from .pricing import Pricing
 from .redact import Redactor
+from .render_csv import skill_file_rows
 from .rollup import parse_since
 from .skillruns import skill_key
 
 SCHEMA = "convo-analysis/skill-v1"
 RUN_METRICS = ("cost_usd", "requests", "tool_calls", "tool_errors", "error_rate", "cli_calls", "help_lookups",
                "retries_after_error", "question_calls", "objects_created", "duration_ms", "active_ms", "turn_count",
-               "follow_up_turns", "context_peak", "output_tokens", "checks_failed")
+               "follow_up_turns", "context_peak", "output_tokens", "checks_failed", "docs_read", "cli_docs_read",
+               "doc_tokens", "doc_listings", "doc_rereads")
+FULL = ("full", "injected", "injected + re-read")
 
 
 def actions(run, steps):
@@ -47,14 +53,19 @@ def actions(run, steps):
             mine.append(f"skill {st.get('name')}")
         elif k == "tool" and st.get("scope") == "main" and st.get("id") != run.get("tool_use_id"):
             name = st.get("name")
-            res = [r.split(":", 1)[1] for r in st.get("res") or () if r.split(":", 1)[0] == run["skill"]]
+            res = []
+            for entry in st.get("res") or ():
+                op, _, ref = entry.partition(" ")
+                owner, _, path = ref.partition(":")
+                if op in ("read", "search", "list"):
+                    res.append(f"{op} " + ((path or "./") if owner == run["skill"] else ref))
             if name == "Bash":
                 mine += [f"$ {sig}" for sig in st.get("sigs") or ()]
-                mine += [f"read {r}" for r in res]
+                mine += res
                 if not mine and st.get("prog"):
                     mine.append(f"$ {st['prog']}")
             elif res:
-                mine += [f"read {r}" for r in res]
+                mine += res
             elif name == "AskUserQuestion":
                 mine.append("ask the user")
             elif name in ("Edit", "Write", "MultiEdit"):
@@ -92,9 +103,9 @@ def collect_runs(name, claude_dir=None, project=None, since="30d", limit=500, re
     cdir = locate.claude_dir(claude_dir)
     files = [f for f in locate.iter_transcripts(cdir, project=project) if f.stat().st_mtime * 1000 >= cutoff][:limit]
     # Cheap pre-filter before a full parse: the ways a skill's name appears when it was actually used.
-    needles = [n.encode() for n in (f'/skills/{key}/', f'"skill":"{key}"', f'<command-name>/{key}<',
-                                   f'<command-name>{key}<', f'"attributionSkill":"{key}"', f'"commandName":"{key}"',
-                                   f':{key}"')]
+    k = re.escape(key).encode()
+    marker = re.compile(rb'/skills/' + k + rb'/|"(?:skill|commandName|attributionSkill)":\s*"(?:[^"]*:)?' + k +
+                        rb'"|<command-name>/?' + k + rb'<')
     pricing = pricing or Pricing()
     R = Redactor(redact)
     runs, scanned = [], 0
@@ -103,7 +114,7 @@ def collect_runs(name, claude_dir=None, project=None, since="30d", limit=500, re
             data = f.read_bytes()
         except OSError:
             continue
-        if not any(n in data for n in needles):
+        if not marker.search(data):
             continue
         scanned += 1
         s = parse_session(f)
@@ -187,8 +198,17 @@ def build_report(name, runs, meta, since, project):
         row["changes"] = None
         if prev and prev.get("sha") and row.get("sha") and row["source"]:
             src = versions.SkillSource(row["source"])
+            hunks = src.diff_hunks(prev["sha"], row["sha"])
             row["changes"] = {"from": prev.get("commit"), "commits": src.log_between(prev["sha"], row["sha"]),
-                              "files": src.diffstat(prev["sha"], row["sha"])}
+                              "files": src.diffstat(prev["sha"], row["sha"]),
+                              "exposure": _exposure(hunks, rs, key, src.file_at(row["sha"], "SKILL.md"))}
+        # Every file of the skill at this version, and every other document the runs touched.
+        row["inventory"] = list(rs[0]["skill_files"]["inventory"]["files"])
+        keys = [f"{key}:{f}" for f in row["inventory"]]
+        keys += [fk for r in rs for fk in (f"{f['owner']}:{f['path']}" for f in r["skill_files"]["files"])
+                 if fk not in keys]
+        row["files"] = {fk: _file_stats(rs, fk) for fk in dict.fromkeys(keys)}
+        row["never"] = [f for f in row["inventory"] if not row["files"][f"{key}:{f}"]["shown"]]
         version_rows.append(row)
         prev = row
 
@@ -205,6 +225,7 @@ def build_report(name, runs, meta, since, project):
                      "category": v["category"], "example": v["example"]}
                     for k, v in sorted(failures.items(), key=lambda kv: -kv[1]["count"])]
 
+    file_rows = _file_rows(version_rows, key)
     run_rows = []
     for r in runs:
         run_rows.append({k: r.get(k) for k in (
@@ -213,7 +234,9 @@ def build_report(name, runs, meta, since, project):
             "error_rate", "cli_calls", "help_lookups", "retries_after_error", "question_calls", "questions_asked",
             "objects_created", "cost_usd", "attributed_cost_usd", "duration_ms", "active_ms", "context_start",
             "context_end", "context_peak", "output_tokens", "cache_hit_ratio", "playbooks", "references", "missing_expected",
-            "not_named_by_playbooks", "checks_passed", "checks_failed", "denials", "interrupted", "subagents", "models")}
+            "not_named_by_playbooks", "checks_passed", "checks_failed", "denials", "interrupted", "subagents", "models",
+            "docs_read", "docs_total", "docs_never", "cli_docs_read", "doc_tokens", "doc_rereads", "doc_listings",
+            "doc_unprompted", "doc_version_mismatches")}
                         | {"version": r["version"].get("label"), "version_key": _version_key(r),
                            "commit": r["version"].get("commit"),
                            "checks": {c["id"]: c["status"] for c in r["checks"]}})
@@ -234,15 +257,86 @@ def build_report(name, runs, meta, since, project):
                    "median_tool_calls": _median([r["tool_calls"] for r in runs])},
         "checks": [{"id": cid, "desc": check_desc.get(cid)} for cid in check_ids],
         "versions": version_rows,
+        "files": file_rows,
         "runs": run_rows,
         "failures": failure_rows,
         "details": {r["run_id"]: {k: r.get(k) for k in (
-            "resources", "cli", "questions", "objects", "files_written", "final_message", "errors", "checks", "turns",
-            "nested_skills", "failed_invocations", "actions", "steps", "version", "expected_by_playbooks",
-            "tools", "error_categories", "transcript")} for r in runs},
+            "skill_files", "changes_seen", "cli", "questions", "objects", "files_written", "final_message", "errors",
+            "checks", "turns", "nested_skills", "failed_invocations", "actions", "steps", "version",
+            "expected_by_playbooks", "tools", "error_categories", "transcript")} for r in runs},
     }
     report["insights"] = _insights(report)
     return report
+
+
+def _file_stats(rs, fkey):
+    """How the runs of one version used one file (`owner:path`)."""
+    touched = []
+    for r in rs:
+        f = next((x for x in r["skill_files"]["files"] if f"{x['owner']}:{x['path']}" == fkey), None)
+        if f is not None:
+            touched.append(f)
+    shown = [f for f in touched if f["seen"]]
+    return {
+        "runs": len(rs), "touched": len(touched), "shown": len(shown),
+        "full": sum(1 for f in shown if f["how"] in FULL),
+        "partial": sum(1 for f in shown if f["how"] in ("partial", "hits")),
+        "not_shown": len(touched) - len(shown),
+        "coverage": _median([f["coverage"] for f in shown]),
+        "order": _median([f["order"] for f in touched]),
+        "first_dt": _median([f["first_dt"] for f in touched]),
+        "tokens": _median([f["tokens"] for f in shown]),
+        "accesses": sum(f["accesses"] for f in touched),
+        "rereads": sum(f["rereads"] for f in touched),
+        "via": dict(Counter(v for f in touched for v, n in f["via"].items() for _ in range(n)).most_common()),
+        "found_by": dict(Counter(f["found_by"] for f in touched if f["found_by"]).most_common()),
+        "named_by": dict(Counter(n for f in touched for n in f["named_by"]).most_common(6)),
+        "sections": dict(Counter(sec for f in shown for sec in f["sections"]).most_common(8)),
+        "mismatches": sorted({f["version"] for f in touched if f["version"] not in (None, "match", "as installed now")}),
+    }
+
+
+def _exposure(hunks, rs, key, skill_md_text):
+    """Per changed file: what the change added, and how many of this version's runs were shown it."""
+    rows = {}
+    for r in rs:
+        for e in skillfiles.exposure(hunks, r["skill_files"]["files"], key, skill_md_text):
+            row = rows.setdefault(e["path"], {k: e[k] for k in ("path", "added", "removed", "ranges", "changed_lines",
+                                                                 "frontmatter_lines", "deletions")}
+                                  | {"statuses": Counter(), "runs": {}})
+            row["statuses"][e["status"]] += 1
+            row["runs"][r["run_id"]] = {"status": e["status"], "seen": e["seen_lines"], "changed": e["changed_lines"]}
+    out = []
+    for row in rows.values():
+        st = row.pop("statuses")
+        row["seen"] = st["seen"]
+        row["partly"] = st["partly seen"]
+        row["not_seen"] = st["not in the lines read"] + st["file not read"]
+        row["not_observable"] = st["deletions only"] + st["frontmatter only"]
+        out.append(row)
+    return sorted(out, key=lambda x: (-(x["not_seen"] + x["partly"]), x["path"]))
+
+
+def _file_rows(version_rows, key):
+    """One row per file across versions: the skill's own files first, then the docs of other owners."""
+    keys = list(dict.fromkeys(fk for v in version_rows for fk in v["files"]))
+    rows = []
+    for fk in keys:
+        owner, _, path = fk.partition(":")
+        per = {}
+        for v in version_rows:
+            st = v["files"].get(fk)
+            changed = next((c for c in ((v.get("changes") or {}).get("files") or ()) if c["path"] == path), None) \
+                if owner == key else None
+            per[v["key"]] = dict(st or {"runs": v["runs"], "touched": 0, "shown": 0},
+                                 in_version=(path in v["inventory"]) if owner == key else None,
+                                 changed={"added": changed["added"], "removed": changed["removed"]} if changed else None)
+        rows.append({"file": fk, "owner": owner, "path": path, "own": owner == key,
+                     "kind": (os.path.dirname(path) or ".") if owner == key else owner,
+                     "runs_shown": sum(x.get("shown", 0) for x in per.values()),
+                     "runs": sum(x.get("runs", 0) for x in per.values()), "per_version": per})
+    rows.sort(key=lambda r: (not r["own"], r["owner"], r["path"]))
+    return rows
 
 
 def _insights(rep):
@@ -267,12 +361,15 @@ def _insights(rep):
                              f"{va['commit'] or va['label']} → {rb['pass']}/{rb['pass'] + rb['fail']} on "
                              f"{vb['commit'] or vb['label']}.")
         for m, label in (("cost_usd", "cost"), ("tool_calls", "tool calls"), ("tool_errors", "tool errors"),
-                         ("question_calls", "questions"), ("help_lookups", "help lookups"), ("duration_ms", "duration")):
+                         ("question_calls", "questions"), ("help_lookups", "help lookups"), ("duration_ms", "duration"),
+                         ("docs_read", "skill files read"), ("doc_tokens", "≈ tokens of skill docs read")):
             x, y = a["median"].get(m), b["median"].get(m)
             if x and y and (y / x >= 1.5 or y / x <= 0.67):
-                fmt = util.fmt_usd if m == "cost_usd" else (util.fmt_duration if m == "duration_ms" else str)
+                fmt = util.fmt_usd if m == "cost_usd" else (util.fmt_duration if m == "duration_ms" else
+                                                            util.fmt_tokens if m == "doc_tokens" else str)
                 notes.append(f"Median {label} per run moved {fmt(x)} → {fmt(y)} from {a['commit'] or a['label']} to "
                              f"{b['commit'] or b['label']} (n={a['runs']} → {b['runs']}).")
+    notes += _file_insights(rep)
     worst = sorted(((c["id"], sum(v["checks"].get(c["id"], {}).get("fail", 0) for v in vs)) for c in rep["checks"]),
                    key=lambda x: -x[1])
     if worst and worst[0][1]:
@@ -280,6 +377,51 @@ def _insights(rep):
     if rep["failures"]:
         f = rep["failures"][0]
         notes.append(f"Most frequent tool failure: {f['signature']} (×{f['count']} in {len(f['runs'])} runs).")
+    return notes
+
+
+def _file_insights(rep):
+    """What the skill-file analysis says worth reading first: changes no run saw, files no run reads, text
+    that was not the version a run is labelled with, and files reached without anything naming them."""
+    notes, vs = [], rep["versions"]
+    for v in vs:
+        ch = v.get("changes") or {}
+        # The root README is for people browsing the repository; Claude Code never loads it.
+        missed = [e for e in ch.get("exposure") or () if e["changed_lines"] and (e["not_seen"] or e["partly"])
+                  and e["path"] != "README.md"]
+        if missed:
+            parts = [f"{e['path']} (+{e['added']}: seen by {e['seen']}/{v['runs']} runs"
+                     + (f", in part by {e['partly']}" if e["partly"] else "") + ")" for e in missed[:3]]
+            more = f" and {len(missed) - 3} more" if len(missed) > 3 else ""
+            notes.append(f"{ch.get('from')} → {v['commit']} changed files its runs did not fully see: "
+                         + "; ".join(parts) + more + ".")
+    if vs:
+        last = vs[-1]
+        never = [p for p in last.get("never") or () if p != "README.md"]
+        if never and last["runs"] >= 2:
+            notes.append(f"{len(never)} of {len(last['inventory'])} files were shown to no run of "
+                         f"{last['commit'] or last['label']} ({last['runs']} runs): " + ", ".join(never[:6])
+                         + (" …" if len(never) > 6 else "") + ".")
+    off = Counter()
+    for fr in rep["files"]:
+        for st in fr["per_version"].values():
+            for label in st.get("mismatches") or ():
+                off[(fr["file"], label)] += 1
+    if off:
+        (fk, label), n = off.most_common(1)[0]
+        notes.append(f"Runs read text that is not the version they ran: {fk} matched `{label}` "
+                     f"({sum(off.values())} file reads in all). Is the installed copy in step with the repository?")
+    reached = Counter()
+    for fr in rep["files"]:
+        in_skill = any(st.get("in_version") for st in fr["per_version"].values())
+        if fr["own"] and in_skill and fr["path"] != "README.md":
+            for st in fr["per_version"].values():
+                for how, n in (st.get("found_by") or {}).items():
+                    if how in ("listing", "search", "unprompted"):
+                        reached[fr["path"]] += n
+    if reached:
+        notes.append("Skill files reached without an earlier doc naming them (by listing, grep, or from memory): "
+                     + ", ".join(f"{p} ×{n}" for p, n in reached.most_common(4)) + ".")
     return notes
 
 
@@ -367,6 +509,7 @@ def render_markdown(rep):
             [(c["id"],) + tuple(f"{v['checks'][c['id']]['pass']}/{v['checks'][c['id']]['pass'] + v['checks'][c['id']]['fail']}"
                                 if v["checks"][c["id"]]["pass"] + v["checks"][c["id"]]["fail"] else "n/a"
                                 for v in rep["versions"]) for c in rep["checks"]])]
+    lines += _files_markdown(rep)
     lines += ["## Runs", "", table(
         ["Run", "Started", "Version", "How", "Turns", "Tools", "Errors", "mb/CLI", "Help", "Asked", "Created",
          "Cost", "Checks ✗", "Prompt"],
@@ -378,6 +521,38 @@ def render_markdown(rep):
         lines += ["## Failures", "", table(["Count", "Runs", "Failure"],
                                            [(f["count"], len(f["runs"]), f["signature"]) for f in rep["failures"][:25]])]
     return "\n".join(lines) + "\n"
+
+
+def _files_markdown(rep):
+    from .render_md import table
+    vs, files = rep["versions"], rep.get("files") or []
+    if not files or not vs:
+        return []
+
+    def cell(st):
+        if st.get("in_version") is False:
+            return "—"
+        c = f"{st.get('shown', 0)}/{st.get('runs', 0)}"
+        return c + (" Δ" if st.get("changed") else "")
+    shown = [f for f in files if f["runs_shown"] or any(x.get("in_version") for x in f["per_version"].values())]
+    out = ["## Skill files", "",
+           "Runs shown at least one line of the file / runs of that version; Δ the version changed the file.", "",
+           table(["File"] + [v["commit"] or v["label"][:14] for v in vs] + ["All"],
+                 [(f["path"] if f["own"] else f"{f['owner']}:{f['path']}",) +
+                  tuple(cell(f["per_version"].get(v["key"], {})) for v in vs) + (f"{f['runs_shown']}/{f['runs']}",)
+                  for f in shown])]
+    for v in vs:
+        ex = (v.get("changes") or {}).get("exposure") or []
+        if ex:
+            out += [f"### Did the runs of {v['commit']} see what {v['changes']['from']} → {v['commit']} changed?", "",
+                    table(["File", "+", "−", "Changed lines", "Saw all", "Saw some", "Saw none"],
+                          [(e["path"], e["added"], e["removed"], ", ".join(f"{a}–{b}" if a != b else str(a)
+                                                                           for a, b in e["ranges"][:5]),
+                            f"{e['seen']}/{v['runs']}", e["partly"], e["not_seen"]) for e in ex])]
+    out += ["### Never shown, by version", ""]
+    out += [f"- {v['commit'] or v['label']} ({v['runs']} runs): " + (", ".join(v.get("never") or ()) or "none")
+            for v in vs] + [""]
+    return out
 
 
 def _csv(path, rows):
@@ -417,11 +592,13 @@ def run_skill_report(name, claude_dir=None, project=None, since="30d", limit=500
         d = out / "csv"
         d.mkdir(exist_ok=True)
         _csv(d / "runs.csv", rep["runs"])
-        _csv(d / "versions.csv", [{k: v for k, v in row.items() if k not in ("resources", "cli", "checks")}
+        _csv(d / "versions.csv", [{k: v for k, v in row.items() if k not in ("resources", "cli", "checks", "files",
+                                                                               "inventory", "changes")}
                                   for row in rep["versions"]])
         _csv(d / "checks.csv", [dict(run_id=r["run_id"], version=r["commit"] or r["version"], **r["checks"])
                                 for r in rep["runs"]])
         _csv(d / "failures.csv", rep["failures"])
+        _csv(d / "skill_files.csv", skill_file_rows(runs))
         paths["csv"] = str(d)
     summary = render_markdown(rep).split("## Checks by version")[0].split("## Runs")[0].rstrip() + "\n"
     if paths:

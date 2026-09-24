@@ -87,6 +87,12 @@ const F = {
     return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " +
       d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   },
+  since(ms) { return ms === null || ms === undefined ? "—" : "+" + F.dur(ms); },
+  ranges(lines, limit = 4) {
+    if (!lines || !lines.length) return "—";
+    const parts = lines.slice(0, limit).map(([a, b]) => (a === b ? String(a) : `${a}–${b}`));
+    return parts.join(", ") + (lines.length > limit ? ` +${lines.length - limit} more` : "");
+  },
   short(s, n) {
     if (s === null || s === undefined) return "";
     s = String(s).replace(/\s+/g, " ").trim();
@@ -689,7 +695,7 @@ function traceView(steps, { limit = 400, showScope = true } = {}) {
       main.append(statusMark(st.status || "pending", false), h("b", null, " " + st.name + " "), h("span", { class: "tr-text mono" }, st.input || ""));
       meta.append(h("span", { class: "chip" }, F.dur(st.dur)));
       for (const sgn of st.sigs || []) meta.append(h("span", { class: "chip strong" }, sgn));
-      for (const r of st.res || []) meta.append(h("span", { class: "chip" }, "reads " + r.split(":").slice(1).join(":")));
+      for (const r of st.res || []) meta.append(h("span", { class: "chip" }, r));
       if (st.batch > 1) meta.append(h("span", { class: "chip" }, `parallel ×${st.batch}`));
       if (st.denial) meta.append(h("span", { class: "chip" }, st.denial));
       detail = [st.input, st.result ? "→ " + st.result : ""].filter(Boolean).join("\n\n");
@@ -751,10 +757,6 @@ function runDetail(run, steps) {
   const checkList = checks.length ? h("div", { class: "checks" }, checks.map((c) =>
     h("div", { class: "check-row" }, statusMark(c.status), h("span", null, " " + (c.desc || c.id)), c.detail ? h("span", { class: "muted" }, " — " + c.detail) : null)))
     : h("div", { class: "empty" }, "No checks defined for this skill (add checks/<skill>.json).");
-  const resources = (run.resources || []).length ? dataTable({ search: false, limit: 60, rows: run.resources, columns: [
-    { key: "t", label: "When", fmt: F.time }, { key: "path", label: "Skill file", cls: "code" }, { key: "kind", label: "Kind" },
-    { key: "via", label: "Via" }, { key: "chars", label: "Chars", num: true, fmt: F.tok }, { key: "status", label: "Status", render: (r) => statusMark(r.status, false) }] })
-    : h("div", { class: "empty" }, "The run read none of the skill's own files.");
   const expected = h("div", { class: "note" },
     (run.missing_expected || []).length ? `Named by a playbook's "Read first" but never read: ${run.missing_expected.join(", ")}. ` : "",
     (run.not_named_by_playbooks || []).length ? `Read without a playbook naming it: ${run.not_named_by_playbooks.join(", ")}.` : "");
@@ -775,11 +777,114 @@ function runDetail(run, steps) {
   return h("div", { class: "grid" },
     card({ title: "Run", span: 7 }, head, run.final_message ? h("details", { class: "raw", open: true }, h("summary", null, "Final hand-back"), h("pre", { class: "tr-detail" }, run.final_message)) : null),
     card({ title: `Checks (${run.checks_passed || 0} passed, ${run.checks_failed || 0} failed)`, span: 5 }, checkList),
-    card({ title: "Skill files read", sub: "In order, with how they were read", span: 6 }, resources, expected),
+    skillFilesCard(run, expected),
     card({ title: "CLI commands", span: 6 }, cli),
     card({ title: "Questions asked", span: 6 }, questions),
     card({ title: "Objects the CLI reported", span: 6 }, objects),
     card({ title: "Errors", span: 12 }, errors),
     actionsList ? card({ title: "What it did", sub: "Actions in order (repeats collapsed) — the sequence the compare view diffs", span: 12 }, actionsList) : null,
     card({ title: "Trace", sub: "Every prompt, Claude API request and tool call in the run — click a row for its input and output", span: 12 }, traceView(steps)));
+}
+
+/* ------------------------------------------------------------------ skill files: which documents a run was shown */
+
+const HOW_MARK = { injected: "◆", "injected + re-read": "◆", full: "●", partial: "◐", hits: "◔", "not shown": "○", "no hits": "○",
+  missing: "✗", listed: "☰", resolved: "→", size: "#" };
+
+function howChip(how) {
+  if (!how) return h("span", { class: "muted" }, "—");
+  const key = how.startsWith("searched") ? "listed" : how;
+  return h("span", { class: "chip how", title: how }, `${HOW_MARK[key] || "·"} ${how}`);
+}
+
+function versionMark(v) {
+  if (!v) return h("span", { class: "muted", title: "not checked: only whole-file reads can be" }, "—");
+  if (v === "match" || v === "as installed now") return h("span", { class: "smark good", title: v }, h("b", null, "✓"), " " + v);
+  return h("span", { class: "smark serious", title: "the text shown is not the version the run is labelled with" }, h("b", null, "≠"), " " + v);
+}
+
+/* A file as a strip, one pixel column per slice of lines: filled where Claude was shown the lines. */
+function coverageStrip(lines, total, { width = 110, height = 8, label = true } = {}) {
+  const wrap = h("span", { class: "cov" });
+  if (!total) { wrap.append(h("span", { class: "t" }, "—")); return wrap; }
+  const svg = sv("svg", { width, height, viewBox: `0 0 ${width} ${height}`, role: "img",
+    "aria-label": `lines ${F.ranges(lines, 12)} of ${total}` });
+  svg.appendChild(sv("rect", { class: "cov-track", x: 0, y: 0, width, height, rx: 2 }));
+  let seen = 0;
+  for (const [a, b] of lines || []) {
+    seen += b - a + 1;
+    const x = ((a - 1) / total) * width, w = Math.max(1.5, ((b - a + 1) / total) * width);
+    svg.appendChild(sv("rect", { class: "cov-seg", x: x.toFixed(2), y: 0, width: Math.min(w, width - x).toFixed(2), height, rx: 1.5 }));
+  }
+  Tip.bind(svg, () => ({ title: `${F.num(seen)} of ${F.num(total)} lines shown`, rows: [[F.pct(seen / total), "of the file"]], body: `lines ${F.ranges(lines, 30)}` }));
+  wrap.append(svg);
+  if (label) wrap.append(h("span", { class: "t" }, F.pct(Math.min(1, seen / total)).replace(".0%", "%")));
+  return wrap;
+}
+
+/* The first `n` items of a list, the rest counted and kept in the hover title. */
+function capped(items, n, sep) {
+  const more = items.length - n;
+  return h("span", { title: more > 0 ? items.join("\n") : null }, items.slice(0, n).join(sep), more > 0 ? h("span", { class: "muted" }, `${sep}+${more} more`) : null);
+}
+
+function skillFilesCard(run, expectedNote) {
+  const sf = run.skill_files;
+  if (!sf) return card({ title: "Skill files", span: 12 }, h("div", { class: "empty" }, "No skill-file data in this export."));
+  const t = sf.totals || {}, own = run.skill;
+  const label = (r) => (r.owner === own ? r.path || "./" : `${r.owner}:${r.path}`);
+  const others = (t.other_owners || []).join(", ");
+  const summary = h("div", { class: "facts" },
+    h("span", null, h("b", null, `${F.num(t.own_shown)} of ${F.num(t.own_inventory)}`), ` ${own} files shown (${F.num(t.own_full)} whole, ${F.num(t.own_partial)} in part)`),
+    h("span", null, h("b", null, F.num(t.other_files)), ` other docs${others ? ` (${others})` : ""}`),
+    h("span", null, h("b", null, "≈" + F.tok(t.doc_tokens)), " tokens of docs read"),
+    h("span", null, h("b", null, F.num(t.listings)), " listings"),
+    h("span", null, h("b", null, F.num(t.rereads)), " re-reads"),
+    t.missing ? h("span", null, h("b", null, F.num(t.missing)), " paths that do not exist") : null,
+    t.version_mismatches ? h("span", { class: "warn" }, h("b", null, F.num(t.version_mismatches)), " not the version that ran") : null);
+  const files = (sf.files || []).length ? dataTable({ search: false, limit: 100, sortKey: "order", sortDir: "asc",
+    rows: sf.files.map((f) => Object.assign({ label: label(f), pointer: (f.named_by || []).length ? f.named_by.join(", ") : f.found_by }, f)),
+    columns: [
+      { key: "order", label: "#", num: true },
+      { key: "label", label: "File", cls: "path" },
+      { key: "how", label: "How", render: (r) => howChip(r.how) },
+      { key: "coverage", label: "Lines shown", num: true, render: (r) => coverageStrip(r.lines, r.total) },
+      { key: "sections", label: "Sections seen", cls: "wrap", render: (r) => (r.sections && r.sections.length ? capped(r.sections, 3, " · ")
+        : h("span", { class: "muted" }, !r.seen ? "—" : (r.how || "").startsWith("injected") ? "whole body" : "whole file")) },
+      { key: "first_dt", label: "First", num: true, fmt: F.since },
+      { key: "accesses", label: "Reads", num: true },
+      { key: "via", label: "Via", fmt: (v) => Object.keys(v || {}).join(", ") || "—" },
+      { key: "pointer", label: "Pointed to by", cls: "wrap", render: (r) => ((r.named_by || []).length ? capped(r.named_by, 2, ", ")
+        : h("span", { class: "muted" }, r.found_by || "—")) },
+      { key: "version", label: "Version", render: (r) => versionMark(r.version) },
+      { key: "tokens", label: "≈ Tokens", num: true, fmt: F.tok }] })
+    : h("div", { class: "empty" }, "No skill documents were touched.");
+  const acc = sf.accesses || [];
+  const accTable = h("details", { class: "raw" }, h("summary", null, `Every access, in order (${acc.length})`),
+    dataTable({ limit: 200, rows: acc.map((a) => Object.assign({ label: label(a) }, a)), columns: [
+      { key: "dt", label: "When", num: true, fmt: F.since }, { key: "label", label: "File", cls: "path" }, { key: "op", label: "Op" },
+      { key: "how", label: "How", render: (r) => howChip(r.how) }, { key: "lines", label: "Lines", fmt: (v, r) => (v && v.length ? `${F.ranges(v)} of ${r.total || "?"}` : "—") },
+      { key: "detail", label: "Command", cls: "code" }, { key: "status", label: "Status", render: (r) => statusMark(r.status || "n/a", false) }] }));
+  const never = (sf.inventory || {}).never || [];
+  const neverList = never.length ? h("details", { class: "raw" }, h("summary", null, `Never shown in this run (${never.length} of ${(sf.inventory.files || []).length} files)`),
+    h("div", { class: "pills" }, never.map((p) => h("span", { class: "pill mono" }, p)))) : null;
+  const cs = run.changes_seen;
+  let changes = null;
+  if (cs && (cs.files || []).length) {
+    changes = h("div", { class: "sub-block" }, h("h3", null, `What ${cs.from} → ${cs.to} changed, and whether this run was shown it`),
+      dataTable({ search: false, limit: 60, rows: cs.files, sortKey: "changed_lines", columns: [
+        { key: "path", label: "File", cls: "path" }, { key: "added", label: "+", num: true }, { key: "removed", label: "−", num: true },
+        { key: "ranges", label: "Changed lines", fmt: (v) => F.ranges(v, 6) },
+        { key: "changed_lines", label: "Seen", num: true, fmt: (v, r) => (v ? `${r.seen_lines}/${v}` : "—") },
+        { key: "status", label: "Status", render: (r) => exposureMark(r.status) }] }));
+  }
+  return card({ title: "Skill files", sub: "Every document of the skill, and the CLI docs it sends Claude to, that entered the run's context, measured by what Claude was shown", span: 12 },
+    summary, files, expectedNote || null, changes, accTable, neverList);
+}
+
+function exposureMark(status) {
+  const map = { seen: ["good", "✓"], "partly seen": ["warning", "◐"], "not in the lines read": ["serious", "○"], "file not read": ["serious", "○"],
+    "deletions only": ["muted", "–"], "frontmatter only": ["muted", "–"] };
+  const [tone, sym] = map[status] || ["muted", "?"];
+  return h("span", { class: `smark ${tone}`, title: status }, h("b", null, sym), " " + status);
 }

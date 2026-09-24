@@ -17,6 +17,10 @@ Matchers (every key given must hold; values are regular expressions unless noted
   resource  a skill file the call read, relative to the skill directory ("playbooks/x.md")
   input     the input summary shown in reports
   status    ok | error | denied | interrupted (exact)
+  file, op, how   one skill document the call touched (see skillfiles.py), all three on the same document:
+            file  "<owner>:<path>", e.g. "rde:references/state.md" or "mb:dashboard/SKILL.md"
+            op    read | search | list | resolve | stat
+            how   full | partial | hits | not shown | no hits | missing | listed | resolved
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import re
 from pathlib import Path
 
 VALID_TYPES = {"first", "before", "count", "count_before", "never", "every"}
+FILE_KEYS = ("file", "op", "how")
 PACKAGE_CHECKS = Path(__file__).resolve().parents[2] / "checks"
 
 
@@ -68,9 +73,19 @@ def _matches(event, m, text_override=None):
         elif key == "status":
             if event.get("status") != pattern:
                 return False
+        elif key in FILE_KEYS:
+            continue
         else:
             raise ValueError(f"unknown matcher key {key!r}")
+    fm = {k: m[k] for k in FILE_KEYS if k in m}
+    if fm and not _file_hits(event, fm):
+        return False
     return True
+
+
+def _file_hits(event, fm):
+    """The skill documents of one event that satisfy every file/op/how pattern given."""
+    return [f for f in event.get("files", ()) if all(re.search(p, f.get(k) or "") for k, p in fm.items())]
 
 
 def _first(events, m):
@@ -110,7 +125,10 @@ def evaluate(check, events):
             return dict(out, status="pass" if ok else "fail", detail=f"`a` at call {pa[0] + 1}, `b` at call {pb[0] + 1}")
         if t == "count":
             hits = [e for e in events if _matches(e, check["match"])]
-            if check.get("distinct"):
+            fm = {k: check["match"][k] for k in FILE_KEYS if k in check["match"]}
+            if check.get("distinct") and fm:
+                n = len({f["file"] for e in hits for f in _file_hits(e, fm)})
+            elif check.get("distinct"):
                 pat = check["match"].get("resource")
                 n = len({r for e in hits for r in e.get("resources", ()) if not pat or re.search(pat, r)})
             else:
@@ -125,8 +143,15 @@ def evaluate(check, events):
             ok = check.get("min", 0) <= n <= check.get("max", float("inf"))
             return dict(out, status="pass" if ok else "fail", detail=f"{n} before call {iu + 1}")
         if t == "never":
-            n = sum(1 for e in events if _matches(e, check["match"]))
-            return dict(out, status="pass" if n == 0 else "fail", detail=f"{n} matching" if n else None)
+            hits = [e for e in events if _matches(e, check["match"])]
+            fm = {k: check["match"][k] for k in FILE_KEYS if k in check["match"]}
+            example = None
+            if hits and fm:
+                example = ", ".join(sorted({f["file"] for e in hits for f in _file_hits(e, fm)})[:3])
+            elif hits:
+                example = (hits[0].get("command") or hits[0].get("input") or "")[:100]
+            return dict(out, status="pass" if not hits else "fail",
+                        detail=f"{len(hits)} matching" + (f", e.g. {example}" if example else "") if hits else None)
         if t == "every":
             seen, bad, example = 0, 0, None
             for e in events:

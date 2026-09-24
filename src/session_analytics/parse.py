@@ -232,6 +232,11 @@ class Request:
             self.iterations = max(self.iterations, len(u["iterations"]))
 
 
+# Tools whose whole output is kept: skillfiles matches it line by line against skill documents.
+OUTPUT_KEPT = {"Bash", "Grep", "Glob"}
+OUTPUT_CAP = 200_000
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -257,6 +262,8 @@ class ToolCall:
     attribution_skill: str = None
     attribution_agent: str = None
     inherited: bool = False
+    cwd: str = None                 # the shell's working directory when the call was made
+    output: str = None              # full result text of shell and search calls, for skillfiles
 
     @property
     def duration_ms(self):
@@ -867,7 +874,7 @@ class Session:
             request_key=req.key, message_id=req.message_id, ts_call=ts, turn=req.turn,
             attribution_skill=ev.get("attributionSkill") or req.attribution_skill,
             attribution_agent=ev.get("attributionAgent") or req.attribution_agent,
-            inherited=req.inherited,
+            inherited=req.inherited, cwd=ev.get("cwd"),
         )
         self.tool_calls[tid] = call
         req.tool_use_ids.append(tid)
@@ -901,6 +908,8 @@ class Session:
         call.result_chars, call.result_images, refs = util.result_stats(content)
         text = util.result_text(content)
         call.result_preview = text[:2000]
+        if call.name in OUTPUT_KEPT:
+            call.output = text[:OUTPUT_CAP]
         call.is_error = bool(b.get("is_error"))
         call.denial_kind = ev.get("toolDenialKind")
         if not call.denial_kind and call.is_error and text.startswith("The user doesn't want to proceed"):
@@ -930,6 +939,7 @@ class Session:
             fl = d.get("file") if isinstance(d.get("file"), dict) else {}
             f["path"] = fl.get("filePath") or inp.get("file_path")
             f["kind"] = d.get("type")
+            f["start_line"] = fl.get("startLine")
             f["num_lines"] = fl.get("numLines")
             f["total_lines"] = fl.get("totalLines")
             f["truncated"] = bool(fl.get("truncatedByTokenCap"))

@@ -191,6 +191,7 @@ table.data th[aria-sort="ascending"] button::after { content: " ▲"; font-size:
 table.data th[aria-sort="descending"] button::after { content: " ▼"; font-size: 9px; }
 table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.data td.wrap { min-width: 220px; max-width: 520px; overflow-wrap: anywhere; }
+table.data td.path { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 table.data td.code { font-family: var(--mono); font-size: 12px; min-width: 200px; max-width: 560px; overflow-wrap: anywhere; white-space: pre-wrap; }
 table.data tr:hover td { background: var(--hover); }
 .clamp { max-height: 8.4em; overflow: hidden; position: relative; cursor: pointer; }
@@ -263,3 +264,23 @@ ol.actions li.problem { color: var(--critical); }
 .diff .add { background: rgba(12, 163, 12, 0.10); } .diff .del { background: rgba(208, 59, 59, 0.10); }
 .diff .add::before { content: "+ "; color: var(--good-text); } .diff .del::before { content: "− "; color: var(--critical); }
 .diff .same::before { content: "  "; }
+
+/* Skill files */
+.cov { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.cov svg { display: block; flex: none; }
+.cov .t { color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 3.4em; text-align: right; }
+svg .cov-track { fill: var(--grid); }
+svg .cov-seg { fill: var(--s1); }
+.chip.how { font-size: 11.5px; }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--ink-2); margin: 0 0 10px; }
+.facts b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.facts .warn b { color: var(--critical); }
+.sub-block { margin-top: 14px; }
+.sub-block h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; color: var(--ink); }
+.vcell { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vcell .bar { display: inline-block; width: 36px; height: 6px; border-radius: 3px; background: var(--grid); position: relative; overflow: hidden; }
+.vcell .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--s1); border-radius: 3px; }
+.vcell .delta { font-weight: 700; color: var(--ink); }
+.vcell.absent { color: var(--muted); }
+.pill.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--muted); }

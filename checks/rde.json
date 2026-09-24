@@ -142,6 +142,16 @@
       "require": {
         "bash": "--file[ =]\\S*\\.scratch/"
       }
+    },
+    {
+      "id": "mb-docs-one-section",
+      "desc": "Bundled mb skills: reads the one section a step names, never a whole SKILL.md (`mb skills path <name>` then Read the section)",
+      "type": "never",
+      "match": {
+        "file": "^mb:[^/]+/SKILL\\.md$",
+        "op": "read",
+        "how": "^full$"
+      }
     }
   ]
 }

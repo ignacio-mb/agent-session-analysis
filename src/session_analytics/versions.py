@@ -15,6 +15,7 @@ from __future__ import annotations
 import glob
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -85,6 +86,50 @@ class SkillSource:
                 self._files[key] = _git(self.repo, "show", f"{commit}:{self.rel}/{rel_path}") if self.repo else None
         return self._files[key]
 
+    def files_at(self, commit):
+        """Every file of the skill at `commit` ("WORKTREE" for the directory as it is now), relative paths."""
+        key = ("files", commit)
+        if key not in self._files:
+            if commit == "WORKTREE" or not self.repo:
+                self._files[key] = list_dir(self.dir)
+            else:
+                out = _git(self.repo, "ls-tree", "-r", "--name-only", commit, "--", self.rel) or ""
+                prefix = self.rel.rstrip("/") + "/"
+                self._files[key] = sorted(line[len(prefix):] for line in out.splitlines() if line.startswith(prefix))
+        return self._files[key]
+
+    def diff_hunks(self, older, newer):
+        """Lines each file gained between two commits, in the newer file's numbering.
+
+        {path: {"ranges": [[first, last], ...], "added": n, "removed": n, "deletions": [line, ...]}}, where
+        `deletions` are the places a hunk only removed text (nothing new there for a run to read).
+        """
+        if not self.repo:
+            return {}
+        out = _git(self.repo, "diff", "-U0", "--no-color", "--no-ext-diff", older, newer, "--", self.rel) or ""
+        files, cur = {}, None
+        prefix = self.rel.rstrip("/") + "/"
+        for line in out.splitlines():
+            if line.startswith("+++ "):
+                path = line[4:].strip()
+                path = path[2:] if path.startswith("b/") else path
+                cur = None if path == "/dev/null" else files.setdefault(
+                    path[len(prefix):] if path.startswith(prefix) else path,
+                    {"ranges": [], "added": 0, "removed": 0, "deletions": []})
+            elif line.startswith("@@") and cur is not None:
+                m = HUNK_RE.match(line)
+                if not m:
+                    continue
+                removed = int(m.group(2)) if m.group(2) is not None else 1
+                start, count = int(m.group(3)), int(m.group(4)) if m.group(4) is not None else 1
+                cur["removed"] += removed
+                cur["added"] += count
+                if count:
+                    cur["ranges"].append([start, start + count - 1])
+                else:
+                    cur["deletions"].append(start)
+        return files
+
     def working_tree(self):
         md = self.file_at("WORKTREE", "SKILL.md")
         dirty = bool(self.repo and (_git(self.repo, "status", "--porcelain", "--", self.rel) or "").strip())
@@ -108,6 +153,35 @@ class SkillSource:
             return []
         out = _git(self.repo, "log", "--format=%h%x1f%aI%x1f%s", f"{older}..{newer}", "--", self.rel) or ""
         return [dict(zip(("short", "date", "subject"), line.split("\x1f"))) for line in out.splitlines() if line]
+
+
+HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", ".pytest_cache"}
+
+
+def list_dir(root):
+    """Files under `root`, relative, skipping VCS and cache directories."""
+    root = Path(root)
+    out = []
+    if not root.is_dir():
+        return out
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        for f in filenames:
+            if not f.startswith("."):
+                out.append(os.path.relpath(os.path.join(dirpath, f), root))
+    return sorted(out)
+
+
+def frontmatter_lines(text):
+    """How many leading lines of a SKILL.md are YAML frontmatter (Claude Code injects only what follows)."""
+    if not text or not text.startswith("---"):
+        return 0
+    lines = text.split("\n")
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return i + 1
+    return 0
 
 
 def _skill_dirs_under(path, name):

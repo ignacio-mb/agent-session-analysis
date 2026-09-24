@@ -13,7 +13,7 @@ from session_analytics.analyze import analyze, cli_calls
 from session_analytics.parse import parse_session, skill_fingerprint
 from session_analytics.pricing import Pricing
 from session_analytics.skillreport import compare_runs, render_compare, run_skill_report
-from session_analytics.skillruns import read_first, resources_of
+from session_analytics.skillruns import read_first
 
 FRONT = "---\nname: demo\ndescription: test skill\n---\n"
 BODY_V1 = "# demo\n\nRead the playbook at ${CLAUDE_SKILL_DIR}/playbooks/build.md, then build.\n"
@@ -157,15 +157,7 @@ def test_skill_report_groups_by_version(claude_dir, skill_repo, checks_file, tmp
     assert "ask-first" in render_compare(a, b, cmp)
 
 
-def test_resources_of_detects_read_cat_and_cd(skill_repo):
-    class C:
-        def __init__(self, name, **inp):
-            self.name, self.input = name, inp
-    dirs = {"demo": {str(skill_repo)}}
-    assert resources_of(C("Read", file_path=f"{skill_repo}/playbooks/build.md"), dirs) == [("demo", "playbooks/build.md")]
-    assert resources_of(C("Bash", command=f"cat {skill_repo}/references/naming.md | head"), dirs) == [("demo", "references/naming.md")]
-    assert resources_of(C("Bash", command=f"cd {skill_repo} && grep -n x references/naming.md"), dirs) == [("demo", "references/naming.md")]
-    assert resources_of(C("Bash", command="cat ~/.claude/skills/rde/playbooks/x.md"), {}) == [("rde", "playbooks/x.md")]
+def test_read_first_names_files_relative_to_the_playbook():
     assert read_first(PLAYBOOK, "playbooks/build.md") == ["references/naming.md"]
 
 

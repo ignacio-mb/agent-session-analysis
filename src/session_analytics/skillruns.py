@@ -6,8 +6,8 @@ and lasts until another skill is invoked in a later turn, or the session ends. S
 turn by the model, and skills Claude Code injects itself, are nested in the run rather than ending it.
 Every metric keeps both views: `attributed` (Claude Code's attribution) and the whole run.
 
-Each run records the version of the skill that ran (see versions.py), which of the skill's own files it
-read (playbooks, references…) against what those files say to read first, every CLI call by signature
+Each run records the version of the skill that ran (see versions.py), every skill document it read and how
+much of each (see skillfiles.py) against what the playbooks say to read first, every CLI call by signature
 (`mb transform create`), help lookups, questions asked and answered, objects the CLI reported creating,
 cost and context, the final hand-back, and the checks declared for the skill (see checks.py).
 """
@@ -20,12 +20,8 @@ import re
 from collections import Counter, defaultdict
 
 from . import checks as checks_mod
-from . import util, versions
+from . import skillfiles, util, versions
 
-RESOURCE_EXT = r"(?:md|markdown|json|ya?ml|txt|sql|py|sh|js|ts|csv|toml|html)"
-SKILL_PATH_RE = re.compile(r"/skills/([\w.-]+)/([\w./-]+\." + RESOURCE_EXT + r")\b")
-CD_RE = re.compile(r"\bcd\s+[\"']?([^\"'\s;&|]+)")
-REL_RESOURCE_RE = re.compile(r"(?:^|[\s\"'=(<])(?:\./)?([\w-]+/[\w./-]+\." + RESOURCE_EXT + r")\b")
 READ_FIRST_RE = re.compile(r"^\s*\**Read first\**\s*:(.*)$", re.I | re.M)
 LINK_RE = re.compile(r"\]\(([^)\s]+\.md)\)|`([\w./-]+\.md)`")
 OBJ_RE = re.compile(r"\{[^{}\n]{0,800}\}")
@@ -36,49 +32,6 @@ HOME = os.path.expanduser("~")
 def skill_key(name):
     """`plugin:rde` and `rde` are the same skill for grouping."""
     return (name or "?").split(":")[-1]
-
-
-def _expand(text):
-    return (text or "").replace("$HOME", HOME).replace("${HOME}", HOME).replace("~/", HOME + "/")
-
-
-def resources_of(call, skill_dirs):
-    """Skill files a tool call read: [(skill, relative path)]. `skill_dirs` maps skill -> known base dirs."""
-    if call.name == "Read":
-        texts = [call.input.get("file_path") or ""]
-    elif call.name == "Bash":
-        texts = [call.input.get("command") or ""]
-    elif call.name in ("Grep", "Glob"):
-        texts = [call.input.get("path") or "", call.input.get("pattern") or ""]
-    else:
-        return []
-    found = []
-    for raw in texts:
-        text = _expand(raw)
-        for name, dirs in skill_dirs.items():
-            for d in dirs:
-                d = d.rstrip("/")
-                for m in re.finditer(re.escape(d) + r"/([\w./-]+\." + RESOURCE_EXT + r")\b", text):
-                    found.append((name, m.group(1)))
-        for m in SKILL_PATH_RE.finditer(text):
-            found.append((m.group(1), m.group(2)))
-        if call.name == "Bash":
-            # `cd <skill dir> && grep … references/x.md`: relative paths after entering the skill directory.
-            for m in CD_RE.finditer(text):
-                target = m.group(1).rstrip("/")
-                owner = next((n for n, dirs in skill_dirs.items() if any(target == d.rstrip("/") for d in dirs)), None)
-                sm = re.search(r"/skills/([\w.-]+)$", target)
-                owner = owner or (sm.group(1) if sm else None)
-                if owner:
-                    for rm in REL_RESOURCE_RE.finditer(text[m.end():]):
-                        found.append((owner, rm.group(1)))
-    out, seen = [], set()
-    for name, rel in found:
-        rel = rel.lstrip("./")
-        if (name, rel) not in seen and ".." not in rel:
-            seen.add((name, rel))
-            out.append((name, rel))
-    return out
 
 
 def read_first(text, playbook_rel):
@@ -159,14 +112,40 @@ def _segment(s):
     return groups
 
 
-def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=()):
+def _pin(docs, key, version, sources):
+    """Point the doc set at the files of the version a run used; returns that version's source, if any."""
+    src = next((x for x in sources if str(x.dir) == version.get("source")), None)
+    if src is None:
+        docs.pins.pop(key, None)
+        return None
+    docs.pin(key, src, version["sha"] if version.get("status") == "commit" else "WORKTREE")
+    return src
+
+
+def _changes_seen(src, version, sf, key, docs):
+    """What the commit that ran changed in the skill (against the previous commit touching it), and whether
+    this run was shown those lines."""
+    if src is None or not src.repo or version.get("status") != "commit":
+        return None
+    commits = src.commits()
+    idx = next((i for i, c in enumerate(commits) if c["sha"] == version["sha"]), None)
+    if idx is None or idx + 1 >= len(commits):
+        return None
+    prev = commits[idx + 1]
+    files = skillfiles.exposure(src.diff_hunks(prev["sha"], version["sha"]), sf["files"], key,
+                                docs.text(key, "SKILL.md"))
+    return {"from": prev["short"], "to": version.get("commit"), "subject": version.get("subject"), "files": files}
+
+
+def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=None):
     from .analyze import categorize_error, cli_calls, summarize_input, usage_totals
 
     s = ctx.s
+    docs = docs or skillfiles.DocSet.for_session(s)
     skill_dirs = defaultdict(set)
     for inv in s.skills:
         if inv.base_dir:
-            skill_dirs[skill_key(inv.canonical or inv.name)].add(_expand(inv.base_dir))
+            skill_dirs[skill_key(inv.canonical or inv.name)].add(os.path.expanduser(inv.base_dir))
     source_cache, checks_cache = {}, {}
     failed = [i for i in s.skills if i.success is False]
     turns_by_index = {t.index: t for t in s.turns}
@@ -187,35 +166,34 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=()):
         main_rq = [r for r in rq if r.scope == ("main" if agent is None else r.scope)]
         main_cl = [c for c in cl if agent is not None or c.scope == "main"]
 
-        # Skill files read, in order, and what the playbooks among them say to read first.
-        res_rows, read_hashes = [], {}
+        # The version first: the Read tool's whole-file reads of the skill's own files break ties between
+        # commits that share a SKILL.md. Then every skill document the run touched, measured at that version.
+        read_hashes = {}
         for c in cl:
-            for owner, rel in resources_of(c, skill_dirs):
-                if owner != key:
-                    continue
-                row = {"t": c.ts_call, "path": rel, "kind": rel.split("/", 1)[0] if "/" in rel else "root",
-                       "via": c.name, "status": c.status, "scope": c.scope,
-                       "chars": c.facts.get("content_chars") or c.result_chars, "partial": c.facts.get("partial")}
-                if c.name == "Read" and c.facts.get("content_sha") and not c.facts.get("partial"):
-                    row["sha"] = c.facts["content_sha"]
-                    read_hashes[rel] = c.facts["content_sha"]
-                res_rows.append(row)
+            if c.name == "Read" and c.facts.get("content_sha") and not c.facts.get("partial"):
+                loc = docs.locate(os.path.normpath(c.input.get("file_path") or "/"))
+                if loc and loc[0] == key and loc[1]:
+                    read_hashes[loc[1]] = c.facts["content_sha"]
         if key not in source_cache:
             source_cache[key] = versions.find_sources(key, base_dirs=sorted(skill_dirs.get(key, ())),
                                                       explicit=sources_extra)
         sources = source_cache[key]
         version = versions.resolve(inv.fingerprint, inv.ts, sources, read_hashes)
-        distinct = list(dict.fromkeys(r["path"] for r in res_rows))
+        src = _pin(docs, key, version, sources)
+        sf = skillfiles.run_files(cl, inv, key, docs, source=src, pin_sha=version.get("sha"),
+                                  body_matched=version.get("status") != "unknown")
+        changes_seen = _changes_seen(src, version, sf, key, docs)
+        own = [f for f in sf["files"] if f["owner"] == key and f["how"] != "injected"]
+        distinct = [f["path"] for f in own]
         playbooks = [p for p in distinct if p.startswith("playbooks/")]
         expected = set()
         for pb in playbooks:
-            text = None
-            for src in sources:
-                text = src.file_at(version["sha"], pb) if version.get("sha") and src.repo else src.file_at("WORKTREE", pb)
-                if text:
-                    break
-            expected.update(read_first(text, pb))
+            expected.update(read_first(docs.text(key, pb), pb))
         read_set = set(distinct)
+        by_call = defaultdict(list)
+        for a in sf["accesses"]:
+            if a["op"] != "inject":
+                by_call[a["call"]].append(a)
 
         # CLI usage (the layer a skill like rde drives), help lookups, retries after a failure.
         sig_stats = defaultdict(lambda: {"calls": 0, "errors": 0, "help": 0})
@@ -268,7 +246,10 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=()):
         ts_all = [x for x in [r.ts_last for r in rq] + [c.ts_result for c in cl] if x is not None]
         events = [{"tool": c.name, "command": c.input.get("command") if c.name == "Bash" else None,
                    "segments": [x["segment"] for x in cli_calls(c.input.get("command"))] if c.name == "Bash" else None,
-                   "resources": [rel for owner, rel in resources_of(c, skill_dirs) if owner == key],
+                   "resources": [a["path"] for a in by_call.get(c.id, ()) if a["owner"] == key
+                                 and a["op"] in ("read", "search") and a["path"] and not a["path"].endswith("/")],
+                   "files": [{"file": f"{a['owner']}:{a['path']}", "op": a["op"], "how": a["how"] or ""}
+                             for a in by_call.get(c.id, ())],
                    "input": summarize_input(c), "status": c.status} for c in main_cl]
         if key not in checks_cache:
             try:
@@ -320,7 +301,12 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=()):
             "cli_calls": sum(v["calls"] for v in sig_stats.values()),
             "help_lookups": sum(v["help"] for v in sig_stats.values()),
             "retries_after_error": retries,
-            "resources": res_rows, "resources_read": distinct, "playbooks": playbooks,
+            "skill_files": sf, "resources_read": distinct, "playbooks": playbooks,
+            "docs_read": sum(1 for f in own if f["seen"]), "docs_total": sf["totals"]["own_inventory"],
+            "docs_never": len(sf["inventory"]["never"]), "cli_docs_read": sf["totals"]["other_files"],
+            "doc_tokens": sf["totals"]["doc_tokens"], "doc_rereads": sf["totals"]["rereads"],
+            "doc_listings": sf["totals"]["listings"], "doc_unprompted": sf["totals"]["unprompted"],
+            "doc_version_mismatches": sf["totals"]["version_mismatches"], "changes_seen": changes_seen,
             "references": [p for p in distinct if p.startswith("references/")],
             "expected_by_playbooks": sorted(expected),
             "missing_expected": sorted(expected - read_set),

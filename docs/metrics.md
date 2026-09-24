@@ -299,7 +299,8 @@ Each step has `i`, `t` (epoch ms), `k` (`prompt`, `skill`, `request`, `tool`, `e
   (thinking characters), `text` (what the model said), `tools`, `usd`, `lat` (latency to first block), `dur`,
   `stop`, `skill` (attributed), `miss` (cache-miss reason)
 - `tool`: `name`, `id`, `status`, `dur`, `input`, `result`, `sigs` (CLI signatures), `prog` (main program),
-  `res` (skill files read, `skill:path`), `skill`, `batch`, `denial`
+  `res` (skill documents touched, `"<op> <owner>:<path>"`, e.g. `read rde:references/state.md`,
+  `search mb:dashboard/SKILL.md`; see `skill_runs.skill_files`), `skill`, `batch`, `denial`
 - `event`: `what` (`compaction`, `api_error`, `interrupt`), `text`
 
 ## `skill_runs`
@@ -317,13 +318,58 @@ One entry per skill run (an invocation plus the follow-up turns it steered, unti
 | `context_start`, `context_end`, `context_peak`, `latency_p50_ms`, `models` | Context and latency |
 | `tool_calls`, `main_tool_calls`, `tools`, `tool_errors`, `error_rate`, `error_categories`, `errors`, `denials`, `interrupted`, `subagents` | Tool usage and failures |
 | `cli`, `cli_calls`, `help_lookups`, `retries_after_error` | CLI subcommands (`mb transform create`) with calls, errors and `--help` lookups |
-| `resources`, `resources_read`, `playbooks`, `references` | The skill's own files read, in order, with how (`Read` or a shell command) |
+| `skill_files` | Every skill document the run touched and how much of it Claude was shown (below) |
+| `resources_read`, `playbooks`, `references` | The skill's own files read or searched, in order of first access |
+| `docs_read`, `docs_total`, `docs_never`, `cli_docs_read`, `doc_tokens`, `doc_rereads`, `doc_listings`, `doc_unprompted`, `doc_version_mismatches` | Summary numbers from `skill_files` for tables and medians |
+| `changes_seen` | What the commit that ran changed against the previous commit touching the skill, per file, and whether this run was shown those lines |
 | `expected_by_playbooks`, `missing_expected`, `not_named_by_playbooks` | Files the playbooks' "Read first:" lines name, which of them were never read, and which were read without being named |
 | `questions`, `questions_asked`, `question_calls` | AskUserQuestion calls, with your answers |
 | `objects`, `objects_created`, `files_written` | Objects the CLI reported (`{id, name, type, verb}`), files written |
 | `final_message`, `last_stop_reason` | The run's hand-back |
 | `checks`, `checks_passed`, `checks_failed` | `{id, desc, status: pass|fail|n/a|error, detail}` per declared check |
 | `steps` | Indices into `trace.steps` |
+
+### `skill_runs[].skill_files`
+
+Which documents entered the run's context, measured by what Claude was shown rather than by what a command
+meant to print. Owners are the run's skill (`rde`), other installed skills, and CLIs that bundle skill docs
+(`mb:dashboard/SKILL.md`, from `…/@metabase/cli/skill-data/`, found through `mb skills path|get <name>`,
+variables such as `D=$(mb skills path x | jq -r …)`, or the path itself).
+
+- **Evidence**: SKILL.md's body is injected whole by the invocation; the Read tool reports the lines it
+  returned; a Bash or Grep output is matched line by line against the file's text at the version the run is
+  labelled with (distinctive lines exactly, blank and repeated lines between two shown ones filled in), so
+  `sed -n '/## Tabs/,/^## /p'`, `grep -n -A12`, `head -40` and `cat` are all measured the same way.
+- `accesses`: one row per tool call and document, in order: `t`, `dt` (ms since the invocation), `call`,
+  `owner`, `path`, `kind` (directory, or the owner for other owners' docs), `op` (`inject`, `read`, `search`,
+  `list`, `resolve`, `stat`), `via` (`Read`, `cat`, `sed`, `grep`, `mb skills get`…), `detail` (the command
+  without its file arguments), `status`, `lines` (`[[first, last], …]` shown), `seen`, `total`, `coverage`,
+  `how` (`injected`, `full`, `partial`, `hits`, `not shown`, `no hits`, `missing`, `listed`, `resolved`,
+  `searched (n with hits)` for a search over a directory), `sections` (Markdown headings the shown lines fall
+  under, for partial reads), `chars`, `version`, `first`, `named_by`, `found_by`.
+- `files`: one row per document: `order` (0 is SKILL.md's injection), `first_dt`, `accesses`, `reads`,
+  `searches`, `via`, `lines` (union shown), `coverage`, `how`, `sections`, `rereads` (reads after the whole
+  file had been shown), `chars` / `tokens` (≈ chars ÷ 4, re-reads counted again), `unique_chars`,
+  `named_by` (documents shown earlier whose shown lines name this one: a path, a relative Markdown link, or
+  `mb skills path <name>`), `found_by` (`named`, `listing`, `search`, `resolved path`, `unprompted`),
+  `version`, `missing`.
+- `version` (per access and file): `match` (the text shown is the pinned version's), `older <commit>` /
+  `newer <commit>` (another commit's), `uncommitted` (the source's working tree), `installed copy` (a copy on
+  disk that matches no commit), `differs` (a whole-file read printed text matching no version found),
+  `changed since` / `as installed now` for other owners' docs, checked against what is installed today.
+  Only whole-file reads can be checked.
+- `inventory`: `files` of the skill at that version (`git ls-tree`, or the directory), `never` (shown to
+  this run: none of their lines).
+- `totals`: `own_shown`, `own_inventory`, `own_full`, `own_partial`, `other_files`, `other_owners`, `reads`,
+  `searches`, `listings`, `resolves`, `rereads`, `missing`, `version_mismatches`, `body_chars`, `doc_chars`,
+  `doc_tokens`, `unique_doc_chars`, `unprompted`.
+
+`changes_seen.files[]`: `path`, `added`, `removed`, `ranges` (lines the change added or rewrote, in the new
+version's numbering), `changed_lines`, `seen_lines`, `frontmatter_lines`, `deletions`, and `status`: `seen`,
+`partly seen`, `not in the lines read`, `file not read`, `deletions only`, or `frontmatter only` (SKILL.md's
+frontmatter decides when the skill triggers and is never injected).
+
+`skill_files.csv` flattens `files` across runs.
 
 ## `shell.signatures`
 
@@ -335,6 +381,12 @@ Per CLI signature (`mb card create`, `git commit`, `gh pr view`…): `calls` (Ba
 Schema `convo-analysis/skill-v1`: `skill`, `scope`, `totals`, `checks` (ids and descriptions), `versions`
 (per version: `label`, `commit`, `date`, `subject`, `runs`, `median` and `mean` of the run metrics, `checks`
 pass/fail/n.a. and `rate`, `resources` read, `cli` per signature with `per_run`, `error_categories`,
-`changes` = commits and files changed since the previous version), `runs` (one row per run),
-`details.<run_id>` (resources, cli, questions, objects, final message, errors, checks, turns, actions,
-steps), `failures` (tool errors grouped by what the message says), `insights`.
+`inventory` (the skill's files at that version), `files` (per `owner:path`: `touched`, `shown`, `full`,
+`partial`, `not_shown`, median `coverage` / `order` / `first_dt` / `tokens`, `accesses`, `rereads`, `via`,
+`found_by`, `named_by`, `sections`, `mismatches`), `never` (files no run of the version was shown), and
+`changes` = commits and files changed since the previous version with runs, plus `exposure`: per changed
+file, the lines it gained and how many runs saw all, some or none of them), `files` (one row per file across
+versions, with `per_version` stats, `in_version` and `changed`), `runs` (one row per run),
+`details.<run_id>` (skill_files, changes_seen, cli, questions, objects, final message, errors, checks, turns,
+actions, steps), `failures` (tool errors grouped by what the message says), `insights`. `csv/skill_files.csv`
+has one row per run and file.

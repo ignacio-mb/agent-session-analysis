@@ -22,7 +22,7 @@ Arguments the user gave: `$ARGUMENTS`
 | another session: an id, a prefix, `latest`, or a transcript path | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" export <that reference>` |
 | to find a session first ("my sessions", "yesterday's session") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" list` (`--all` for every project), then export the one they mean |
 | several sessions: "this week", "last 30 days", "across projects" | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" rollup --since 7d` (`--all` for every project; `--since` takes 24h, 7d, 2w, or a date) |
-| how one skill behaves across sessions and versions ("how is rde doing", "did my change to <skill> work", "which version of <skill> fails more") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" skill <name> --since 30d` |
+| how one skill behaves across sessions and versions ("how is rde doing", "did my change to <skill> work", "which version of <skill> fails more", "which files of <skill> get read") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" skill <name> --since 30d` |
 | two runs of a skill side by side ("compare run X with run Y") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" compare <session>:<n> <session>:<n>` (run ids come from the reports) |
 
 Pass through any flags the user asked for:
@@ -65,12 +65,20 @@ between the latest two versions, and name the checks that moved. For "did my cha
 check pass rates and medians of the versions before and after the commit, and say how many runs each has:
 one or two runs per version is anecdote, not a trend.
 
+For "which files were read" and "did the runs even see my change": every run records each document of the
+skill (and each bundled CLI doc, e.g. `mb:dashboard/SKILL.md`) it was shown — whole or in part, which
+sections, in what order, and what named it — measured on the tool output, so partial reads by `sed`, `grep`
+or `head` count only the lines they printed. The insights say which changed files the runs of a version did
+not see, which files no run was shown, and when the text read was not the version that ran (a stale installed
+copy reads as `older <commit>`). A change a run never saw cannot explain a difference in that run.
+
 ## 3. Show the dashboard
 
 `report.html` (or `rollup.html`, `skill.html`) is a self-contained, offline page: timeline, step-by-step trace
 of every Claude API request and tool call, skill runs with their checks, tool and skill breakdowns, cost and
 context charts, sortable tables, light and dark themes. `skill.html` adds per-version strip plots, the checks
-matrix and a compare view.
+matrix, a Skill files tab (files × versions, how each was read, which changes the runs saw) and a compare
+view.
 
 - If a tool that sends a file to the user is available (`SendUserFile`), send the HTML with display
   `render`.
@@ -82,11 +90,13 @@ them anywhere unless the user asks.
 ## 4. Follow-up questions
 
 Answer from `session.json` (or the CSVs in `csv/`) with a short `python3 -c` or `jq` query instead of
-re-running the export. Useful keys: `totals`, `insights`, `skill_runs` (per run: version, checks, resources,
-cli, questions, objects, errors, final_message), `trace.steps`, `skills.invocations`, `skills.per_skill`,
+re-running the export. Useful keys: `totals`, `insights`, `skill_runs` (per run: version, checks,
+`skill_files` with `files` / `accesses` / `inventory`, `changes_seen`, cli, questions, objects, errors,
+final_message), `trace.steps`, `skills.invocations`, `skills.per_skill`,
 `tools.by_tool`, `tools.rows`, `shell.signatures`, `turns.rows`, `requests.rows`, `subagents.rows`, `cost`,
 `reported`, `lineage`, `errors`, `timing`, `files.rows`, `git`. For a skill report, `skill.json` has
-`versions`, `runs`, `details.<run_id>` and `failures`. `docs/metrics.md` in the project describes every field.
+`versions` (with `files`, `never` and `changes.exposure`), `files`, `runs`, `details.<run_id>` and
+`failures`; `csv/skill_files.csv` has one row per run and file. `docs/metrics.md` in the project describes every field.
 
 After a Claude Code upgrade, `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" schema` lists transcript event types this version does
 not recognise yet.

@@ -97,19 +97,32 @@ session-analytics compare b3734789:1 d085f38b:1    # two runs side by side, with
 - **Versions.** Each run is labelled with the git commit of the skill that ran, by matching the SKILL.md body
   Claude Code injected against every commit of the skill's source (found under `~/dev/*/skills/<name>`, or
   `--source`). The report shows what changed in git between consecutive versions.
-- **What a run did.** The skill's own files it read, in order, against what each playbook's "Read first:" line
-  names; every CLI call by subcommand (`mb transform create`), `--help` lookups, retries after a failure;
-  the questions it asked and your answers; the objects the CLI reported creating; cost, context and the
-  final hand-back; and a step-by-step trace of every Claude API request and tool call.
+- **Which files the skill fed Claude.** Every document of the skill a run touched, and every doc it sent Claude
+  to in the CLI's bundled skills (`mb:dashboard/SKILL.md`, reached through `mb skills path|get`): which lines
+  Claude was actually shown (measured on the command's output, so `sed -n '/## Tabs/,/^## /p'`, `grep -A12`,
+  `head` and `cat` all count), the sections those lines fall under, the order, what named each file (SKILL.md,
+  a playbook's link, `mb skills path <name>`) or whether it was found by listing or grepping, and whether the
+  text shown is the version that ran — an installed copy that lags the repository shows up as
+  `older <commit>`. Files no run reads are listed per version.
+- **Did a change reach the runs?** For every file a version changed, the lines it added, and how many of that
+  version's runs were shown them. A rule added to a reference no run opens, or below the part a `head -40`
+  prints, cannot have changed anything.
+- **What a run did.** Every CLI call by subcommand (`mb transform create`), `--help` lookups, retries after a
+  failure; the questions it asked and your answers; the objects the CLI reported creating; cost, context and
+  the final hand-back; and a step-by-step trace of every Claude API request and tool call.
 - **Checks.** `checks/<skill>.json` declares what the skill should do, and every run is checked against it.
   `checks/rde.json` encodes RDE's own rules: state first, `mb --version` and `mb auth list` before work,
   a playbook before building, ask before creating anything, `--json`/`--profile` on every `mb` call, bodies
-  from `.scratch` files, update rather than delete and recreate. Check types: `first`, `before`, `count`,
-  `count_before`, `never`, `every` (see `src/session_analytics/checks.py`).
+  from `.scratch` files, update rather than delete and recreate, read one section of a bundled `mb` skill
+  rather than all of it. Check types: `first`, `before`, `count`, `count_before`, `never`, `every`; matchers
+  cover commands, tools, and the documents read (`"file": "^mb:", "how": "^full$"`) — see
+  `src/session_analytics/checks.py`.
 
 The skill report has per-version strip plots (one dot per run), check pass rates by version, a run × check
-matrix, drill-down into any run, the skill files each version read, CLI calls and grouped failures, and a
-compare view. Single-session exports gain a **Skill runs** tab and a **Trace** tab.
+matrix, drill-down into any run, a **Skill files** tab (files × versions, how each file was read, which
+changes the runs saw, files never shown, paths tried that do not exist), CLI calls and grouped failures, and a
+compare view. Single-session exports gain a **Skill runs** tab (with each run's files, drawn as strips of the
+lines shown) and a **Trace** tab.
 
 ### Several sessions
 

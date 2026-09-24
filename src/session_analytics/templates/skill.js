@@ -52,6 +52,7 @@ function kpis() {
 const METRICS = [
   ["cost_usd", "Cost per run", F.usd], ["tool_calls", "Tool calls per run", F.num], ["tool_errors", "Tool errors per run", F.num],
   ["question_calls", "Questions asked per run", F.num], ["help_lookups", "--help lookups per run", F.num], ["active_ms", "Active time per run", F.dur],
+  ["docs_read", "Skill files read per run", F.num], ["doc_tokens", "≈ Tokens of skill docs per run", F.tok], ["cli_docs_read", "CLI docs read per run", F.num],
 ];
 
 function versionsTab() {
@@ -126,7 +127,9 @@ function runsTab() {
       { key: "args", label: "Asked", cls: "wrap", fmt: (v, r) => v || r.prompt || "—" },
       { key: "turn_count", label: "Turns", num: true }, { key: "tool_calls", label: "Tools", num: true }, { key: "tool_errors", label: "Errors", num: true },
       { key: "cli_calls", label: "CLI", num: true }, { key: "help_lookups", label: "Help", num: true }, { key: "question_calls", label: "Asked ?", num: true },
-      { key: "objects_created", label: "Created", num: true }, { key: "cost_usd", label: "Cost", num: true, fmt: F.usd },
+      { key: "objects_created", label: "Created", num: true }, { key: "docs_read", label: "Files read", num: true, fmt: (n, r) => `${F.num(n)}/${F.num(r.docs_total)}` },
+      { key: "cli_docs_read", label: "CLI docs", num: true }, { key: "doc_tokens", label: "≈ Doc tokens", num: true, fmt: F.tok },
+      { key: "cost_usd", label: "Cost", num: true, fmt: F.usd },
       { key: "duration_ms", label: "Duration", num: true, fmt: F.dur }, { key: "checks_failed", label: "Checks ✗", num: true }] });
   if (RUNS.length) setTimeout(() => open(RUNS[RUNS.length - 1].run_id), 0);
   return h("div", null, card({ title: "Runs", sub: "Pick a run to see its checks, the skill files it read, CLI calls, questions, objects, errors and the full trace", span: 12 }, table), panel);
@@ -134,12 +137,100 @@ function runsTab() {
 
 /* ------------------------------------------------------------------ skill files & CLI */
 
+function vcell(st, v) {
+  if (!st || st.in_version === false) return h("span", { class: "vcell absent", title: "not in this version" }, "—");
+  const n = st.runs || v.runs, k = st.shown || 0;
+  const bar = h("span", { class: "bar", "aria-hidden": "true" }, h("i", { style: `width:${n ? (100 * k) / n : 0}%` }));
+  const tip = [`${k} of ${n} runs of ${vShort(v)} were shown this file`];
+  if (st.touched > k) tip.push(`${st.touched - k} more touched it without being shown a line`);
+  if (st.full) tip.push(`${st.full} whole, ${st.partial || 0} in part`);
+  if (st.changed) tip.push(`changed in this version: +${st.changed.added} −${st.changed.removed}`);
+  return h("span", { class: "vcell", title: tip.join("\n") }, `${k}/${n}`, bar, st.changed ? h("span", { class: "delta", title: "changed in this version" }, "Δ") : null);
+}
+
+function topList(o, n, sep = ", ") {
+  const e = Object.entries(o || {});
+  if (!e.length) return "—";
+  return e.slice(0, n).map(([k, c]) => `${k} ×${c}`).join(sep) + (e.length > n ? `${sep}+${e.length - n} more` : "");
+}
+
 function filesTab() {
-  const paths = Array.from(new Set(VERS.flatMap((v) => Object.keys(v.resources)))).sort();
-  const rows = paths.map((p) => Object.assign({ path: p, kind: p.split("/")[0] }, Object.fromEntries(VERS.map((v) => [v.key, v.resources[p] || 0]))));
-  return h("div", { class: "grid" }, card({ title: "Which skill files each version read", sub: "Runs that read the file / runs of that version", span: 12 },
-    dataTable({ rows, limit: 200, selects: [{ key: "kind", label: "kinds" }], columns: [{ key: "path", label: "File", cls: "code" }, { key: "kind", label: "Kind" }]
-      .concat(VERS.map((v) => ({ key: v.key, label: vShort(v), num: true, fmt: (n) => `${n}/${v.runs}` }))) })));
+  const ALL = D.files || [];
+  if (!ALL.length || !VERS.length) return h("div", { class: "empty" }, "No skill-file data.");
+  // A path no version contains and no run was shown a line of is a wrong guess or an empty search, not a file.
+  const tried = ALL.filter((f) => !f.runs_shown && !Object.values(f.per_version).some((x) => x.in_version));
+  const FILES = ALL.filter((f) => !tried.includes(f));
+  const latest = VERS[VERS.length - 1];
+  const own = FILES.filter((f) => f.own);
+  const med = (k) => { const xs = RUNS.map((r) => r[k]).filter((x) => x !== null && x !== undefined).sort((a, b) => a - b);
+    if (!xs.length) return null; const m = Math.floor(xs.length / 2); return xs.length % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2; };
+  const tiles = [
+    [`Files in ${D.skill}`, F.num((latest.inventory || []).length), `at ${vShort(latest)}`],
+    ["Shown to a run", F.num(own.filter((f) => f.runs_shown > 0).length), "in any version"],
+    ["Never shown", F.num((latest.never || []).length), `no run of ${vShort(latest)} (${latest.runs})`],
+    ["Median files read / run", F.num(med("docs_read")), "the skill's own, beyond SKILL.md"],
+    ["Median ≈ tokens of docs / run", F.tok(med("doc_tokens")), "doc text Claude was shown"],
+    ["Other docs shown", F.num(FILES.length - own.length), Array.from(new Set(FILES.filter((f) => !f.own).map((f) => f.owner))).join(", ") || "none"],
+  ];
+  const kpiRow = h("div", { class: "kpis" }, tiles.map(([l, v, sub]) => h("div", { class: "kpi" }, h("div", { class: "label" }, l), h("div", { class: "value" }, v), h("div", { class: "sub" }, sub))));
+
+  const matrix = dataTable({ rows: FILES, limit: 300, sortKey: null, selects: [{ key: "kind", label: "kinds" }, { key: "owner", label: "owners" }],
+    columns: [{ key: "path", label: "File", cls: "path", fmt: (v, r) => (r.own ? v : `${r.owner}:${v}`) }, { key: "kind", label: "Kind" }]
+      .concat(VERS.map((v) => ({ key: "v_" + v.key, label: vShort(v), num: true, sort: (r) => ((r.per_version[v.key] || {}).shown || 0) / (v.runs || 1),
+        render: (r) => vcell(r.per_version[v.key], v) })))
+      .concat([{ key: "runs_shown", label: "All", num: true, fmt: (n, r) => `${n}/${r.runs}` }]) });
+
+  const pick = h("select", { "aria-label": "Version" }, VERS.slice().reverse().map((v) => h("option", { value: v.key }, `${vShort(v)} · ${v.runs} runs`)));
+  const statsHost = h("div");
+  const drawStats = () => {
+    const v = VERS.find((x) => x.key === pick.value) || latest;
+    const rows = FILES.map((f) => Object.assign({ file: f.own ? f.path : `${f.owner}:${f.path}`, kind: f.kind, owner: f.owner }, f.per_version[v.key] || {}))
+      .filter((r) => r.touched);
+    statsHost.replaceChildren(dataTable({ rows, limit: 200, sortKey: "order", sortDir: "asc", selects: [{ key: "owner", label: "owners" }], columns: [
+      { key: "file", label: "File", cls: "path" },
+      { key: "shown", label: "Shown", num: true, fmt: (n, r) => `${n}/${r.runs}` },
+      { key: "full", label: "Whole · part", num: true, fmt: (n, r) => `${n} · ${r.partial}` },
+      { key: "coverage", label: "Median share", num: true, fmt: F.pct },
+      { key: "order", label: "Median order", num: true, fmt: (x) => (x === null || x === undefined ? "—" : x === 0 ? "injected" : String(Math.round(x * 10) / 10)) },
+      { key: "first_dt", label: "Median first read", num: true, fmt: F.since },
+      { key: "tokens", label: "Median ≈ tokens", num: true, fmt: F.tok },
+      { key: "rereads", label: "Re-reads", num: true },
+      { key: "found_by", label: "Reached by", cls: "wrap", render: (r) => {
+        const named = Object.keys(r.named_by || {}).length;
+        const txt = named ? "named by " + topList(r.named_by, 2) : topList(r.found_by, 2);
+        return h("span", { title: `reached by: ${topList(r.found_by, 9)}\nnamed by: ${topList(r.named_by, 9)}` }, txt);
+      } },
+      { key: "sections", label: "Sections seen", cls: "wrap", render: (r) => h("span", { title: topList(r.sections, 20, "\n") }, topList(r.sections, 3, " · ")) },
+      { key: "mismatches", label: "Not the version", fmt: (a) => (a && a.length ? a.join(", ") : "—") }] }));
+  };
+  pick.addEventListener("change", drawStats);
+  drawStats();
+
+  const exposure = VERS.filter((v) => v.changes && (v.changes.exposure || []).length).map((v) => card({
+    title: `Did the runs of ${vShort(v)} see what ${v.changes.from} → ${vShort(v)} changed?`,
+    sub: "Lines each changed file gained, and how many runs were shown them. SKILL.md's body is always injected; its frontmatter never is.", span: 12 },
+    dataTable({ search: false, limit: 80, rows: v.changes.exposure, columns: [
+      { key: "path", label: "File", cls: "path" }, { key: "added", label: "+", num: true }, { key: "removed", label: "−", num: true },
+      { key: "ranges", label: "Changed lines", fmt: (x) => F.ranges(x, 5) },
+      { key: "seen", label: "Saw all", num: true, fmt: (n) => `${n}/${v.runs}` }, { key: "partly", label: "Saw some", num: true },
+      { key: "not_seen", label: "Saw none", num: true },
+      { key: "runs", label: "Per run", render: (r) => h("span", null, Object.entries(r.runs || {}).map(([id, x]) =>
+        h("span", { class: "chip", title: `${x.status}: ${x.seen}/${x.changed} changed lines shown` }, `${id} ${x.changed ? `${x.seen}/${x.changed}` : x.status}`))) }] })));
+
+  const never = card({ title: "Never shown, by version", sub: "Files of the skill that no run of that version was shown a line of", span: 6 },
+    h("div", { class: "checks" }, VERS.map((v) => h("div", null, h("b", null, `${vShort(v)} (${v.runs} runs): `),
+      (v.never || []).length ? h("span", { class: "mono" }, v.never.join(", ")) : h("span", { class: "muted" }, "every file was shown to some run")))));
+  const triedCard = card({ title: "Paths tried that showed nothing", sub: "Paths no version of the skill has, globs that matched nothing, searches with no hits", span: 6 },
+    tried.length ? dataTable({ search: false, limit: 50, rows: tried.map((f) => Object.assign({ label: f.own ? f.path : `${f.owner}:${f.path}`,
+      touched: Object.values(f.per_version).reduce((a, x) => a + (x.touched || 0), 0),
+      how: Array.from(new Set(Object.values(f.per_version).flatMap((x) => Object.keys(x.found_by || {})))).join(", ") }, f)), columns: [
+      { key: "label", label: "Path", cls: "code" }, { key: "touched", label: "Runs", num: true }, { key: "how", label: "Reached by" }] })
+      : h("div", { class: "empty" }, "None."));
+
+  return h("div", null, kpiRow, h("div", { class: "grid" },
+    card({ title: "Which files each version's runs were shown", sub: "Runs shown at least one line of the file / runs of that version · Δ the version changed the file · — not in that version", span: 12 }, matrix),
+    card({ title: "How each file was read", sub: "Per version: whole or in part, the share of the file shown, when and in what order, and what pointed Claude to it", span: 12, tools: pick }, statsHost),
+    ...exposure, never, triedCard));
 }
 
 function cliTab() {

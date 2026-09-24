@@ -234,3 +234,22 @@ def merged_span_ms(intervals):
     if cur_b is not None:
         total += cur_b - cur_a
     return total
+
+
+HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def strip_heredocs(cmd):
+    """Drop heredoc bodies so the Python/SQL inside `cat <<'EOF'` is not read as shell."""
+    lines = (cmd or "").split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in HEREDOC_RE.finditer(line):
+            marker = m.group(2)
+            while i < len(lines) and lines[i].strip() != marker:
+                i += 1
+            i += 1
+    return "\n".join(out)

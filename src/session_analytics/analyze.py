@@ -15,10 +15,11 @@ import time
 from collections import Counter, defaultdict
 from urllib.parse import urlparse
 
-from . import __version__, skillruns, util
+from . import __version__, skillfiles, skillruns, util
 from .parse import BUILTIN_COMMANDS, mcp_parts, tool_category
 from .pricing import COMPONENTS
 from .redact import Redactor
+from .util import strip_heredocs
 
 SCHEMA = "convo-analysis/v1"
 IDLE_GAP_MS = 30 * 60 * 1000
@@ -102,24 +103,7 @@ def _domain(url):
         return "(invalid)"
 
 
-HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 NAVIGATION = {"cd", "pushd", "popd", "export", "source", ".", "set", "unset", "alias", "true", ":"}
-
-
-def strip_heredocs(cmd):
-    """Drop heredoc bodies so the Python/SQL inside `cat <<'EOF'` is not read as shell."""
-    lines = (cmd or "").split("\n")
-    out, i = [], 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        i += 1
-        for m in HEREDOC_RE.finditer(line):
-            marker = m.group(2)
-            while i < len(lines) and lines[i].strip() != marker:
-                i += 1
-            i += 1
-    return "\n".join(out)
 
 
 def split_segments(cmd):
@@ -497,9 +481,10 @@ def analyze(session, pricing, redactor=None, full=False, current_id=None, now_ms
     out["context"] = _context(ctx, reqs)
     out["outputs"] = _outputs(ctx, calls, out["git"])
     out["timeline"] = _timeline(ctx, reqs, calls, out)
-    out["trace"] = _trace(ctx, reqs, calls)
+    docs = skillfiles.DocSet.for_session(ctx.s)
+    out["trace"] = _trace(ctx, reqs, calls, docs)
     out["skill_runs"] = skillruns.build_runs(ctx, reqs, calls, out["trace"], check_files=ctx.checks,
-                                             sources_extra=ctx.skill_sources)
+                                             sources_extra=ctx.skill_sources, docs=docs)
     out["schema_coverage"] = _schema(ctx)
     out["totals"] = _totals(out)
     out["insights"] = _insights(out)
@@ -1806,14 +1791,12 @@ def _result_summary(ctx, c, limit):
     return c.result_preview
 
 
-def _trace(ctx, reqs, calls):
-    """Every prompt, API request, tool call and notable event of the session, in time order."""
+def _trace(ctx, reqs, calls, docs):
+    """Every prompt, API request, tool call and notable event of the session, in time order.
+
+    A tool step's `res` lists the skill documents it touched as "<op> <owner>:<path>" (see skillfiles)."""
     s = ctx.s
     lim = 2000 if ctx.full else 280
-    skill_dirs = defaultdict(set)
-    for inv in s.skills:
-        if inv.base_dir:
-            skill_dirs[skillruns.skill_key(inv.canonical or inv.name)].add(skillruns._expand(inv.base_dir))
     rows = []
     for t in s.turns:
         if t.ts_start is None:
@@ -1843,7 +1826,13 @@ def _trace(ctx, reqs, calls):
         ts = c.ts_call if c.ts_call is not None else c.ts_result
         if ts is None:
             continue
-        res = [f"{k}:{p}" for k, p in skillruns.resources_of(c, skill_dirs)]
+        res = []
+        for o in skillfiles.call_ops(c, docs):
+            # A search or read over a directory or glob is one step, named as it was written.
+            target = o["rel"] if o.get("spread") is None else o["spread"]
+            entry = f"{o['op']} {o['owner']}:{target or './'}"
+            if entry not in res:
+                res.append(entry)
         rows.append((ts, 3, {"k": "tool", "t": ts, "turn": c.turn, "scope": c.scope, "agent": c.agent_id,
                              "name": c.name, "id": c.id, "status": c.status, "dur": c.duration_ms,
                              "input": ctx.text(summarize_input(c), lim),
