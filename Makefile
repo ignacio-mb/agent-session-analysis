@@ -1,7 +1,7 @@
 PY39 := /usr/bin/python3
 
 .PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-check warehouse-up warehouse-down warehouse-psql \
-	env clickhouse clickhouse-dev clickhouse-dev-test clickhouse-dev-down
+	env clickhouse clickhouse-forget clickhouse-dev clickhouse-dev-test clickhouse-dev-down
 
 test: test39
 	uv run --no-project --with pytest python -m pytest -q
@@ -44,14 +44,18 @@ warehouse-down:
 warehouse-psql:
 	docker exec -it convo-analysis-pg psql -U convo -d claude_sessions
 
-# The ClickHouse connection string lives in .env: create it from .env.example (never over an existing one).
+# The ClickHouse connection string lives in ~/.config/convo-analysis/.env: create it from .env.example (never over
+# an existing one), then fill in CLICKHOUSE_URL.
 env:
-	@if [ -f .env ]; then echo ".env exists: fill in CLICKHOUSE_URL there"; \
-	else cp .env.example .env && echo "created .env from .env.example: fill in CLICKHOUSE_URL"; fi
+	PYTHONPATH=src python3 -m session_analytics warehouse --init-env
 
-# Every session into the ClickHouse named in .env, then the check against the raw transcripts.
+# This machine's sessions into the shared ClickHouse (replacing only its own rows), then the check.
 clickhouse:
 	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse --check
+
+# Take this machine's rows out of the shared ClickHouse; everyone else's stay.
+clickhouse-forget:
+	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse-forget
 
 # A throwaway local ClickHouse (docker-compose.yml, profile clickhouse) to try the load and every card's SQL on.
 clickhouse-dev:
@@ -63,5 +67,6 @@ clickhouse-dev-test: clickhouse-dev
 		--out .preview/clickhouse-dev
 	python3 scripts/metabase_dashboard.py --test --clickhouse --env-file .preview/clickhouse-dev.env
 
+# Only the throwaway ClickHouse: `down` would take the Postgres warehouse's container with it.
 clickhouse-dev-down:
-	docker compose --profile clickhouse down
+	docker compose --profile clickhouse rm --stop --force clickhouse

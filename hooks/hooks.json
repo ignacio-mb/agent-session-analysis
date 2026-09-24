@@ -1,0 +1,16 @@
+{
+  "description": "Reload the session warehouse when a session ends: the local Postgres if it is running, the shared ClickHouse if ~/.config/convo-analysis/.env has a CLICKHOUSE_URL (this machine's rows only). Does nothing until one of them is set up; runs in the background.",
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/warehouse_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

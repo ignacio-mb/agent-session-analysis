@@ -23,8 +23,26 @@ Arguments the user gave: `$ARGUMENTS`
 | to find a session first ("my sessions", "yesterday's session") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" list` (`--all` for every project), then export the one they mean |
 | several sessions: "this week", "last 30 days", "across projects" | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" rollup --since 7d` (`--all` for every project; `--since` takes 24h, 7d, 2w, or a date) |
 | how one skill behaves across sessions and versions ("how is rde doing", "did my change to <skill> work", "which version of <skill> fails more", "which files of <skill> get read") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" skill <name> --since 30d` |
-| everything in a database, to query with SQL or explore in Metabase ("load my sessions into Postgres", "a warehouse") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --up --load --check` (needs Docker; `--since 90d` to narrow; `--check` recounts every session from its raw transcript and compares — report whether it matched). Then give the connection: `postgresql://convo@127.0.0.1:55432/claude_sessions`, or `host.docker.internal:55432` from a Metabase in Docker. Into ClickHouse instead (or as well): add `--clickhouse`, which reads `CLICKHOUSE_URL` from the checkout's `.env` — never ask for the connection string in chat; if it is not set, tell the user to fill it in there |
+| everything in a local database, to query with SQL or explore in Metabase ("load my sessions into Postgres", "a local warehouse") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --up --load --check` (needs Docker; `--since 90d` to narrow; `--check` recounts every session from its raw transcript and compares — report whether it matched). Then give the connection: `postgresql://convo@127.0.0.1:55432/claude_sessions`, or `host.docker.internal:55432` from a Metabase in Docker |
+| the shared ClickHouse warehouse ("load / export / push my sessions into ClickHouse", "update the shared warehouse", "refresh the team dashboard") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse --check` — see **The shared warehouse** below. Report the rows loaded, whose they were, and whether the check matched |
+| to take their sessions out of the shared warehouse | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse-forget` (removes this machine's rows only) |
 | two runs of a skill side by side ("compare run X with run Y") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" compare <session>:<n> <session>:<n>` (run ids come from the reports) |
+
+### The shared warehouse
+
+Many people load into one ClickHouse database, each from their own machines. Every row carries `source` (this
+machine and Claude config directory, hashed) and `person` (`CLICKHOUSE_PERSON`, else the git email), and a load
+replaces only its own source's rows — never anyone else's — so it is safe to run as often as wanted.
+
+- **The connection string is the user's to enter.** It lives in `~/.config/convo-analysis/.env` (outside the
+  plugin, so an update keeps it). When the command says `CLICKHOUSE_URL is not set`, run
+  `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --init-env`, which creates that file from the
+  template, and ask the user to fill in `CLICKHOUSE_URL` there themselves (the JDBC string from the ClickHouse Cloud
+  console works as it is). Never ask for it in chat, and never read, print or edit that file.
+- **It reloads itself.** The plugin's SessionEnd hook loads the shared warehouse in the background whenever a session
+  ends, once `CLICKHOUSE_URL` is set; until then it does nothing.
+- **Say what gets shared** before a first load: prompt previews, questions and answers, command summaries, error
+  messages and file paths, readable by anyone who can read that database. Secret-looking strings are masked.
 
 Pass through any flags the user asked for:
 

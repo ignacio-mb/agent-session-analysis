@@ -206,12 +206,12 @@ CARDS = [
      f"SELECT c.signature, count(*) AS uses, count(*) FILTER (WHERE c.status = 'error') AS failed, "
      f"round(count(*) FILTER (WHERE c.status = 'error')::numeric / count(*), 3) AS failure_rate, "
      f"count(*) FILTER (WHERE c.is_help) AS help_lookups, count(DISTINCT c.run_id) AS runs "
-     f"FROM cli_calls c JOIN skill_runs r USING (run_id) WHERE r.skill = {SKILL} AND c.signature LIKE '% %' "
+     f"FROM cli_calls c JOIN skill_runs r USING (run_id, session_id) WHERE r.skill = {SKILL} AND c.signature LIKE '% %' "
      f"GROUP BY c.signature HAVING count(*) >= 2 ORDER BY uses DESC, c.signature LIMIT 40",
      {"column_settings": {'["name","failure_rate"]': {"number_style": "percent", "decimals": 1}}}, True, (0, 12, 12, 12)),
     ("toolerrors", "Skill files & CLI", "Failed tool calls in the skill's runs", "table",
      f"SELECT t.at, r.version, t.run_id, t.tool, t.program, t.error_category, t.input, left(t.error, 300) AS error "
-     f"FROM tool_calls t JOIN skill_runs r USING (run_id) WHERE r.skill = {SKILL} AND t.status = 'error' "
+     f"FROM tool_calls t JOIN skill_runs r USING (run_id, session_id) WHERE r.skill = {SKILL} AND t.status = 'error' "
      f"ORDER BY t.at DESC, t.tool_use_id LIMIT 200", {}, True, (12, 12, 12, 12)),
 ]
 
@@ -235,6 +235,8 @@ MODEL_COLUMNS = {
     "run_id": ("Skill run", "The skill run that asked it.", None),
     "session_id": ("Session", None, None),
     "project": ("Project", None, "type/Category"),
+    "person": ("Person", "Whose sessions (ClickHouse warehouse only): CLICKHOUSE_PERSON on the loading machine, else its "
+                        "git email.", "type/Category"),
     "channel": ("Asked via", "AskUserQuestion, in prose (a question at the end of a reply), or a printed checkpoint.",
                 "type/Category"),
     "interview_topic": ("Interview topic", "The skill's own topic for the question (checks/<skill>.json).", "type/Category"),
@@ -483,12 +485,14 @@ def clickhouse_sql(db="sessions"):
                    f"FROM {d}.v_skill_files WHERE skill = {SKILL} AND owner != {SKILL} ORDER BY runs_shown DESC, doc",
         "cli": f"SELECT c.signature AS signature, count() AS uses, countIf(c.status = 'error') AS failed, "
                f"round(countIf(c.status = 'error') / count(), 3) AS failure_rate, countIf(c.is_help) AS help_lookups, "
-               f"uniqExact(c.run_id) AS runs FROM {d}.cli_calls AS c INNER JOIN {d}.skill_runs AS r "
-               f"ON r.run_id = c.run_id WHERE r.skill = {SKILL} AND c.signature LIKE '% %' "
+               f"uniqExact(c.session_id, c.run_id) AS runs FROM {d}.cli_calls AS c INNER JOIN {d}.skill_runs AS r "
+               f"ON r.run_id = c.run_id AND r.session_id = c.session_id WHERE r.skill = {SKILL} "
+               f"AND c.signature LIKE '% %' "
                f"GROUP BY c.signature HAVING count() >= 2 ORDER BY uses DESC, signature LIMIT 40",
         "toolerrors": f"SELECT t.at AS at, r.version AS version, t.run_id AS run_id, t.tool AS tool, t.program AS program, "
                       f"t.error_category AS error_category, t.input AS input, left(t.error, 300) AS error "
-                      f"FROM {d}.tool_calls AS t INNER JOIN {d}.skill_runs AS r ON r.run_id = t.run_id "
+                      f"FROM {d}.tool_calls AS t INNER JOIN {d}.skill_runs AS r "
+                      f"ON r.run_id = t.run_id AND r.session_id = t.session_id "
                       f"WHERE r.skill = {SKILL} AND t.status = 'error' ORDER BY t.at DESC, t.tool_use_id LIMIT 200",
         # Question topics
         "tq_stack": f"SELECT countIf(layer != 'cross-cutting') / nullIf(count(), 0) AS on_the_stack "

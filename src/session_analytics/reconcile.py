@@ -91,7 +91,8 @@ def _psql(psql, sql):
     return res.stdout
 
 
-# The same counts from a ClickHouse load (clickhouse.py): one pass per table instead of a subquery per session.
+# The same counts from a ClickHouse load (clickhouse.py), for the sessions this machine loaded (its source): one
+# pass per table instead of a subquery per session.
 _CH_SQL = """SELECT s.session_id AS session_id,
   ifNull(a.requests, 0) AS api_requests, ifNull(a.output_tokens, 0) AS output_tokens,
   ifNull(a.input_tokens, 0) AS input_tokens, ifNull(a.cache_read_tokens, 0) AS cache_read_tokens,
@@ -100,24 +101,30 @@ _CH_SQL = """SELECT s.session_id AS session_id,
 FROM {db}.sessions AS s
 LEFT JOIN (SELECT r.session_id AS session_id, count() AS requests, sum(r.output_tokens) AS output_tokens,
                   sum(r.input_tokens) AS input_tokens, sum(r.cache_read_tokens) AS cache_read_tokens
-           FROM {db}.api_requests AS r GROUP BY r.session_id) AS a ON a.session_id = s.session_id
+           FROM {db}.api_requests AS r WHERE r.source = {{source:String}} GROUP BY r.session_id) AS a
+  ON a.session_id = s.session_id
 LEFT JOIN (SELECT c.session_id AS session_id, countIf(c.tool != '(unmatched)') AS calls,
                   countIf(c.tool != '(unmatched)' AND c.status IN ('error', 'denied', 'interrupted')) AS failed,
                   countIf(c.tool = 'Skill') AS skill_calls
-           FROM {db}.tool_calls AS c GROUP BY c.session_id) AS t ON t.session_id = s.session_id
+           FROM {db}.tool_calls AS c WHERE c.source = {{source:String}} GROUP BY c.session_id) AS t
+  ON t.session_id = s.session_id
 LEFT JOIN (SELECT x.session_id AS session_id, countIf(x.channel = 'ask') AS asked
-           FROM {db}.questions AS x GROUP BY x.session_id) AS q ON q.session_id = s.session_id"""
+           FROM {db}.questions AS x WHERE x.source = {{source:String}} GROUP BY x.session_id) AS q
+  ON q.session_id = s.session_id
+WHERE s.source = {{source:String}}"""
 
 
 def warehouse_counts(source):
     """{session: {count: n}} and when the warehouse was loaded (ms), from Postgres (a psql command) or ClickHouse
-    (a clickhouse.Client)."""
-    if hasattr(source, "rows"):
+    (a (clickhouse.Client, source id) pair: that machine's rows)."""
+    if isinstance(source, tuple):
         from .clickhouse import ident
-        db = ident(source.t.database)
-        rows = {r["session_id"]: {k: int(r[k] or 0) for k in FIELDS} for r in source.rows(_CH_SQL.format(db=db))}
-        loaded = source.rows(f"SELECT toUnixTimestamp64Milli(max(loaded_at)) AS ms FROM {db}.warehouse_load")
-        return rows, (float(loaded[0]["ms"]) if loaded else None)
+        client, src = source
+        db, p = ident(client.t.database), {"source": src}
+        rows = {r["session_id"]: {k: int(r[k] or 0) for k in FIELDS} for r in client.rows(_CH_SQL.format(db=db), p)}
+        loaded = client.rows(f"SELECT toUnixTimestamp64Milli(max(loaded_at)) AS ms FROM {db}.warehouse_load "
+                             f"WHERE source = {{source:String}}", p)
+        return rows, (float(loaded[0]["ms"]) if loaded and rows else None)
     psql = source
     rows = {}
     for line in _psql(psql, _SQL).splitlines():
@@ -130,7 +137,7 @@ def warehouse_counts(source):
 
 def check(source, claude_dir=None):
     """Every session in scope, recounted from its transcript and compared with the warehouse (a psql command, or a
-    clickhouse.Client)."""
+    (clickhouse.Client, source id) pair)."""
     wh, loaded_ms = warehouse_counts(source)
     out = {"loaded_ms": loaded_ms, "checked": 0, "matched": 0, "live": [], "differ": [], "missing": [],
            "raw": dict.fromkeys(FIELDS, 0), "warehouse": dict.fromkeys(FIELDS, 0)}

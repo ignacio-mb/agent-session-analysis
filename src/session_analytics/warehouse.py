@@ -597,6 +597,14 @@ def psql_command(container=CONTAINER, database=DATABASE, user=USER, dsn=None):
     raise RuntimeError("no psql: install one and pass --dsn, or run Postgres in Docker (make warehouse-up)")
 
 
+def running(container=CONTAINER):
+    """Whether the local Postgres container is up (for --load=auto: the hook loads it only when it is)."""
+    if not shutil.which("docker"):
+        return False
+    res = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", container], capture_output=True, text=True)
+    return res.returncode == 0 and res.stdout.strip() == "true"
+
+
 def up(compose=COMPOSE, wait=True):
     """Start the local Postgres from the repo's docker-compose.yml."""
     cmd = ["docker", "compose", "-f", str(compose), "up", "-d"] + (["--wait"] if wait else [])
@@ -623,9 +631,11 @@ def load(out_dir, psql):
 
 
 def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_load=False, start=False,
-                  container=CONTAINER, dsn=None, redact=True, pricing=None, log=print, clickhouse_target=None):
-    """Analyze once; write the files; load Postgres (do_load) and/or ClickHouse (clickhouse_target). A target that
-    fails does not stop the other: its error is in `errors`."""
+                  container=CONTAINER, dsn=None, redact=True, pricing=None, log=print, clickhouse_target=None,
+                  clickhouse_identity=None):
+    """Analyze once; write the files; load Postgres (do_load) and/or ClickHouse (clickhouse_target, as
+    clickhouse_identity: only that source's rows are replaced). A target that fails does not stop the other: its
+    error is in `errors`."""
     out = Path(out_dir) if out_dir else default_root() / "_warehouse" / datetime.now().strftime("%Y-%m-%d_%H%M")
     if start:
         log("Starting Postgres (docker compose up -d --wait)…")
@@ -645,10 +655,10 @@ def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_l
             res["errors"]["postgres"] = (getattr(exc, "stderr", None) or str(exc)).strip()
     if clickhouse_target is not None:
         from . import clickhouse
-        log(f"Loading ClickHouse ({clickhouse_target!r})…")
+        log(f"Loading ClickHouse ({clickhouse_target!r}) as {clickhouse_identity!r}…")
         try:
-            res["clickhouse"] = {"target": repr(clickhouse_target),
-                                 "counts": clickhouse.load(tables, clickhouse_target, log=log)}
+            res["clickhouse"] = {"target": repr(clickhouse_target), "identity": repr(clickhouse_identity),
+                                 "counts": clickhouse.load(tables, clickhouse_target, clickhouse_identity, log=log)}
         except (clickhouse.ClickHouseError, OSError) as exc:
             res["errors"]["clickhouse"] = str(exc)
     return res

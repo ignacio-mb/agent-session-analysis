@@ -30,8 +30,11 @@ def fields(node):
 
 def test_the_model_columns_are_the_views():
     md = load()
+    from session_analytics import clickhouse
     select = warehouse.VIEWS.split("CREATE VIEW v_interview_questions AS")[1].split("\nFROM questions q")[0]
-    assert [c for c in md.MODEL_COLUMNS if not re.search(rf"(\.|AS ){c}\b", select)] == []
+    missing = [c for c in md.MODEL_COLUMNS if not re.search(rf"(\.|AS ){c}\b", select)]
+    assert missing == ["person"]  # the shared ClickHouse warehouse's column: whose sessions
+    assert "AS person" in clickhouse.VIEWS["v_interview_questions"]
     assert md.MODEL_SQL == "SELECT * FROM v_interview_questions"
 
 

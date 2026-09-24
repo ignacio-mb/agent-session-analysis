@@ -1,9 +1,10 @@
 #!/bin/sh
-# Claude Code SessionEnd hook: reload the session warehouse (`session-analytics warehouse --load`) in the
-# background, so ending a session is never held up by the ~30 s load. With CLICKHOUSE_URL filled in the checkout's
-# .env, the same load also goes to ClickHouse (--clickhouse=auto: skipped while it is empty).
+# Claude Code SessionEnd hook: reload the session warehouse in the background, so ending a session is never held
+# up by the ~30 s load. It loads what is set up and nothing else: the local Postgres when its container is running
+# (--load=auto), the shared ClickHouse when ~/.config/convo-analysis/.env has a CLICKHOUSE_URL (--clickhouse=auto,
+# replacing this machine's rows only). With neither, it exits before reading a transcript.
 #
-#   ~/.claude/settings.json
+# The plugin installs it (hooks/hooks.json). From a checkout, add it to ~/.claude/settings.json instead — not both:
 #   {"hooks": {"SessionEnd": [{"hooks": [{"type": "command",
 #                                          "command": "<path to convo-analysis>/scripts/warehouse_hook.sh"}]}]}}
 #
@@ -20,13 +21,15 @@ AGAIN="$LOCK.again"
 # The desktop app starts hooks with a short PATH; the load needs docker.
 PATH="$HOME/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 export PATH
+PY=/usr/bin/python3
+[ -x "$PY" ] || PY=$(command -v python3)
 
 if [ "$1" = "--run" ]; then
   while :; do
     while :; do
       rm -f "$AGAIN"
       echo "== $(date '+%Y-%m-%d %H:%M:%S') load"
-      PYTHONPATH="$REPO/src" /usr/bin/python3 -m session_analytics warehouse --load --clickhouse=auto \
+      PYTHONPATH="$REPO/src" "$PY" -m session_analytics warehouse --load=auto --clickhouse=auto \
         --out "$OUT/latest" 2>&1 |
         grep -v '^  [0-9]*/[0-9]* transcripts$'
       [ -e "$AGAIN" ] || break

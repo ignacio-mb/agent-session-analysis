@@ -4,28 +4,39 @@
     make clickhouse                                the same, then the check against the raw transcripts
 
 The same tables as the Postgres warehouse (warehouse.TABLES, same rows) and the same views, written in ClickHouse
-SQL. The target database must already exist: this never creates or drops a database. Each table is loaded beside
-the live one (`<table>__load`), its row count checked, and swapped in with EXCHANGE TABLES, so a dashboard that
-reads during a load sees the old rows or the new ones, never an empty table.
+SQL — shared: many people load into one database, each from their own machines. Every row carries `source` (which
+machine and Claude config directory loaded it: a hash, see source_id) and `person` (whose sessions), and the tables
+are partitioned by source. A load replaces its own partition and nothing else: rows go into a staging table, the
+count is checked, and ALTER TABLE … REPLACE PARTITION swaps them in atomically, so a dashboard reading mid-load sees
+the old rows or the new ones, and nobody else's rows are touched. The taxonomy tables (de_topics, de_layers) are the
+same for everyone and are replaced whole. The target database must already exist: this never creates or drops one.
 
 Everything this writes carries a comment starting with MARK. A table or view of the same name without it
 belongs to something else, and stops the load before anything is written; objects with other names are never
 touched. The connection string is a secret: nothing here prints the password, and errors name only the host.
 
-The connection string is read from this checkout's .env (or --env-file), never from the process environment or
-the current directory: a CLICKHOUSE_URL exported for another project, or the .env of the repository a session
-ran in, must not be able to point this load at someone else's cluster.
+The connection string is read from ~/.config/convo-analysis/.env (or --env-file) — outside any checkout or plugin
+directory, so an update never loses it — never from the process environment or the current directory: a
+CLICKHOUSE_URL exported for another project, or the .env of the repository a session ran in, must not be able to
+point this load at someone else's cluster.
 """
 
 from __future__ import annotations
 
+import getpass
 import gzip
+import hashlib
 import json
 import math
+import os
+import re
+import socket
 import ssl
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 from . import util
@@ -33,7 +44,8 @@ from .warehouse import BIG, BOOL, INT, NUM, TABLES, TEXT, TS, VIEW_COMMENTS, _ce
 
 MARK = "convo-analysis"
 DEFAULT_DATABASE = "sessions"
-ENV_KEYS = ("CLICKHOUSE_URL", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_DATABASE")
+ENV_KEYS = ("CLICKHOUSE_URL", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_DATABASE", "CLICKHOUSE_PERSON")
+GLOBAL = ("de_topics", "de_layers")  # the taxonomy: the same for everyone, replaced whole
 CHUNK_BYTES = 8 << 20  # uncompressed JSONEachRow per INSERT
 TYPES = {TEXT: "String", INT: "Int64", BIG: "Int64", NUM: "Float64", TS: "DateTime64(3, 'UTC')", BOOL: "Bool"}
 INSERT_SETTINGS = {"date_time_input_format": "best_effort", "input_format_null_as_default": "1"}
@@ -65,9 +77,34 @@ def read_env(path):
     return out
 
 
-def default_env_file():
-    """The checkout's .env (beside .env.example)."""
+def config_dir():
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "convo-analysis"
+
+
+def checkout_env_file():
+    """Where the connection lived before ~/.config: the checkout's .env. Still read, when the user one is missing."""
     return Path(__file__).resolve().parents[2] / ".env"
+
+
+def default_env_file():
+    """~/.config/convo-analysis/.env: a plugin update replaces the plugin's directory, and a checkout is not where a
+    secret should live. A checkout's .env is still read when that one is missing."""
+    user = config_dir() / ".env"
+    return user if user.is_file() or not checkout_env_file().is_file() else checkout_env_file()
+
+
+def init_env():
+    """Create ~/.config/convo-analysis/.env from .env.example (never over an existing one). Returns (path, created)."""
+    dest = config_dir() / ".env"
+    if dest.exists():
+        return dest, False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    template = Path(__file__).resolve().parents[2] / ".env.example"
+    text = template.read_text(encoding="utf-8") if template.is_file() else "CLICKHOUSE_URL=\n"
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # it will hold a password: owner-only
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return dest, True
 
 
 def settings(env_file=None):
@@ -87,11 +124,18 @@ class Target:
     @classmethod
     def from_url(cls, url, password=None, database=None):
         """https://user:password@host:8443/database — also http://, clickhouse://, clickhouses://, clickhousedb://
-        (TLS with an s-scheme, ?secure=true, or port 8443/443). Only the HTTP interface is spoken, so native-protocol
-        ports (9000, 9440) are refused with the port to use instead."""
+        (TLS with an s-scheme, ?secure=true / ?ssl=true, or port 8443/443), and the JDBC string the ClickHouse Cloud
+        console hands out (jdbc:clickhouse://host:8443?user=…&password=…&ssl=true). Only the HTTP interface is
+        spoken, so native-protocol ports (9000, 9440) are refused with the port to use instead."""
         if not url:
             raise ClickHouseError("no CLICKHOUSE_URL: copy .env.example to .env (make env) and fill it in")
-        u = urllib.parse.urlsplit(url.strip())
+        raw = url.strip()
+        if raw.lower().startswith("jdbc:"):
+            raw = raw[len("jdbc:"):]
+            # jdbc:clickhouse:https://… and jdbc:ch:https://… put the protocol after the driver's name
+            inner = re.match(r"(?i)(?:clickhouse|ch):(https?://.*)", raw)
+            raw = inner.group(1) if inner else raw
+        u = urllib.parse.urlsplit(raw)
         scheme = u.scheme.lower()
         if scheme not in ("http", "https", "clickhouse", "clickhouses", "clickhousedb", "clickhouse+http",
                           "clickhouse+https", "ch"):
@@ -99,18 +143,20 @@ class Target:
                                   f"use https://user:password@host:8443/db")
         if not u.hostname:
             raise ClickHouseError("CLICKHOUSE_URL has no host")
-        query = urllib.parse.parse_qs(u.query)
-        secure = (query.get("secure") or query.get("ssl") or [""])[0].lower() in ("1", "true", "yes")
+        # not parse_qs: a '+' in a JDBC password is a plus, not a space
+        query = {k.lower(): urllib.parse.unquote(v) for k, _, v in (p.partition("=") for p in u.query.split("&") if p)}
+        secure = (query.get("secure") or query.get("ssl") or "").lower() in ("1", "true", "yes")
         port = u.port
         tls = scheme in ("https", "clickhouses", "clickhouse+https") or secure or port in (8443, 443)
         if port in (9000, 9440):
             raise ClickHouseError(f"CLICKHOUSE_URL: port {port} is ClickHouse's native protocol; this loader speaks "
                                   f"HTTP — use {8443 if port == 9440 else 8123}")
         port = port or (8443 if tls else 8123)
-        user = urllib.parse.unquote(u.username) if u.username else "default"
-        pw = password if password is not None else urllib.parse.unquote(u.password or "")
-        db = (u.path or "").strip("/") or database or (query.get("database") or [""])[0] or DEFAULT_DATABASE
-        return cls(u.hostname, port, tls, user, pw, urllib.parse.unquote(db))
+        user = urllib.parse.unquote(u.username) if u.username else query.get("user") or "default"
+        pw = password if password is not None else (urllib.parse.unquote(u.password) if u.password is not None
+                                                    else query.get("password", ""))
+        db = urllib.parse.unquote((u.path or "").strip("/")) or database or query.get("database") or DEFAULT_DATABASE
+        return cls(u.hostname, port, tls, user, pw, db)
 
     @property
     def base(self):
@@ -126,6 +172,75 @@ def target_from_settings(env_file=None):
         raise ClickHouseError(f"CLICKHOUSE_URL is not set in {path}: copy .env.example to .env (make env) and fill in "
                               f"the connection string")
     return Target.from_url(s["CLICKHOUSE_URL"], password=s["CLICKHOUSE_PASSWORD"], database=s["CLICKHOUSE_DATABASE"])
+
+
+# ---------------------------------------------------------------- whose rows
+class Identity:
+    """Who is loading: `source` is what a load replaces, `person` a label on every row, `machine` the host name.
+    (Not `owner`: skill_run_files already has one — the skill or CLI a document belongs to.)"""
+
+    def __init__(self, source, person, machine):
+        self.source, self.person, self.machine = source, person, machine
+
+    def columns(self, table):
+        if table in GLOBAL:
+            return {}
+        extra = {"source": self.source, "person": self.person}
+        if table == "warehouse_load":
+            extra["machine"] = self.machine
+        return extra
+
+    def __repr__(self):
+        return f"{self.person} (source {self.source}, {self.machine})"
+
+
+def _machine_id():
+    """A stable id for this machine: the hardware UUID on macOS, /etc/machine-id on Linux, else one kept in ~/.config."""
+    try:
+        out = subprocess.run(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], capture_output=True, text=True,
+                             timeout=5).stdout
+        m = re.search(r'"IOPlatformUUID" = "([^"]+)"', out)
+        if m:
+            return m.group(1)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            v = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if v:
+            return v
+    f = config_dir() / "machine-id"
+    try:
+        return f.read_text().strip()
+    except OSError:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(uuid.uuid4().hex + "\n")
+        return f.read_text().strip()
+
+
+def source_id(claude_dir):
+    """This machine's sessions from this Claude config directory: the partition a load replaces. Derived rather than
+    stored, so it survives a wiped config and a renamed person; hashed, so the hardware id never leaves the machine.
+    A second machine, or a second config directory, is a second source — their sessions never overlap."""
+    return hashlib.sha256(f"{_machine_id()}|{Path(claude_dir).expanduser().resolve()}".encode()).hexdigest()[:16]
+
+
+def _git_email():
+    try:
+        return subprocess.run(["git", "config", "--global", "user.email"], capture_output=True, text=True,
+                              timeout=5).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def identity(claude_dir, env_file=None):
+    """CLICKHOUSE_PERSON from the env file, else the git email, else user@host; the source from the machine."""
+    s, _ = settings(env_file)
+    host = socket.gethostname()
+    return Identity(source_id(claude_dir), s["CLICKHOUSE_PERSON"] or _git_email() or f"{getpass.getuser()}@{host}",
+                    host)
 
 
 # ---------------------------------------------------------------- HTTP
@@ -181,14 +296,26 @@ def qualified(db, name):
     return f"{ident(db)}.{ident(name)}"
 
 
+def columns(name):
+    """(column, ClickHouse type, comment) of a table as ClickHouse holds it: the loader's columns first, then the
+    warehouse's, primary-key columns required and the rest Nullable."""
+    _, cols, pk = TABLES[name]
+    out = []
+    if name not in GLOBAL:
+        out += [("source", "LowCardinality(String)", "The machine and Claude config directory that loaded the row (a "
+                                                     "hash): each load replaces its own source's rows and no one else's"),
+                ("person", "LowCardinality(String)", "Whose sessions: CLICKHOUSE_PERSON, else the loading machine's git email")]
+        if name == "warehouse_load":
+            out.append(("machine", "LowCardinality(String)", "Host name of the loading machine"))
+    return out + [(c, TYPES[t] if c in pk else f"Nullable({TYPES[t]})", d) for c, t, d in cols]
+
+
 def table_ddl(db, name, as_name=None):
-    """CREATE TABLE for one warehouse table: primary-key columns required, the rest Nullable, ordered by the key."""
-    comment, cols, pk = TABLES[name]
-    body = []
-    for c, t, d in cols:
-        typ = TYPES[t] if c in pk else f"Nullable({TYPES[t]})"
-        body.append(f"  {ident(c)} {typ}" + (f" COMMENT {lit(d)}" if d else ""))
-    return (f"CREATE TABLE {qualified(db, as_name or name)} (\n" + ",\n".join(body) + "\n)\nENGINE = MergeTree\n"
+    """CREATE TABLE for one warehouse table, partitioned by source (the taxonomy tables are not)."""
+    comment, _, pk = TABLES[name]
+    body = ",\n".join(f"  {ident(c)} {t}" + (f" COMMENT {lit(d)}" if d else "") for c, t, d in columns(name))
+    part = "" if name in GLOBAL else "PARTITION BY source\n"
+    return (f"CREATE TABLE {qualified(db, as_name or name)} (\n{body}\n)\nENGINE = MergeTree\n{part}"
             f"ORDER BY ({', '.join(ident(c) for c in pk)})\nCOMMENT {lit(f'{MARK} · {comment}')}")
 
 
@@ -226,12 +353,13 @@ def json_value(v, typ):
     return s if s != "" else None
 
 
-def json_lines(name, rows):
-    """JSONEachRow chunks of at most CHUNK_BYTES."""
+def json_lines(name, rows, extra=None):
+    """JSONEachRow chunks of at most CHUNK_BYTES; `extra` (the loader's columns) goes on every row."""
     cols = [(c, t) for c, t, _ in TABLES[name][1]]
     buf, size = [], 0
     for r in rows:
-        line = json.dumps({c: json_value(r.get(c), t) for c, t in cols}, ensure_ascii=False, separators=(",", ":"))
+        line = json.dumps({**(extra or {}), **{c: json_value(r.get(c), t) for c, t in cols}}, ensure_ascii=False,
+                          separators=(",", ":"))
         buf.append(line)
         size += len(line) + 1
         if size >= CHUNK_BYTES:
@@ -243,55 +371,121 @@ def json_lines(name, rows):
 
 # ---------------------------------------------------------------- load
 def preflight(client, db):
-    """The database exists, and nothing this would replace belongs to anyone else. Returns {name: engine}."""
+    """The database exists, and nothing this would replace belongs to anyone else. Returns {table: {columns}}."""
     if not client.rows("SELECT name FROM system.databases WHERE name = {db:String}", {"db": db}):
         raise ClickHouseError(f"database {db} does not exist on {client.t.host}: create it first "
                               f"(CREATE DATABASE {ident(db)}) — this loader never creates one")
     existing = {r["name"]: r for r in client.rows(
         "SELECT name, engine, comment FROM system.tables WHERE database = {db:String}", {"db": db})}
-    ours = set(TABLES) | set(VIEWS) | {f"{t}__load" for t in TABLES}
+    ours = set(TABLES) | set(VIEWS) | {f"{t}__rebuild" for t in TABLES}
     foreign = sorted(n for n in ours & set(existing) if not (existing[n]["comment"] or "").startswith(MARK))
     if foreign:
         raise ClickHouseError(f"{db} already has {', '.join(foreign)}, not created by {MARK} (no '{MARK}' comment): "
                               f"refusing to replace them — load into a database of its own")
-    return {n: r["engine"] for n, r in existing.items()}
+    cols = {}
+    for r in client.rows("SELECT table, name FROM system.columns WHERE database = {db:String}", {"db": db}):
+        cols.setdefault(r["table"], set()).add(r["name"])
+    return {n: cols.get(n, set()) for n in existing if n in TABLES}
 
 
-def load(tables, target, log=print):
-    """Load every table (swap in), then the views. Returns {table: rows}."""
+def _insert(client, db, table, name, rows, extra):
+    for chunk in json_lines(name, rows, extra):
+        client.run(f"INSERT INTO {qualified(db, table)} FORMAT JSONEachRow", data=chunk, settings=INSERT_SETTINGS,
+                   compress=True)
+    got = int(client.rows(f"SELECT count() AS n FROM {qualified(db, table)}")[0]["n"])
+    if got != len(rows):
+        raise ClickHouseError(f"{db}.{table}: {got} rows arrived of {len(rows)} sent; the live table is untouched")
+    return got
+
+
+def _replace_own_rows(client, db, name, rows, ident_, existing):
+    """This source's rows of one table, swapped in with REPLACE PARTITION; other sources' partitions are not touched.
+    A table from before per-source loads (no `source` column: it held only its last loader's rows) is rebuilt."""
+    live = name
+    cols = existing.get(name)
+    rebuild = cols is not None and "source" not in cols
+    if cols is None:
+        client.run(table_ddl(db, name).replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))
+    elif rebuild:
+        live = f"{name}__rebuild"
+        client.run(f"DROP TABLE IF EXISTS {qualified(db, live)} SYNC")
+        client.run(table_ddl(db, name, as_name=live))
+    else:
+        for c, t, d in columns(name):  # a newer version's columns: added, never dropped
+            if c not in cols:
+                client.run(f"ALTER TABLE {qualified(db, name)} ADD COLUMN IF NOT EXISTS {ident(c)} {t}"
+                           + (f" COMMENT {lit(d)}" if d else ""))
+    stage = f"{name}__load_{ident_.source}"
+    client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    client.run(f"CREATE TABLE {qualified(db, stage)} AS {qualified(db, live)}")  # same structure: REPLACE needs it
+    try:
+        got = _insert(client, db, stage, name, rows, ident_.columns(name))
+        if got:
+            client.run(f"ALTER TABLE {qualified(db, live)} REPLACE PARTITION {lit(ident_.source)} "
+                       f"FROM {qualified(db, stage)}")
+        else:  # REPLACE refuses an empty source partition: nothing of ours left, so drop what there was
+            client.run(f"ALTER TABLE {qualified(db, live)} DROP PARTITION {lit(ident_.source)}")
+    finally:
+        client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    if rebuild:
+        client.run(f"EXCHANGE TABLES {qualified(db, live)} AND {qualified(db, name)}")
+        client.run(f"DROP TABLE {qualified(db, live)} SYNC")
+    return got
+
+
+def _replace_whole(client, db, name, rows, ident_, existing):
+    """A taxonomy table: the same for everyone, so the whole table is swapped (EXCHANGE, or RENAME the first time)."""
+    stage = f"{name}__load_{ident_.source}"
+    client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    client.run(table_ddl(db, name, as_name=stage))
+    try:
+        got = _insert(client, db, stage, name, rows, {})
+        if name in existing:
+            client.run(f"EXCHANGE TABLES {qualified(db, stage)} AND {qualified(db, name)}")
+        else:
+            client.run(f"RENAME TABLE {qualified(db, stage)} TO {qualified(db, name)}")
+    finally:
+        client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    return got
+
+
+def load(tables, target, ident_, log=print):
+    """Replace this source's rows in every table, then (re)create the views. Returns {table: rows}."""
     client = Client(target)
     db = target.database
     existing = preflight(client, db)
     counts = {}
     for name in TABLES:
         rows = tables.get(name, ())
-        tmp = f"{name}__load"
-        client.run(f"DROP TABLE IF EXISTS {qualified(db, tmp)} SYNC")
-        client.run(table_ddl(db, name, as_name=tmp))
-        for chunk in json_lines(name, rows):
-            client.run(f"INSERT INTO {qualified(db, tmp)} FORMAT JSONEachRow", data=chunk, settings=INSERT_SETTINGS,
-                       compress=True)
-        got = int(client.rows(f"SELECT count() AS n FROM {qualified(db, tmp)}")[0]["n"])
-        if got != len(rows):
-            raise ClickHouseError(f"{db}.{tmp}: {got} rows arrived of {len(rows)} sent; the live table is untouched")
-        if name in existing:
-            client.run(f"EXCHANGE TABLES {qualified(db, tmp)} AND {qualified(db, name)}")
-            client.run(f"DROP TABLE {qualified(db, tmp)} SYNC")
-        else:
-            client.run(f"RENAME TABLE {qualified(db, tmp)} TO {qualified(db, name)}")
-        counts[name] = got
+        swap = _replace_whole if name in GLOBAL else _replace_own_rows
+        counts[name] = swap(client, db, name, rows, ident_, existing)
         if log and len(rows) >= 10000:
-            log(f"  {name}: {got:,} rows")
+            log(f"  {name}: {counts[name]:,} rows")
     for name in VIEWS:
         client.run(view_ddl(db, name))
     return counts
+
+
+def forget(target, ident_):
+    """Take this source's rows out of every table (the other sources' stay). Returns the tables it dropped them from."""
+    client = Client(target)
+    db = target.database
+    existing = preflight(client, db)
+    done = []
+    for name in TABLES:
+        if name not in GLOBAL and "source" in existing.get(name, ()):
+            client.run(f"ALTER TABLE {qualified(db, name)} DROP PARTITION {lit(ident_.source)}")
+            done.append(name)
+    return done
 
 
 # ---------------------------------------------------------------- the views, in ClickHouse SQL
 # Rounding goes through Decimal: Postgres rounds numerics half away from zero, ClickHouse rounds a Float64 half to
 # even, and the two warehouses are meant to agree to the digit. accurateCastOrNull, not toDecimal64: a division by
 # nullIf(0) is still computed under the NULL, and the infinity there would fail the cast.
-# Same names, columns and meaning as warehouse.VIEWS. Differences that matter: percentile_cont is
+# Same names, columns and meaning as warehouse.VIEWS, over every source's rows (v_interview_questions adds `person`).
+# Run and question ids are `<first 8 of the session id>:<n>`, unique on one machine but not across many, so joins on
+# them also match the session. Other differences that matter: percentile_cont is
 # quantileExactInclusive (the same interpolation), `x::numeric` would be Decimal(10, 0) here so division stays
 # Float64, and a LEFT JOIN miss leaves a key column '' rather than NULL (every non-key column is Nullable, so those
 # still come back NULL).
@@ -364,7 +558,7 @@ GROUP BY q.skill, q.version, q.de_topic, t.label, t.sort_order, q.layer, l.label
     "v_interview_questions": """
 SELECT q.qid AS qid, q.asked_at AS asked_at, q.skill AS skill, q.version AS version,
        r.version_date AS version_date, r.version_subject AS version_subject, q.run_id AS run_id,
-       q.session_id AS session_id, s.project AS project,
+       q.session_id AS session_id, s.project AS project, q.person AS person,
        CASE q.channel WHEN 'ask' THEN 'AskUserQuestion' WHEN 'prose' THEN 'In prose' ELSE 'Checkpoint' END
            AS channel,
        q.topic_label AS interview_topic,
@@ -391,8 +585,8 @@ SELECT q.qid AS qid, q.asked_at AS asked_at, q.skill AS skill, q.version AS vers
 FROM {db}.questions AS q
 LEFT JOIN {db}.de_topics AS t ON t.id = q.de_topic
 LEFT JOIN {db}.de_layers AS l ON l.id = q.layer
-LEFT JOIN {db}.skill_runs AS r ON r.run_id = q.run_id
-LEFT JOIN {db}.sessions AS s ON s.session_id = q.session_id""",
+LEFT JOIN {db}.skill_runs AS r ON r.run_id = q.run_id AND r.session_id = q.session_id
+LEFT JOIN {db}.sessions AS s ON s.session_id = q.session_id AND s.source = q.source""",
     "v_question_outcomes": """
 SELECT q.skill AS skill, q.version AS version, q.channel AS channel, q.outcome AS outcome, count() AS questions,
        uniqExact(q.run_id) AS runs
@@ -403,7 +597,7 @@ SELECT q.skill AS skill, q.version AS version, q.run_id AS run_id, q.asked_at AS
        nullIf(arrayStringConcat(arrayMap(x -> x.2, arraySort(groupArrayIf((o.option_no, ifNull(o.label, '')),
                                                                           o.qid != ''))), ' / '), '')
            AS options_offered
-FROM {db}.questions AS q LEFT JOIN {db}.question_options AS o ON o.qid = q.qid
+FROM {db}.questions AS q LEFT JOIN {db}.question_options AS o ON o.qid = q.qid AND o.session_id = q.session_id
 WHERE q.typed IS NOT NULL
 GROUP BY q.skill, q.version, q.run_id, q.asked_at, q.topic_label, q.header, q.question, q.typed""",
     "v_question_flags": """

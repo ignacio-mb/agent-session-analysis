@@ -187,39 +187,54 @@ load — the main transcript or any of its subagent and workflow transcripts —
 `make warehouse-psql` opens a shell.
 
 Nothing refreshes it on its own: Claude Code only appends to its transcripts, and the warehouse (and every
-dashboard on it) holds what the last load read. To reload whenever a session ends, add a SessionEnd hook to
-`~/.claude/settings.json`:
+dashboard on it) holds what the last load read. `scripts/warehouse_hook.sh` is a SessionEnd hook that reloads
+whatever is set up — the local Postgres when its container is running (`--load=auto`), the shared ClickHouse
+(below) when `CLICKHOUSE_URL` is set (`--clickhouse=auto`) — and, with neither, exits before reading a transcript.
+It runs in the background (closing a session is never held up), one load at a time (a session that ends mid-load
+gets one more pass after it), logs to `~/claude-session-exports/_warehouse/hook.log` and overwrites
+`_warehouse/latest` instead of adding a folder per load. The plugin installs it (`hooks/hooks.json`); from a
+checkout, add it to `~/.claude/settings.json` instead — not both, or every session end loads twice:
 
 ```json
 {"hooks": {"SessionEnd": [{"hooks": [{"type": "command",
                                       "command": "/path/to/convo-analysis/scripts/warehouse_hook.sh"}]}]}}
 ```
 
-`scripts/warehouse_hook.sh` runs `warehouse --load` in the background (closing a session is never held up), one
-load at a time (a session that ends mid-load gets one more pass after it), logs to
-`~/claude-session-exports/_warehouse/hook.log` and overwrites `_warehouse/latest` instead of adding a folder per
-load. Once `.env` holds a ClickHouse connection (below), the same load goes there too.
-
-### The same warehouse in ClickHouse
+### A shared warehouse in ClickHouse
 
 ```bash
-make env          # creates .env from .env.example (never over an existing one): fill in CLICKHOUSE_URL
-make clickhouse   # every session into that ClickHouse, then the check against the raw transcripts
+make env                # creates ~/.config/convo-analysis/.env from .env.example: fill in CLICKHOUSE_URL
+make clickhouse         # this machine's sessions into it (its own rows only), then the check
+make clickhouse-forget  # take this machine's rows out again
 ```
 
-`CLICKHOUSE_URL` is the cluster's HTTPS endpoint with a user and password and the database at the end
-(`https://<user>:<password>@<host>:8443/sessions`); `CLICKHOUSE_PASSWORD` takes a password a URL would need
-escaped. It is read from this checkout's `.env` only (git-ignored), never from the environment or the directory a
-session ran in, so another project's `CLICKHOUSE_URL` can't redirect the load. The loader speaks ClickHouse's HTTP
-interface with the standard library — no driver to install.
+(Without a checkout, through the plugin: `session_export.py warehouse --init-env`, `--clickhouse --check`,
+`--clickhouse-forget`.)
 
-The same tables and rows as the Postgres load, with the views rewritten in ClickHouse SQL (`clickhouse.py`); on the
-same transcripts every view and every dashboard card returns the same numbers in both. The database must already
-exist — nothing creates one. Each table is loaded beside the live one, its row count checked, and swapped in with
-`EXCHANGE TABLES`, so a dashboard reading mid-load sees the old rows or the new ones, never an empty table.
-Everything written carries a `convo-analysis` comment; a same-named table without it belongs to someone else and
-stops the load before anything is written, and nothing else in the database is touched. `make clickhouse-dev-test`
-tries the whole path on a throwaway local ClickHouse (docker compose, profile `clickhouse`).
+Many people load into one database, each from their own machines, and nobody's load touches anyone else's rows.
+Every row carries `source` — this machine and Claude config directory, as a hash: derived from the hardware id,
+so it survives a wiped config, and never the id itself — and `person` (`CLICKHOUSE_PERSON`, else the git email).
+The tables are partitioned by `source`: a load writes its rows to a staging table, checks the count, and swaps
+them in with `ALTER TABLE … REPLACE PARTITION`, atomically, so a dashboard reading mid-load sees that machine's
+old rows or its new ones, and every other machine's rows are untouched. The taxonomy tables (`de_topics`,
+`de_layers`) are the same for everyone and are replaced whole. A second machine, or a second Claude config
+directory, is a second source; a session copied between machines is counted once per machine that loads it.
+
+`CLICKHOUSE_URL` is the cluster's HTTPS endpoint with a user and password and the database at the end
+(`https://<user>:<password>@<host>:8443/sessions`) — or the JDBC string the ClickHouse Cloud console gives,
+as it is; `CLICKHOUSE_PASSWORD` takes a password a URL would need escaped. It lives in
+`~/.config/convo-analysis/.env` (owner-only), outside any checkout or plugin directory, so an update never takes
+it; a checkout's `.env` from before is still read, with a note to move it. Nothing reads it from the environment
+or from the directory a session ran in, so another project's `CLICKHOUSE_URL` can't redirect the load. The loader
+speaks ClickHouse's HTTP interface with the standard library — no driver to install.
+
+The same tables and rows as the Postgres load, with the views rewritten in ClickHouse SQL (`clickhouse.py`) over
+every source's rows; on the same transcripts every view and every dashboard card returns the same numbers in both.
+The database must already exist — nothing creates one. Everything written carries a `convo-analysis` comment; a
+same-named table without it belongs to someone else and stops the load before anything is written, and nothing
+else in the database is touched. A newer version's columns are added to the tables in place (never dropped), and a
+table from before per-source loads is rebuilt once. `make clickhouse-dev-test` tries the whole path on a throwaway
+local ClickHouse (docker compose, profile `clickhouse`; `make clickhouse-dev-down` removes it).
 
 ### A Metabase dashboard on either
 
@@ -270,7 +285,8 @@ Exports contain your prompts, commands and file paths. Secret-looking strings (A
 passwords, credentials in URLs) are masked by default; `--no-redact` turns that off. Previews are truncated
 unless you pass `--full`. Nothing is sent anywhere unless you load a warehouse: the files stay where they are
 written. A ClickHouse load (and a Metabase dashboard on it) puts prompt previews, questions and answers, command
-summaries, error messages and file paths wherever that cluster and that collection are readable.
+summaries, error messages and file paths, with your name on them, wherever that cluster and that collection are
+readable; `--clickhouse-forget` takes them out.
 
 ## Development
 
