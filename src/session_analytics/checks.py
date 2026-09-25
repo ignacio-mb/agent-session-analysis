@@ -24,9 +24,16 @@ Matchers (every key given must hold; values are regular expressions unless noted
   topic     the topic of a question the call asked (AskUserQuestion; topics come from the file's "interview")
   flag      a flag on a question the call asked: "no recommendation", "recommendation not first", "fewer than
             two options", "no measured numbers", "jargon: …", "asked again", "after an error" (see questions.py)
+  created, location, kind, support   one file the call created (see workfiles.py), all given on the same file:
+            created   its path: relative to the project, ~ for home, else absolute (".scratch/cards.py")
+            location  project | temp | memory | home | other
+            kind      script | sql | json | data | doc | env | other
+            support   true (the skill does not name it: the agent's own) | false | unknown
 
 A checks file may also carry "interview": {"topics": [{"id", "label", "match", "once", "evidence"}], "jargon":
-[...], "prose": "avoid"}, the skill's own names for what its questions are about (see questions.py).
+[...], "prose": "avoid"}, the skill's own names for what its questions are about (see questions.py), and "files":
+{"expected": [{"id", "label", "match"}]}, the working files its own text asks for, `match` a regular expression on
+the path; a file a run creates that none of them matches is a support file (see workfiles.py).
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ from pathlib import Path
 
 VALID_TYPES = {"first", "before", "count", "count_before", "never", "every"}
 FILE_KEYS = ("file", "op", "how")
+CREATED_KEYS = ("created", "location", "kind", "support")
 PACKAGE_CHECKS = Path(__file__).resolve().parents[2] / "checks"
 
 
@@ -59,8 +67,7 @@ def load(paths=(), skill=None):
     return checks
 
 
-def load_interview(paths=(), skill=None):
-    """The "interview" section of the skill's checks file (topics of its questions), or None."""
+def _section(name, paths=(), skill=None):
     files = [Path(p).expanduser() for p in paths]
     if not files and skill:
         candidate = PACKAGE_CHECKS / f"{skill}.json"
@@ -70,9 +77,22 @@ def load_interview(paths=(), skill=None):
         data = json.loads(f.read_text(encoding="utf-8"))
         if skill and data.get("skill") and data["skill"] != skill:
             continue
-        if data.get("interview"):
-            return data["interview"]
+        if data.get(name):
+            return data[name]
     return None
+
+
+def load_interview(paths=(), skill=None):
+    """The "interview" section of the skill's checks file (topics of its questions), or None."""
+    return _section("interview", paths, skill)
+
+
+def load_files(paths=(), skill=None):
+    """The "files" section of the skill's checks file (the working files it asks for), or None."""
+    spec = _section("files", paths, skill)
+    for e in (spec or {}).get("expected") or ():
+        re.compile(e.get("match") or "")
+    return spec
 
 
 def _matches(event, m, text_override=None):
@@ -101,12 +121,15 @@ def _matches(event, m, text_override=None):
         elif key == "flag":
             if not any(re.search(pattern, f) for f in event.get("flags", ())):
                 return False
-        elif key in FILE_KEYS:
+        elif key in FILE_KEYS or key in CREATED_KEYS:
             continue
         else:
             raise ValueError(f"unknown matcher key {key!r}")
     fm = {k: m[k] for k in FILE_KEYS if k in m}
     if fm and not _file_hits(event, fm):
+        return False
+    cm = {k: m[k] for k in CREATED_KEYS if k in m}
+    if cm and not _created_hits(event, cm):
         return False
     return True
 
@@ -114,6 +137,12 @@ def _matches(event, m, text_override=None):
 def _file_hits(event, fm):
     """The skill documents of one event that satisfy every file/op/how pattern given."""
     return [f for f in event.get("files", ()) if all(re.search(p, f.get(k) or "") for k, p in fm.items())]
+
+
+def _created_hits(event, cm):
+    """The files one event created that satisfy every created/location/kind/support pattern given."""
+    key = {"created": "path"}
+    return [f for f in event.get("created", ()) if all(re.search(p, f.get(key.get(k, k)) or "") for k, p in cm.items())]
 
 
 def _first(events, m):
@@ -173,9 +202,12 @@ def evaluate(check, events):
         if t == "never":
             hits = [e for e in events if _matches(e, check["match"])]
             fm = {k: check["match"][k] for k in FILE_KEYS if k in check["match"]}
+            cm = {k: check["match"][k] for k in CREATED_KEYS if k in check["match"]}
             example = None
             if hits and fm:
                 example = ", ".join(sorted({f["file"] for e in hits for f in _file_hits(e, fm)})[:3])
+            elif hits and cm:
+                example = ", ".join(sorted({f["path"] for e in hits for f in _created_hits(e, cm)})[:3])
             elif hits:
                 example = (hits[0].get("command") or hits[0].get("input") or "")[:100]
             return dict(out, status="pass" if not hits else "fail",

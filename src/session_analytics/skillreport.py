@@ -40,7 +40,7 @@ RUN_METRICS = ("cost_usd", "requests", "tool_calls", "tool_errors", "error_rate"
                "follow_up_turns", "context_peak", "output_tokens", "checks_failed", "docs_read", "cli_docs_read",
                "doc_tokens", "doc_listings", "doc_rereads", "questions_asked", "prose_questions", "recommended_rate",
                "typed_answers", "unanswered_questions", "question_wait_p50_ms", "questions_flagged",
-               "questions_before_create")
+               "questions_before_create", "files_created", "support_files", "support_scripts", "inline_scripts")
 FULL = ("full", "injected", "injected + re-read")
 
 
@@ -241,7 +241,8 @@ def build_report(name, runs, meta, since, project, check_files=()):
             "docs_read", "docs_total", "docs_never", "cli_docs_read", "doc_tokens", "doc_rereads", "doc_listings",
             "doc_unprompted", "doc_version_mismatches", "prose_questions", "recommended_rate", "typed_answers",
             "unanswered_questions", "question_wait_p50_ms", "questions_reasked", "questions_flagged",
-            "questions_before_create", "first_question_dt")}
+            "questions_before_create", "first_question_dt", "files_created", "support_files", "support_scripts",
+            "support_script_runs", "inline_scripts", "temp_files", "memory_notes")}
                         | {"version": r["version"].get("label"), "version_key": _version_key(r),
                            "commit": r["version"].get("commit"),
                            "checks": {c["id"]: c["status"] for c in r["checks"]}})
@@ -258,6 +259,7 @@ def build_report(name, runs, meta, since, project, check_files=()):
                    "tool_calls": sum(r["tool_calls"] for r in runs), "tool_errors": sum(r["tool_errors"] for r in runs),
                    "cli_calls": sum(r["cli_calls"] for r in runs), "question_calls": sum(r["question_calls"] for r in runs),
                    "objects_created": sum(r["objects_created"] for r in runs),
+                   "support_files": _sum_known(r.get("support_files") for r in runs),
                    "median_cost_usd": _median([r["cost_usd"] for r in runs]),
                    "median_tool_calls": _median([r["tool_calls"] for r in runs])},
         "checks": [{"id": cid, "desc": check_desc.get(cid)} for cid in check_ids],
@@ -266,7 +268,8 @@ def build_report(name, runs, meta, since, project, check_files=()):
         "runs": run_rows,
         "failures": failure_rows,
         "details": {r["run_id"]: {k: r.get(k) for k in (
-            "skill_files", "changes_seen", "cli", "interview", "objects", "files_written", "final_message", "errors",
+            "skill_files", "changes_seen", "cli", "interview", "objects", "files_written", "working_files",
+            "final_message", "errors",
             "checks", "turns", "nested_skills", "failed_invocations", "actions", "steps", "version",
             "expected_by_playbooks", "tools", "error_categories", "transcript")} for r in runs},
     }
@@ -484,7 +487,8 @@ def _insights(rep):
         for m, label in (("cost_usd", "cost"), ("tool_calls", "tool calls"), ("tool_errors", "tool errors"),
                          ("question_calls", "questions"), ("help_lookups", "help lookups"), ("duration_ms", "duration"),
                          ("docs_read", "skill files read"), ("doc_tokens", "≈ tokens of skill docs read"),
-                         ("questions_asked", "questions asked")):
+                         ("questions_asked", "questions asked"), ("support_files", "support files"),
+                         ("inline_scripts", "programs run inline")):
             x, y = a["median"].get(m), b["median"].get(m)
             if x and y and (y / x >= 1.5 or y / x <= 0.67):
                 fmt = util.fmt_usd if m == "cost_usd" else (util.fmt_duration if m == "duration_ms" else
@@ -492,6 +496,7 @@ def _insights(rep):
                 notes.append(f"Median {label} per run moved {fmt(x)} → {fmt(y)} from {a['commit'] or a['label']} to "
                              f"{b['commit'] or b['label']} (n={a['runs']} → {b['runs']}).")
     notes += _file_insights(rep)
+    notes += _support_insights(rep)
     notes += _interview_insights(rep)
     worst = sorted(((c["id"], sum(v["checks"].get(c["id"], {}).get("fail", 0) for v in vs)) for c in rep["checks"]),
                    key=lambda x: -x[1])
@@ -501,6 +506,32 @@ def _insights(rep):
         f = rep["failures"][0]
         notes.append(f"Most frequent tool failure: {f['signature']} (×{f['count']} in {len(f['runs'])} runs).")
     return notes
+
+
+def _sum_known(vals):
+    """The sum of the values that are known; None when none is (support files, for a skill that names no files)."""
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
+
+
+def _support_insights(rep):
+    """What the latest version's runs made that the skill does not name: the files, and what their scripts drive."""
+    vs = rep["versions"]
+    if not vs:
+        return []
+    last = vs[-1]
+    files = [w for rid in last["run_ids"] for w in (rep["details"].get(rid) or {}).get("working_files") or ()
+             if w.get("support")]
+    if not files:
+        return []
+    kinds = Counter(w["kind"] for w in files)
+    drives = Counter(x for w in files if w["kind"] == "script" for x in (w.get("drives") or []) + (w.get("api") or []))
+    note = (f"Runs of {last['commit'] or last['label']} made {len(files)} file(s) the skill does not name ("
+            + ", ".join(f"{n} {k}" for k, n in kinds.most_common())
+            + f"; median {last['median'].get('support_files')} per run)")
+    if drives:
+        note += "; their scripts drive " + ", ".join(f"`{x}` ×{n}" for x, n in drives.most_common(4))
+    return [note + "."]
 
 
 def _file_insights(rep):

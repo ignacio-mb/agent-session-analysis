@@ -755,6 +755,10 @@ function runDetail(run, steps) {
       (run.recommended_rate !== null && run.recommended_rate !== undefined ? ` · recommended option picked ${F.pct(run.recommended_rate)}` : "") +
       (run.typed_answers ? ` · ${run.typed_answers} typed` : "")],
     ["Created", run.objects_created ? `${run.objects_created} objects` : "nothing reported"],
+    ["Files", `${(run.files_written || []).length} written, ${F.num(run.files_created || 0)} created` +
+      (run.support_files !== null && run.support_files !== undefined ? ` · ${run.support_files} the skill does not name` +
+        (run.support_scripts ? ` (${run.support_scripts} scripts, run ${run.support_script_runs}×)` : "") : "") +
+      (run.inline_scripts ? ` · ${run.inline_scripts} programs run inline` : "")],
   ]);
   const checkList = checks.length ? h("div", { class: "checks" }, checks.map((c) =>
     h("div", { class: "check-row" }, statusMark(c.status), h("span", null, " " + (c.desc || c.id)), c.detail ? h("span", { class: "muted" }, " — " + c.detail) : null)))
@@ -769,6 +773,13 @@ function runDetail(run, steps) {
   const objects = (run.objects || []).length ? dataTable({ search: false, rows: run.objects, columns: [
     { key: "t", label: "When", fmt: F.time }, { key: "verb", label: "Verb" }, { key: "type", label: "Type" }, { key: "id", label: "Id" },
     { key: "name", label: "Name", cls: "wrap" }] }) : h("div", { class: "empty" }, "No objects reported by CLI output.");
+  const workFiles = (run.working_files || []).length ? dataTable({ search: false, limit: 60, rows: run.working_files, columns: [
+    { key: "path", label: "File", cls: "code" }, { key: "kind", label: "Kind" }, { key: "location", label: "Where" },
+    { key: "support", label: "Named by the skill", fmt: (v, r) => r.expected_label || (v === null ? "?" : r.created ? "no" : "—") },
+    { key: "via", label: "Written by" }, { key: "writes", label: "Writes", num: true }, { key: "runs", label: "Ran", num: true },
+    { key: "drives", label: "Drives", cls: "wrap", fmt: (v, r) => [...(v || []), ...(r.api || [])].join(", ") || "—" },
+    { key: "used_by", label: "Read by", cls: "wrap", fmt: (v) => (v || []).join(", ") || "—" }] })
+    : h("div", { class: "empty" }, "No files written.");
   const errors = (run.errors || []).length ? dataTable({ search: false, rows: run.errors, columns: [
     { key: "t", label: "When", fmt: F.time }, { key: "tool", label: "Tool" }, { key: "category", label: "Category" },
     { key: "input", label: "Input", cls: "code" }, { key: "message", label: "Message", cls: "code" }] }) : h("div", { class: "empty" }, "No errors.");
@@ -782,6 +793,7 @@ function runDetail(run, steps) {
     iv && (iv.questions || []).length ? card({ title: "Interview", sub: `Every question the run put to you, by the skill's ${iv.taxonomy === "skill" ? "own" : "generic"} topics · ● recommended ○ another option ◆ typed □ no preference ✕ declined/unanswered ▲ prose`, span: 12 },
       interviewFacts(iv), questionTable(iv.questions, { limit: 60 })) : card({ title: "Interview", span: 6 }, h("div", { class: "empty" }, "No questions asked.")),
     card({ title: "Objects the CLI reported", span: 6 }, objects),
+    card({ title: "Working files", sub: "Every file the run wrote. A file it created that the skill does not name (checks/<skill>.json \"files\") is the agent's own: made to do what the skill did not", span: 12 }, workFiles),
     card({ title: "Errors", span: 12 }, errors),
     actionsList ? card({ title: "What it did", sub: "Actions in order (repeats collapsed) — the sequence the compare view diffs", span: 12 }, actionsList) : null,
     card({ title: "Trace", sub: "Every prompt, Claude API request and tool call in the run — click a row for its input and output", span: 12 }, traceView(steps)));

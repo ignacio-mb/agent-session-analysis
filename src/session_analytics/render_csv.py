@@ -44,6 +44,9 @@ TABLES = {
                                         "coverage", "seen", "total", "lines", "sections", "first_dt", "accesses",
                                         "reads", "searches", "rereads", "via", "named_by", "found_by", "version_check",
                                         "tokens"]),
+    "working_files.csv": ("working_files", ["run_id", "skill", "version", "path", "kind", "location", "expected",
+                                            "created", "support", "via", "first_t", "dt", "turn", "scope", "writes",
+                                            "edits", "lines", "runs", "used_by", "drives", "api"]),
 }
 
 
@@ -66,6 +69,8 @@ def _rows(a, key):
         return (a.get("interview") or {}).get("questions") or []
     if key == "skill_files":
         return skill_file_rows(a.get("skill_runs") or [])
+    if key == "working_files":
+        return working_file_rows(a.get("skill_runs") or [])
     return []
 
 
@@ -77,6 +82,13 @@ def skill_file_rows(runs):
             rows.append(dict(f, run_id=r["run_id"], skill=r["skill"], version_check=f.get("version"),
                              version=(r.get("version") or {}).get("commit") or (r.get("version") or {}).get("label")))
     return rows
+
+
+def working_file_rows(runs):
+    """One row per skill run and file it wrote (workfiles.Ledger.run())."""
+    return [dict(w, run_id=r["run_id"], skill=r["skill"],
+                 version=(r.get("version") or {}).get("commit") or (r.get("version") or {}).get("label"))
+            for r in runs for w in r.get("working_files") or ()]
 
 
 def _flat(v):

@@ -42,6 +42,7 @@ function kpis() {
     ["CLI calls", F.num(t.cli_calls), "subcommands like `mb card create`"],
     ["Questions asked", F.num(t.question_calls), "AskUserQuestion calls"],
     ["Objects created", F.num(t.objects_created), "reported by CLI output"],
+    ["Support files", t.support_files === null || t.support_files === undefined ? "—" : F.num(t.support_files), "created, not named by the skill"],
   ];
   return h("div", { class: "kpis" }, tiles.map(([l, v, s]) =>
     h("div", { class: "kpi" }, h("div", { class: "label" }, l), h("div", { class: "value" }, v), h("div", { class: "sub" }, s))));
@@ -74,7 +75,8 @@ function versionsTab() {
         { key: "label", label: "Version", cls: "wrap" }, { key: "date", label: "Committed", fmt: F.datetime }, { key: "runs", label: "Runs", num: true },
         { key: "cost_usd", label: "Cost", num: true, fmt: F.usd }, { key: "tool_calls", label: "Tools", num: true }, { key: "tool_errors", label: "Errors", num: true },
         { key: "cli_calls", label: "CLI", num: true }, { key: "help_lookups", label: "Help", num: true }, { key: "question_calls", label: "Asked", num: true },
-        { key: "objects_created", label: "Created", num: true }, { key: "turn_count", label: "Turns", num: true },
+        { key: "objects_created", label: "Created", num: true }, { key: "support_files", label: "Support files", num: true },
+        { key: "inline_scripts", label: "Inline", num: true }, { key: "turn_count", label: "Turns", num: true },
         { key: "duration_ms", label: "Duration", num: true, fmt: F.dur }, { key: "checks_failed", label: "Checks ✗", num: true },
         { key: "status", label: "Match" }] })),
     ...charts, ...changes);
@@ -211,7 +213,8 @@ function runsTab() {
       { key: "args", label: "Asked", cls: "wrap", fmt: (v, r) => v || r.prompt || "—" },
       { key: "turn_count", label: "Turns", num: true }, { key: "tool_calls", label: "Tools", num: true }, { key: "tool_errors", label: "Errors", num: true },
       { key: "cli_calls", label: "CLI", num: true }, { key: "help_lookups", label: "Help", num: true }, { key: "question_calls", label: "Asked ?", num: true },
-      { key: "objects_created", label: "Created", num: true }, { key: "docs_read", label: "Files read", num: true, fmt: (n, r) => `${F.num(n)}/${F.num(r.docs_total)}` },
+      { key: "objects_created", label: "Created", num: true }, { key: "support_files", label: "Support files", num: true },
+      { key: "docs_read", label: "Files read", num: true, fmt: (n, r) => `${F.num(n)}/${F.num(r.docs_total)}` },
       { key: "cli_docs_read", label: "CLI docs", num: true }, { key: "doc_tokens", label: "≈ Doc tokens", num: true, fmt: F.tok },
       { key: "cost_usd", label: "Cost", num: true, fmt: F.usd },
       { key: "duration_ms", label: "Duration", num: true, fmt: F.dur }, { key: "checks_failed", label: "Checks ✗", num: true }] });
@@ -371,7 +374,8 @@ function compareTab() {
     const a = fullRun(selA.value), b = fullRun(selB.value);
     const rows = [["Version", a.commit || "?", b.commit || "?"], ["Asked", F.short(a.args || a.prompt, 80), F.short(b.args || b.prompt, 80)],
       ...[["cost_usd", F.usd], ["requests", F.num], ["tool_calls", F.num], ["tool_errors", F.num], ["cli_calls", F.num], ["help_lookups", F.num],
-        ["retries_after_error", F.num], ["question_calls", F.num], ["objects_created", F.num], ["turn_count", F.num], ["duration_ms", F.dur],
+        ["retries_after_error", F.num], ["question_calls", F.num], ["objects_created", F.num], ["support_files", F.num],
+        ["inline_scripts", F.num], ["turn_count", F.num], ["duration_ms", F.dur],
         ["context_peak", F.tok], ["checks_failed", F.num]].map(([k, f]) => [k.replace(/_/g, " "), f(a[k]), f(b[k])])];
     const checkRows = (a.checks || []).map((c) => [c.id, c.status, ((b.checks || []).find((x) => x.id === c.id) || {}).status || "—"]).filter((r) => r[1] !== r[2]);
     const onlyA = (a.resources_read || []).filter((p) => !(b.resources_read || []).includes(p));

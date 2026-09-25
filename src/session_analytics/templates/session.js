@@ -748,6 +748,7 @@ function buildSkillRuns() {
     { key: "start_ms", label: "Started", fmt: F.time }, { key: "turn_count", label: "Turns", num: true },
     { key: "tool_calls", label: "Tools", num: true }, { key: "tool_errors", label: "Errors", num: true }, { key: "cli_calls", label: "CLI", num: true },
     { key: "question_calls", label: "Asked", num: true }, { key: "objects_created", label: "Created", num: true },
+    { key: "support_files", label: "Support files", num: true },
     { key: "cost_usd", label: "Cost", num: true, fmt: F.usd }, { key: "checks_failed", label: "Checks ✗", num: true },
     { key: "end_reason", label: "Ended" }] });
   setTimeout(() => open(runs[0].run_id), 0);

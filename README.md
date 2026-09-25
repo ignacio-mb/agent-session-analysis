@@ -75,7 +75,7 @@ Each export writes a folder, by default `~/claude-session-exports/<project>/<sta
 | `summary.md` | The short version the skill reads back to you. |
 | `report.md` | Every section as Markdown tables. |
 | `session.json` | The full analytics document (schema `convo-analysis/v1`). |
-| `csv/` | `turns`, `requests`, `tool_calls`, `skills`, `files`, `subagents`, `errors` — one row per thing. |
+| `csv/` | `turns`, `requests`, `tool_calls`, `skills`, `files`, `subagents`, `errors`, `questions`, `skill_files`, `working_files` — one row per thing. |
 
 ### Skills — what was invoked, and how
 
@@ -155,15 +155,25 @@ session-analytics compare b3734789:1 d085f38b:1    # two runs side by side, with
   cross-cutting), by rules in `semantics/questions.json` tried on the question's header, then its text, then a
   fallback from the skill's own topic. So an interview can be read as coverage: which layers it asks about,
   which it never does, and where its recommendations and options work.
-- **What a run did.** Every CLI call by subcommand (`mb transform create`), `--help` lookups, retries after a
-  failure; the objects the CLI reported creating; cost, context and the final hand-back; and a step-by-step
-  trace of every Claude API request and tool call.
+- **What a run did.** Every CLI call by subcommand (`mb transform create`, also inside `ID=$(…)`), `--help`
+  lookups, retries after a failure; the objects the CLI reported creating; cost, context and the final hand-back;
+  and a step-by-step trace of every Claude API request and tool call.
+- **What the agent made on its own.** Every file a run wrote — with Write or Edit, or through the shell (a heredoc
+  into a file, a redirect, `tee`, `cp`, `curl -o`) — against the working files the skill asks for (`"files"` in
+  `checks/<skill>.json`; RDE's: STATE.md, `probe.sh`, a model's `.sql` and `.desc`, the JSON bodies `mb` reads with
+  `--file`, CSV extracts, all in `./.scratch`). A file the run created that the skill does not name, and that is not
+  Claude Code's memory, is a **support file**: made to do what the skill did not. For each, where it is (project,
+  temp directory, memory), what kind (script, data, JSON…), how often the run ran it, what read it, and for a script
+  what it drives: the CLI commands in its text (`mb dashboard update`) and the HTTP API paths it calls. Programs
+  handed to an interpreter without a file (`python3 - <<'PY'`) are counted too. A skill that keeps needing the
+  same script is missing a step, or the CLI a command.
 - **Checks.** `checks/<skill>.json` declares what the skill should do, and every run is checked against it.
   `checks/rde.json` encodes RDE's own rules: state first, `mb --version` and `mb auth list` before work,
   a playbook before building, ask before creating anything, `--json`/`--profile` on every `mb` call, bodies
   from `.scratch` files, update rather than delete and recreate, read one section of a bundled `mb` skill
-  rather than all of it. Check types: `first`, `before`, `count`, `count_before`, `never`, `every`; matchers
-  cover commands, tools, and the documents read (`"file": "^mb:", "how": "^full$"`) — see
+  rather than all of it, working files in `./.scratch` and never a system temp directory. Check types: `first`,
+  `before`, `count`, `count_before`, `never`, `every`; matchers cover commands, tools, the documents read
+  (`"file": "^mb:", "how": "^full$"`) and the files a call created (`"location": "^temp$"`) — see
   `src/session_analytics/checks.py`.
 
 The skill report has per-version strip plots (one dot per run), check pass rates by version, a run × check
@@ -172,7 +182,7 @@ answers people gave, where the options fell short, an interview map per run), dr
 **Skill files** tab (files × versions, how each file was read, which
 changes the runs saw, files never shown, paths tried that do not exist), CLI calls and grouped failures, and a
 compare view. Single-session exports gain a **Skill runs** tab (with each run's files, drawn as strips of the
-lines shown), an **Interview** tab and a **Trace** tab.
+lines shown, and the files it wrote), an **Interview** tab and a **Trace** tab.
 
 ### Several sessions
 
@@ -196,7 +206,8 @@ python3 -m session_analytics warehouse --up --load --since 90d
 Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432`, database
 `claude_sessions`, user `convo`, no password) as plain tables — `sessions`, `turns`, `api_requests`,
 `tool_calls`, `cli_calls` (every program in every shell command, by signature), `skill_invocations`,
-`skill_runs`, `skill_run_checks`, `skill_run_files`, `questions`, `question_options`, `subagents`,
+`skill_runs`, `skill_run_checks`, `skill_run_files`, `skill_run_working_files` (every file a run wrote, and
+whether the skill names it), `questions`, `question_options`, `subagents`,
 `files_touched`, `tool_errors`, plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
 that answer the usual questions: `v_skill_versions` (each version of a skill compared), `v_check_rates`,
 `v_question_topics`, `v_question_semantics` (questions by data-engineering topic × layer, per version),

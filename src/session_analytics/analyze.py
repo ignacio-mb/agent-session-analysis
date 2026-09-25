@@ -147,6 +147,28 @@ def split_segments(cmd):
     return [x.strip() for x in segs if x.strip()]
 
 
+# A segment that runs its command inside a substitution: `ID=$(mb card create …`, `export D="$(mb skills path x`,
+# `for id in $(mb card list …`, `$(cat f)`. split_segments leaves the substitution's `)` on its last segment.
+SUBSTITUTION_RE = re.compile(r"""^\s*(?:(?:export|local|declare|readonly)\s+|for\s+\w+\s+in\s+)?(?:[A-Za-z_]\w*=)?"""
+                             r"""(["']?)(\$\(|`)\s*""")
+
+
+def unwrap_substitution(seg):
+    """The command a segment runs when it is an assignment of (or a loop over) a command substitution — `mb card create
+    …` for `ID=$(mb card create …` — else the segment as it is."""
+    m = SUBSTITUTION_RE.match(seg)
+    if not m:
+        return seg
+    inner = seg[m.end():].rstrip()
+    if m.group(1) and inner.endswith(m.group(1)):
+        inner = inner[:-1].rstrip()
+    if m.group(2) == "`":
+        inner = inner[:-1].rstrip() if inner.endswith("`") else inner
+    elif inner.endswith(")") and inner.count(")") > inner.count("("):
+        inner = inner[:-1].rstrip()
+    return inner or seg
+
+
 def _shell_tokens(seg):
     try:
         return shlex.split(seg, posix=True)
@@ -167,7 +189,7 @@ def programs_of(cmd):
 def _programs(cmd):
     out = []
     for seg in split_segments(strip_heredocs(cmd or "")):
-        toks = _shell_tokens(seg)
+        toks = _shell_tokens(unwrap_substitution(seg))
         if toks and toks[0] in ("for", "select", "case"):
             continue  # loop/case headers name variables and patterns, not programs
         i = 0
@@ -223,6 +245,7 @@ GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
 def _cli_cached(cmd):
     out = []
     for seg in split_segments(strip_heredocs(cmd)):
+        seg = unwrap_substitution(seg)
         toks = _shell_tokens(seg)
         if toks and toks[0] in ("for", "select", "case"):
             continue
