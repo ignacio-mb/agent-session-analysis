@@ -334,6 +334,10 @@ def _print_clickhouse(ch):
         sp = ch["scope_pending"]
         print(f"CLICKHOUSE_SKILLS changed from {sp['from']} to {sp['to']}: {sp['would_take_out']} shared session(s) "
               f"the new scope does not cover stay until you run `warehouse --clickhouse --rescope`.")
+    if ch.get("newer"):
+        print(f"Left {len(ch['newer'])} shared view(s) and taxonomy table(s) as convo-analysis "
+              f"{', '.join(sorted(set(ch['newer'].values())))} wrote them, newer than this machine's {__version__}: "
+              f"update convo-analysis here (git pull, or update the session-export plugin).")
 
 
 ACTIVE_MS = 5 * 60 * 1000  # a transcript written to within this is a session still going: the catch-up leaves it

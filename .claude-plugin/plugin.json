@@ -1,6 +1,6 @@
 {
   "name": "session-export",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Export and analyze Claude Code sessions: skills, tools, tokens, cost, subagents, files, timing.",
   "author": {
     "name": "ignacio",
