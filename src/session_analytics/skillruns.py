@@ -8,8 +8,9 @@ Every metric keeps both views: `attributed` (Claude Code's attribution) and the 
 
 Each run records the version of the skill that ran (see versions.py), every skill document it read and how
 much of each (see skillfiles.py) against what the playbooks say to read first, every CLI call by signature
-(`mb transform create`), help lookups, questions asked and answered, objects the CLI reported creating,
-cost and context, the final hand-back, and the checks declared for the skill (see checks.py).
+(`mb transform create`), help lookups, questions asked and answered, objects the CLI reported creating, the files
+it wrote and which of them the skill never asked for (see workfiles.py), cost and context, the final hand-back, and
+the checks declared for the skill (see checks.py).
 """
 
 from __future__ import annotations
@@ -32,7 +33,6 @@ MUTATING = {"create", "update", "delete", "delete-table", "archive", "run", "pub
 PROMPT_KEY_WORDS = 8
 URL_RE = re.compile(r"https?://\S+|\blocalhost:\d+\S*", re.I)
 ATTACHMENT_RE = re.compile(r'@"[^"]*"|@\S+')
-HOME = os.path.expanduser("~")
 
 
 def skill_key(name):
@@ -155,7 +155,19 @@ def taxonomy_for(skill, check_files=(), cache=None):
     return cache[skill]
 
 
+def working_files_spec(skill, check_files=(), cache=None):
+    """The working files a skill declares in its checks file ("files"), or None."""
+    cache = {} if cache is None else cache
+    if skill not in cache:
+        try:
+            cache[skill] = checks_mod.load_files(check_files, skill=skill)
+        except (OSError, ValueError, re.error):
+            cache[skill] = None
+    return cache[skill]
+
+
 def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=None, raw_qs=None):
+    from . import workfiles  # imported here: it reads the shell parsing in analyze, which imports this module
     from .analyze import categorize_error, cli_calls, summarize_input, usage_totals
 
     s = ctx.s
@@ -167,7 +179,8 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
     for inv in s.skills:
         if inv.base_dir:
             skill_dirs[skill_key(inv.canonical or inv.name)].add(os.path.expanduser(inv.base_dir))
-    source_cache, checks_cache = {}, {}
+    source_cache, checks_cache, files_specs = {}, {}, {}
+    ledger = None  # every file write in the session: read once, when the session has a run
     failed = [i for i in s.skills if i.success is False]
     turns_by_index = {t.index: t for t in s.turns}
     step_ts = [(st["t"], st.get("scope"), st.get("agent"), st["i"]) for st in trace["steps"]]
@@ -255,8 +268,8 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
                 o["t"] = c.ts_call
                 o["name"] = ctx.text(str(o["name"]), 120)
                 objects.append(o)
-        written = list(dict.fromkeys(_rel(c.facts.get("path") or c.input.get("file_path"), ctx.cwd)
-                                     for c in main_cl if c.name in ("Write", "Edit", "MultiEdit") and c.status == "ok"))
+        ledger = ledger or workfiles.Ledger(calls, ctx.cwd)
+        work, work_totals, created_by = ledger.run(cl, start, working_files_spec(key, check_files, files_specs), ctx.cwd)
 
         turn_ids = sorted({r.turn for r in main_rq if r.turn is not None} | ({inv.turn} if inv.turn is not None else set()))
         turn_rows = []
@@ -280,6 +293,7 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
                              for a in by_call.get(c.id, ())],
                    "topics": [q["topic"] for q in q_by_call.get(c.id, ())],
                    "flags": [f for q in q_by_call.get(c.id, ()) for f in q["flags"]],
+                   "created": created_by.get(c.id, []),
                    "input": summarize_input(c), "status": c.status} for c in main_cl]
         if key not in checks_cache:
             try:
@@ -355,7 +369,7 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
             "first_question_dt": next((q["dt"] for q in run_qs if q["kind"] == "ask"), None),
             "question_calls": sum(1 for c in main_cl if c.name == "AskUserQuestion"),
             "objects": objects, "objects_created": sum(1 for o in objects if o["verb"] == "create"),
-            "files_written": written,
+            "files_written": [w["path"] for w in work], "working_files": work, **work_totals,
             "final_message": ctx.text(last_text.text_preview, 1200) if last_text else None,
             "last_stop_reason": main_rq[-1].stop_reason if main_rq else None,
             "checks": check_rows,
@@ -380,11 +394,3 @@ def _prompt_of(turn, inv):
     if turn.trigger == "command":
         return f"{turn.command or '/' + inv.name} {turn.command_args or ''}".strip()
     return turn.text or ""
-
-
-def _rel(path, cwd):
-    if not path:
-        return path
-    if cwd and path.startswith(cwd.rstrip("/") + "/"):
-        return path[len(cwd.rstrip("/")) + 1:]
-    return "~" + path[len(HOME):] if path.startswith(HOME + "/") else path

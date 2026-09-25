@@ -5,7 +5,8 @@
 
 One dashboard per skill, for developing it: every card is that skill's runs, compared version by version and prompt
 by prompt, since the way to judge a change to a skill is to run the same prompt on a fresh Metabase with each version.
-Tabs: Skill versions, Interview, Question topics, Skill files & CLI, Overview, Session (one session in depth);
+Tabs: Skill versions, Interview, Question topics, Skill files & CLI, Working files (what the agent made that the skill
+does not name), Overview, Session (one session in depth);
 filters: Person (the ClickHouse warehouse's: whose sessions), Skill version, Prompt (the run's `prompt_key`: the
 prompt's opening words, shared by repeats of one prompt), Session, Data-engineering topic and Layer.
 
@@ -37,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from session_analytics import checks as checks_mod  # noqa: E402 - the checks the Checks, run by run grid shows
-from session_analytics import semantics  # noqa: E402 - the topics and layers the questions are mapped to
+from session_analytics import semantics, workfiles  # noqa: E402 - the questions' topics and layers; kinds of file
 
 PROFILE = None
 DB = None
@@ -102,7 +103,10 @@ PER_RUN = [
     ("Questions asked (AskUserQuestion)", "questions_asked"), ("Question rounds", "question_rounds"),
     ("Questions asked in prose", "prose_questions"), ("Typed answers", "typed_answers"),
     ("Skill docs read", "docs_read"), ("Doc tokens", "doc_tokens"), ("Peak context tokens", "context_peak"),
-    ("Objects created", "objects_created"), ("Checks passed", "checks_passed"), ("Checks failed", "checks_failed"),
+    ("Objects created", "objects_created"), ("Files the run created", "files_created"),
+    ("Support files: created, not named by the skill", "support_files"),
+    ("Programs run inline (python3 - <<PY, -c)", "inline_scripts"),
+    ("Checks passed", "checks_passed"), ("Checks failed", "checks_failed"),
 ]
 PER_RUN_SQL = (f"WITH s AS (SELECT r.* FROM skill_runs r WHERE r.skill = {SKILL} {RF}),\nm AS (\n  "
                + "\n  UNION ALL ".join(f"SELECT {i} AS ord, '{label}' AS metric, ({expr})::numeric AS v FROM s" if i == 1
@@ -139,6 +143,18 @@ STEPS_SQL = ("WITH steps AS (SELECT c.run_id, c.session_id,\n       "
              f"WHERE r.skill = {SKILL} {run_filters(version=False)} GROUP BY r.version {BY_VERSION}")
 
 USD = {"number_style": "currency", "currency": "USD"}
+
+# The files a run wrote (skill_run_working_files), with their run; and the kinds of file, in the charts' order.
+WF_JOIN = "JOIN skill_runs r ON r.run_id = w.run_id AND r.session_id = w.session_id"
+WF_KINDS = [*workfiles.KINDS, "other"]
+
+
+def kind_rows(dialect="postgres"):
+    """The kinds of file as an inline table `k` (kind, ord), so a version with none of a kind still charts as 0."""
+    rows = ", ".join(f"('{k}', {i})" for i, k in enumerate(WF_KINDS))
+    if dialect == "clickhouse":
+        return f"values('kind String, ord Int64', {rows}) AS k"
+    return f"(VALUES {rows}) AS k (kind, ord)"
 
 
 def pct(*cols, decimals=0):
@@ -180,6 +196,8 @@ CARDS = [
      f"round(avg(r.questions_asked), 1) AS avg_questions_asked, round(avg(r.prose_questions), 1) AS avg_prose_questions, "
      f"round(sum(r.recommended_taken)::numeric / nullif(sum(r.recommended_offered), 0), 3) AS recommended_rate, "
      f"percentile_cont(0.5) WITHIN GROUP (ORDER BY r.objects_created) AS median_objects_created, "
+     f"percentile_cont(0.5) WITHIN GROUP (ORDER BY r.support_files) AS median_support_files, "
+     f"percentile_cont(0.5) WITHIN GROUP (ORDER BY r.inline_scripts) AS median_inline_programs, "
      f"round(sum(r.checks_passed)::numeric / nullif(sum(r.checks_passed + r.checks_failed), 0), 3) AS checks_pass_rate "
      f"FROM skill_runs r WHERE r.skill = {SKILL} {RF} GROUP BY 1, r.version "
      f"ORDER BY 1, min(r.version_date) NULLS LAST, r.version",
@@ -299,6 +317,65 @@ CARDS = [
      f"SELECT t.at, r.version, t.run_id, t.tool, t.program, t.error_category, t.input, left(t.error, 300) AS error "
      f"FROM tool_calls t JOIN skill_runs r USING (run_id, session_id) WHERE r.skill = {SKILL} AND t.status = 'error' "
      f"{RF} ORDER BY t.at DESC, t.tool_use_id LIMIT 200", {}, RUN_FILTERS, (12, 12, 12, 12)),
+    # ---------------------------------------------------------------- Working files: what the agent made on its own
+    ("wf_created", "Working files", "Files the runs created", "scalar",
+     f"SELECT sum(r.files_created) AS files_created FROM skill_runs r WHERE r.skill = {SKILL} {RF}",
+     {"scalar.field": "files_created"}, RUN_FILTERS, (0, 0, 6, 3)),
+    ("wf_support", "Working files", "Support files: created, not named by the skill", "scalar",
+     f"SELECT sum(r.support_files) AS support_files FROM skill_runs r WHERE r.skill = {SKILL} {RF}",
+     {"scalar.field": "support_files"}, RUN_FILTERS, (6, 0, 6, 3)),
+    ("wf_share", "Working files", "Runs that made support files", "scalar",
+     f"SELECT count(*) FILTER (WHERE r.support_files > 0)::numeric / nullif(count(r.support_files), 0) AS share_of_runs "
+     f"FROM skill_runs r WHERE r.skill = {SKILL} {RF}",
+     {"scalar.field": "share_of_runs", "column_settings": pct("share_of_runs")}, RUN_FILTERS, (12, 0, 6, 3)),
+    ("wf_inline", "Working files", "Programs run inline (python3 - <<PY, -c)", "scalar",
+     f"SELECT sum(r.inline_scripts) AS inline_programs FROM skill_runs r WHERE r.skill = {SKILL} {RF}",
+     {"scalar.field": "inline_programs"}, RUN_FILTERS, (18, 0, 6, 3)),
+    ("wf_versions", "Working files", "Support files per run, by version and kind", "bar",
+     f"WITH runs AS (SELECT r.version, min(r.version_date) AS version_date, count(*) AS runs FROM skill_runs r "
+     f"WHERE r.skill = {SKILL} {run_filters(version=False)} GROUP BY r.version),\n"
+     f"files AS (SELECT r.version, w.kind, count(*) AS files FROM skill_run_working_files w {WF_JOIN} "
+     f"WHERE r.skill = {SKILL} AND w.support {run_filters(version=False)} GROUP BY r.version, w.kind)\n"
+     f"SELECT u.version, k.kind, round(coalesce(f.files, 0)::numeric / u.runs, 2) AS support_files_per_run\n"
+     f"FROM runs u CROSS JOIN {kind_rows()} LEFT JOIN files f ON f.version = u.version AND f.kind = k.kind\n"
+     f"ORDER BY u.version_date NULLS LAST, u.version, k.ord",
+     {"graph.dimensions": ["version", "kind"], "graph.metrics": ["support_files_per_run"],
+      "stackable.stack_type": "stacked"}, VERSION_CHARTS, (0, 3, 12, 8)),
+    ("wf_code", "Working files", "Code the runs wrote themselves, per run, by version", "bar",
+     f"SELECT r.version, round(avg(r.support_scripts), 1) AS scripts_in_files, "
+     f"round(avg(r.inline_scripts), 1) AS inline_programs FROM skill_runs r "
+     f"WHERE r.skill = {SKILL} {run_filters(version=False)} GROUP BY r.version {BY_VERSION}",
+     {"graph.dimensions": ["version"], "graph.metrics": ["scripts_in_files", "inline_programs"], "graph.show_values": True,
+      "series_settings": {"scripts_in_files": {"title": "scripts saved to files"},
+                          "inline_programs": {"title": "programs run inline"}}}, VERSION_CHARTS, (12, 3, 12, 8)),
+    ("wf_drives", "Working files", "What the runs' own scripts drive: CLI commands and API paths", "table",
+     f"WITH s AS (SELECT w.run_id, w.name, w.runs, r.version, coalesce(nullif(concat_ws(', ', w.drives, w.api), ''), "
+     f"'(no CLI or API call found)') AS targets FROM skill_run_working_files w {WF_JOIN} "
+     f"WHERE r.skill = {SKILL} AND w.support AND w.kind = 'script' {RF})\n"
+     f"SELECT trim(t) AS drives, count(*) AS scripts, count(DISTINCT s.run_id) AS runs, sum(s.runs) AS times_run, "
+     f"string_agg(DISTINCT s.version COLLATE \"C\", ' · ' ORDER BY s.version COLLATE \"C\") AS versions, "
+     f"string_agg(DISTINCT s.name COLLATE \"C\", ' · ' ORDER BY s.name COLLATE \"C\") AS scripts_named "
+     f"FROM s, unnest(string_to_array(s.targets, ', ')) AS t GROUP BY trim(t) ORDER BY scripts DESC, drives LIMIT 50",
+     {}, RUN_FILTERS, (0, 11, 12, 9)),
+    ("wf_named", "Working files", "The working files the skill names: runs that wrote each, by version", "table",
+     f"WITH picked AS (SELECT r.run_id, r.session_id, r.version, r.version_date FROM skill_runs r "
+     f"WHERE r.skill = {SKILL} {RF}),\n"
+     f"nv AS (SELECT version, min(version_date) AS version_date, count(*) AS runs FROM picked GROUP BY version),\n"
+     f"named AS (SELECT w.expected, max(w.expected_label) AS label FROM skill_run_working_files w "
+     f"WHERE w.skill = {SKILL} AND w.expected IS NOT NULL GROUP BY w.expected),\n"
+     f"wrote AS (SELECT w.expected, w.version, count(DISTINCT w.run_id) AS runs, count(*) AS files "
+     f"FROM skill_run_working_files w JOIN picked p ON p.run_id = w.run_id AND p.session_id = w.session_id "
+     f"WHERE w.expected IS NOT NULL GROUP BY w.expected, w.version)\n"
+     f"SELECT n.label AS working_file, v.version, coalesce(x.runs, 0) AS runs_wrote_it, v.runs, "
+     f"round(coalesce(x.runs, 0)::numeric / v.runs, 3) AS share_of_runs, coalesce(x.files, 0) AS files "
+     f"FROM named n CROSS JOIN nv v LEFT JOIN wrote x ON x.expected = n.expected AND x.version = v.version "
+     f"ORDER BY n.label, v.version_date NULLS LAST, v.version",
+     {"column_settings": pct("share_of_runs")}, RUN_FILTERS, (12, 11, 12, 9)),
+    ("wf_all", "Working files", "Every file the runs wrote, support files first", "table",
+     f"SELECT w.first_at, r.version, w.run_id, w.path, w.kind, w.location, w.support, w.created, "
+     f"w.expected_label AS named_by_the_skill, w.via, w.writes, w.edits, w.lines, w.runs AS times_run, w.drives, w.api, "
+     f"w.used_by FROM skill_run_working_files w {WF_JOIN} WHERE r.skill = {SKILL} {RF} "
+     f"ORDER BY w.support DESC NULLS LAST, w.first_at DESC, w.path LIMIT 2000", {}, RUN_FILTERS, (0, 20, 24, 12)),
     # ---------------------------------------------------------------- Overview: the skill's runs
     ("runs", "Overview", "Runs", "scalar",
      f"SELECT count(*) AS runs FROM skill_runs r WHERE r.skill = {SKILL} {RF}",
@@ -352,6 +429,7 @@ CARDS = [
      f"coalesce(substring(r.prompt from 'https?://([^/[:space:]]+)'), substring(r.prompt from '(localhost:[0-9]+)')) "
      f"AS instance, r.mode, round(r.active_ms / 60000.0, 1) AS active_minutes, r.cost_usd, r.tool_calls, r.tool_errors, "
      f"r.help_lookups, r.questions_asked, r.prose_questions, r.checks_passed, r.checks_failed, r.objects_created, "
+     f"r.files_created, r.support_files, r.inline_scripts, "
      f"r.end_reason, r.run_id, {session_label('s')} AS session FROM skill_runs r "
      f"LEFT JOIN sessions s ON s.session_id = r.session_id WHERE r.skill = {SKILL} {RF} ORDER BY r.start_at DESC",
      {"column_settings": {'["name","cost_usd"]': USD}}, RUN_FILTERS, (0, 40, 24, 12)),
@@ -401,6 +479,10 @@ CARDS = [
      f"SELECT t.at, t.turn, t.scope, t.tool, t.program, t.status, round(t.duration_ms / 1000.0, 1) AS seconds, t.run_id, "
      f"t.input, left(t.error, 300) AS error FROM tool_calls t WHERE {in_sessions('t.session_id')} "
      f"ORDER BY t.at, t.tool_use_id LIMIT 2000", {}, SESSION_FILTERS, (0, 45, 24, 12)),
+    ("sfiles", "Session", "Files the session's skill runs wrote", "table",
+     f"SELECT w.first_at, w.run_id, w.skill, w.path, w.kind, w.location, w.support, w.via, w.writes, w.edits, w.lines, "
+     f"w.runs AS times_run, w.drives, w.used_by FROM skill_run_working_files w WHERE {in_sessions('w.session_id')} "
+     f"ORDER BY w.first_at, w.path LIMIT 1000", {}, SESSION_FILTERS, (0, 57, 24, 9)),
 ]
 # The cards whose columns list the filters' values: Person, Skill version and Prompt from Every run, Session from the
 # Session tab's list.
@@ -521,13 +603,14 @@ METRICS = [
 ]
 TOPIC_TAB = "Question topics"
 SESSION_TAB = "Session"
-ALL_TABS = ["Skill versions", "Interview", TOPIC_TAB, "Skill files & CLI", "Overview", SESSION_TAB]
+ALL_TABS = ["Skill versions", "Interview", TOPIC_TAB, "Skill files & CLI", "Working files", "Overview", SESSION_TAB]
 
 
 def description(skill):
     return (f"How each version of the {skill} skill behaves, prompt by prompt: cost, steps taken, checks, the questions "
-            f"it asks and what they are about, the files it reads, the CLI calls that failed. Pick a Prompt to compare "
-            f"versions on the same task. Source: the convo-analysis session warehouse.")
+            f"it asks and what they are about, the files it reads, the files and code the agent made that the skill "
+            f"does not name, the CLI calls that failed. Pick a Prompt to compare versions on the same task. Source: the "
+            f"convo-analysis session warehouse.")
 
 
 def crosstab_sql(dialect="postgres", db=None):
@@ -647,6 +730,7 @@ def clickhouse_sql(db="sessions"):
     offered = OFFERED
     median = lambda x: f"quantileExactInclusive(0.5)({x})"  # noqa: E731
     dec = lambda x, n: f"round(accurateCastOrNull({x}, 'Decimal64(9)'), {n})"  # noqa: E731 - rounds as Postgres does
+    distinct = lambda x: f"nullIf(arrayStringConcat(arraySort(groupUniqArray({x})), ' · '), '')"  # noqa: E731
     steps = ("WITH steps AS (SELECT c.run_id AS run_id, c.session_id AS session_id,\n       "
              + ",\n       ".join(f"max(c.signature IN ({_in(sigs)})) AS {col}" for col, sigs in STEPS)
              + f"\n  FROM {d}.cli_calls AS c WHERE c.program = 'mb' AND NOT ifNull(c.is_help, false) "
@@ -686,6 +770,8 @@ def clickhouse_sql(db="sessions"):
                f"ON r.session_id = a.session_id AND r.source = a.source "
                f"WHERE a.at >= r.start_at AND a.at <= r.end_at AND r.skill = {SKILL}")
     per_run = ",\n  ".join(f"({i}, '{label}', toFloat64({expr}))" for i, (label, expr) in enumerate(PER_RUN, 1))
+    wf_join = f"INNER JOIN {d}.skill_runs AS r ON r.run_id = w.run_id AND r.session_id = w.session_id"
+    wf_runs = f"FROM {d}.skill_runs AS r WHERE r.skill = {SKILL} {rf}"
     return {
         # Skill versions
         "versions": f"SELECT ifNull(r.prompt_key, {NO_PROMPT}) AS prompt, r.version AS version, "
@@ -698,6 +784,8 @@ def clickhouse_sql(db="sessions"):
                     f"{dec('avg(r.prose_questions)', 1)} AS avg_prose_questions, "
                     f"{dec('sum(r.recommended_taken) / nullIf(sum(r.recommended_offered), 0)', 3)} AS recommended_rate, "
                     f"{median('r.objects_created')} AS median_objects_created, "
+                    f"{median('r.support_files')} AS median_support_files, "
+                    f"{median('r.inline_scripts')} AS median_inline_programs, "
                     f"{dec('sum(r.checks_passed) / nullIf(sum(r.checks_passed + r.checks_failed), 0)', 3)} "
                     f"AS checks_pass_rate FROM {d}.skill_runs AS r WHERE r.skill = {SKILL} {rf} "
                     f"GROUP BY ifNull(r.prompt_key, {NO_PROMPT}), r.version "
@@ -772,6 +860,55 @@ def clickhouse_sql(db="sessions"):
                       f"t.error_category AS error_category, t.input AS input, leftUTF8(t.error, 300) AS error "
                       f"FROM {d}.tool_calls AS t {runs_join.format(a='t')} "
                       f"WHERE r.skill = {SKILL} AND t.status = 'error' {rf} ORDER BY t.at DESC, t.tool_use_id LIMIT 200",
+        # Working files
+        "wf_created": f"SELECT sum(r.files_created) AS files_created {wf_runs}",
+        "wf_support": f"SELECT sum(r.support_files) AS support_files {wf_runs}",
+        "wf_share": f"SELECT countIf(r.support_files > 0) / nullIf(count(r.support_files), 0) AS share_of_runs {wf_runs}",
+        "wf_inline": f"SELECT sum(r.inline_scripts) AS inline_programs {wf_runs}",
+        "wf_versions": f"WITH runs AS (SELECT r.version AS version, min(r.version_date) AS version_date, count() AS runs "
+                       f"FROM {d}.skill_runs AS r WHERE r.skill = {SKILL} {rp} GROUP BY r.version),\n"
+                       f"files AS (SELECT r.version AS version, w.kind AS kind, count() AS files "
+                       f"FROM {d}.skill_run_working_files AS w {wf_join} WHERE r.skill = {SKILL} AND w.support {rp} "
+                       f"GROUP BY r.version, w.kind)\n"
+                       f"SELECT u.version AS version, k.kind AS kind, "
+                       f"{dec('ifNull(f.files, 0) / u.runs', 2)} AS support_files_per_run\n"
+                       f"FROM runs AS u CROSS JOIN {kind_rows('clickhouse')} "
+                       f"LEFT JOIN files AS f ON f.version = u.version AND f.kind = k.kind\n"
+                       f"ORDER BY u.version_date ASC NULLS LAST, version, k.ord",
+        "wf_code": f"SELECT r.version AS version, {dec('avg(r.support_scripts)', 1)} AS scripts_in_files, "
+                   f"{dec('avg(r.inline_scripts)', 1)} AS inline_programs FROM {d}.skill_runs AS r "
+                   f"WHERE r.skill = {SKILL} {rp} GROUP BY r.version {by_version}",
+        "wf_drives": f"WITH s AS (SELECT w.run_id AS run_id, w.session_id AS session_id, w.name AS name, w.runs AS runs, "
+                     f"r.version AS version, arrayStringConcat(arrayFilter(x -> x != '', "
+                     f"[ifNull(w.drives, ''), ifNull(w.api, '')]), ', ') AS targets "
+                     f"FROM {d}.skill_run_working_files AS w {wf_join} "
+                     f"WHERE r.skill = {SKILL} AND w.support AND w.kind = 'script' {rf})\n"
+                     f"SELECT trimBoth(t) AS drives, count() AS scripts, uniqExact(s.run_id, s.session_id) AS runs, "
+                     f"sum(s.runs) AS times_run, {distinct('s.version')} AS versions, {distinct('s.name')} AS scripts_named "
+                     f"FROM s ARRAY JOIN splitByString(', ', if(s.targets = '', '(no CLI or API call found)', s.targets)) "
+                     f"AS t GROUP BY drives ORDER BY scripts DESC, drives LIMIT 50",
+        "wf_named": f"WITH picked AS (SELECT r.run_id AS run_id, r.session_id AS session_id, r.version AS version, "
+                    f"r.version_date AS version_date {wf_runs}),\n"
+                    f"nv AS (SELECT p.version AS version, min(p.version_date) AS version_date, count() AS runs "
+                    f"FROM picked AS p GROUP BY p.version),\n"
+                    f"named AS (SELECT w.expected AS expected, max(w.expected_label) AS label "
+                    f"FROM {d}.skill_run_working_files AS w WHERE w.skill = {SKILL} AND w.expected IS NOT NULL "
+                    f"GROUP BY w.expected),\n"
+                    f"wrote AS (SELECT w.expected AS expected, w.version AS version, "
+                    f"uniqExact(w.run_id, w.session_id) AS runs, count() AS files FROM {d}.skill_run_working_files AS w "
+                    f"INNER JOIN picked AS p ON p.run_id = w.run_id AND p.session_id = w.session_id "
+                    f"WHERE w.expected IS NOT NULL GROUP BY w.expected, w.version)\n"
+                    f"SELECT n.label AS working_file, v.version AS version, ifNull(x.runs, 0) AS runs_wrote_it, "
+                    f"v.runs AS runs, {dec('ifNull(x.runs, 0) / v.runs', 3)} AS share_of_runs, "
+                    f"ifNull(x.files, 0) AS files FROM named AS n CROSS JOIN nv AS v "
+                    f"LEFT JOIN wrote AS x ON x.expected = n.expected AND x.version = v.version "
+                    f"ORDER BY working_file, v.version_date ASC NULLS LAST, version",
+        "wf_all": f"SELECT w.first_at AS first_at, r.version AS version, w.run_id AS run_id, w.path AS path, "
+                  f"w.kind AS kind, w.location AS location, w.support AS support, w.created AS created, "
+                  f"w.expected_label AS named_by_the_skill, w.via AS via, w.writes AS writes, w.edits AS edits, "
+                  f"w.lines AS lines, w.runs AS times_run, w.drives AS drives, w.api AS api, w.used_by AS used_by "
+                  f"FROM {d}.skill_run_working_files AS w {wf_join} WHERE r.skill = {SKILL} {rf} "
+                  f"ORDER BY w.support DESC NULLS LAST, w.first_at DESC, w.path LIMIT 2000",
         # Overview
         "runs": f"SELECT count() AS runs FROM {d}.skill_runs AS r WHERE r.skill = {SKILL} {rf}",
         "cost": f"SELECT round(sum(r.cost_usd), 2) AS cost_usd FROM {d}.skill_runs AS r WHERE r.skill = {SKILL} {rf}",
@@ -809,7 +946,9 @@ def clickhouse_sql(db="sessions"):
                     f"r.tool_calls AS tool_calls, r.tool_errors AS tool_errors, r.help_lookups AS help_lookups, "
                     f"r.questions_asked AS questions_asked, r.prose_questions AS prose_questions, "
                     f"r.checks_passed AS checks_passed, r.checks_failed AS checks_failed, "
-                    f"r.objects_created AS objects_created, r.end_reason AS end_reason, r.run_id AS run_id, "
+                    f"r.objects_created AS objects_created, r.files_created AS files_created, "
+                    f"r.support_files AS support_files, r.inline_scripts AS inline_scripts, "
+                    f"r.end_reason AS end_reason, r.run_id AS run_id, "
                     f"{session_label('s', 'clickhouse')} AS session, r.person AS person FROM {d}.skill_runs AS r "
                     f"LEFT JOIN {d}.sessions AS s ON s.session_id = r.session_id AND s.source = r.source "
                     f"WHERE r.skill = {SKILL} {rf} ORDER BY start_at DESC",
@@ -861,6 +1000,11 @@ def clickhouse_sql(db="sessions"):
                   f"t.status AS status, {dec('t.duration_ms / 1000.0', 1)} AS seconds, t.run_id AS run_id, "
                   f"t.input AS input, leftUTF8(t.error, 300) AS error FROM {d}.tool_calls AS t "
                   f"WHERE {in_sessions('t.session_id', 'clickhouse', d)} ORDER BY at, t.tool_use_id LIMIT 2000",
+        "sfiles": f"SELECT w.first_at AS first_at, w.run_id AS run_id, w.skill AS skill, w.path AS path, w.kind AS kind, "
+                  f"w.location AS location, w.support AS support, w.via AS via, w.writes AS writes, w.edits AS edits, "
+                  f"w.lines AS lines, w.runs AS times_run, w.drives AS drives, w.used_by AS used_by "
+                  f"FROM {d}.skill_run_working_files AS w WHERE {in_sessions('w.session_id', 'clickhouse', d)} "
+                  f"ORDER BY w.first_at, w.path LIMIT 1000",
         # Question topics
         "tq_stack": f"SELECT countIf(q.layer != 'cross-cutting') / nullIf(count(), 0) AS on_the_stack "
                     f"FROM {d}.questions AS q WHERE q.skill = {SKILL} {qf}",

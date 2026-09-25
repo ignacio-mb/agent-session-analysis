@@ -325,7 +325,10 @@ One entry per skill run (an invocation plus the follow-up turns it steered, unti
 | `changes_seen` | What the commit that ran changed against the previous commit touching the skill, per file, and whether this run was shown those lines |
 | `expected_by_playbooks`, `missing_expected`, `not_named_by_playbooks` | Files the playbooks' "Read first:" lines name, which of them were never read, and which were read without being named |
 | `questions`, `questions_asked`, `question_calls` | AskUserQuestion calls, with your answers |
-| `objects`, `objects_created`, `files_written` | Objects the CLI reported (`{id, name, type, verb}`), files written |
+| `objects`, `objects_created` | Objects the CLI reported (`{id, name, type, verb}`) |
+| `files_written`, `working_files` | Every file the run wrote, by path, and in detail (below) |
+| `files_created`, `support_files`, `support_scripts`, `support_script_runs`, `support_kinds` | Files the run created; support files — created, not named by the skill, not Claude Code's memory: made to do what the skill did not (null when the skill names no files) — by kind; of them, scripts, and how often the run ran them |
+| `inline_scripts`, `inline_script_lines`, `temp_files`, `memory_notes` | Programs of two lines or more run without a file (`python3 - <<'PY'`, `python3 -c`); files created in a system temp directory; Claude Code memory files written |
 | `final_message`, `last_stop_reason` | The run's hand-back |
 | `checks`, `checks_passed`, `checks_failed` | `{id, desc, status: pass|fail|n/a|error, detail}` per declared check |
 | `steps` | Indices into `trace.steps` |
@@ -371,6 +374,39 @@ version's numbering), `changed_lines`, `seen_lines`, `frontmatter_lines`, `delet
 frontmatter decides when the skill triggers and is never injected).
 
 `skill_files.csv` flattens `files` across runs.
+
+### `skill_runs[].working_files`
+
+Every file the run wrote (`workfiles.py`), whether it created it, and whether the skill asks for it. Writes are the
+Write, Edit, MultiEdit and NotebookEdit tools and the shell: a heredoc into a file (`cat > ./.scratch/t.json
+<<'JSON'`), a redirect (`>`, `>>`, `&>`), `tee`, `cp` and `mv` (the destination), `touch`, `curl -o`, `wget -O`,
+and the files Claude Code reports a command created. A `cd` inside a command moves its paths, a variable the command
+sets is filled in, and a path behind any other variable, or a glob, is skipped. Calls of the run's subagents count.
+
+- `path` (relative to the project, `~` for home, else absolute), `name`, `ext`, `kind` (`script`, `sql`, `json`,
+  `data`, `doc`, `env`, `other`, by extension; a file the run ran is a `script`), `location` (`project`, `temp` — a
+  system temp directory —, `memory` — Claude Code's memory —, `home`, `other`).
+- `expected` / `expected_label`: which of the working files the skill names it is — the `"files"` section of
+  `checks/<skill>.json`, `{"expected": [{"id", "label", "match"}]}`, `match` a regular expression on `path`.
+- `created`: the run created it — a Write that created it, or a shell write to a path the session had neither read
+  nor written before (a transcript does not say whether a file existed). `support`: created by the run, not named
+  by the skill, not in memory — the agent's own file, made to do what the skill did not; null when the skill names
+  no files.
+- `via` (how the run first wrote it: `Write`, `Edit`, `heredoc`, `redirect`, `append`, `tee`, `copy`, `move`,
+  `touch`, `download`, `shell`, `shell edit`), `first_t`, `dt` (ms since the run started), `turn`, `scope`,
+  `writes`, `edits`, `lines` (at its last whole write, when the text is in the transcript).
+- How the run used it: `runs` (executed or sourced: `python3 x.py`, `bash x.sh`, `source x.sh`, `./x.sh`,
+  `uv run x.py`, `node x.js`) and `used_by` (the commands that read it afterwards: `mb transform create`, `jq`,
+  `Read`; `shell` for a read inside an expression).
+- For a script: `drives` (the CLI commands in its text: a shell script's commands; in other code, `["mb", "card",
+  "create"]` lists and strings that run a CLI; `mb * update` when the object is a variable) and `api` (the HTTP API
+  paths it calls, `/api/card`, or `http` for requests without one).
+
+Checks can match the files a call created (`created`, `location`, `kind`, `support`): `checks/rde.json` fails a run
+that creates a working file in a system temp directory. `working_files.csv` flattens `working_files` across runs.
+
+A command substitution — `ID=$(mb card create …)`, `for id in $(mb card list …)` — is read as the command inside
+it, in every CLI table and check as much as here.
 
 ## `interview`
 
@@ -433,9 +469,10 @@ pass/fail/n.a. and `rate`, `resources` read, `cli` per signature with `per_run`,
 `changes` = commits and files changed since the previous version with runs, plus `exposure`: per changed
 file, the lines it gained and how many runs saw all, some or none of them), `files` (one row per file across
 versions, with `per_version` stats, `in_version` and `changed`), `runs` (one row per run),
-`details.<run_id>` (skill_files, changes_seen, cli, questions, objects, final message, errors, checks, turns,
-actions, steps), `failures` (tool errors grouped by what the message says), `insights`. `csv/skill_files.csv`
-has one row per run and file. `interview`: the skill's `taxonomy`, a `summary`, the `catalog` (per topic:
+`details.<run_id>` (skill_files, changes_seen, cli, questions, objects, working_files, final message, errors,
+checks, turns, actions, steps), `failures` (tool errors grouped by what the message says), `insights` (among them
+what the latest version's runs made that the skill does not name, and what those scripts drive).
+`csv/skill_files.csv` has one row per run and file. `interview`: the skill's `taxonomy`, a `summary`, the `catalog` (per topic:
 `asked`, `prose`, `runs`, `offered`, `recommended`, `recommended_rate`, `typed`, `no_preference`,
 `declined`, `unanswered`, `reasked`, `wait_p50_ms`, `answers`, `headers`, `examples`, `once`, `must_ask`,
 and `per_version`), `questions` (every question of every run, with `version_key` and `commit`) and `typed`
@@ -449,7 +486,11 @@ and `per_version`), `questions` (every question of every run, with `version_key`
 Keys: `sessions.session_id`; `turns (session_id, turn)`; `api_requests (session_id, request_no)`;
 `tool_calls (session_id, tool_use_id)` with `run_id` and `program`; `cli_calls (session_id, tool_use_id, seq)`
 with `signature` and `is_help`; `skill_invocations (session_id, invocation_no)`; `skill_runs.run_id` with
-`version`; `skill_run_checks (run_id, check_id)`; `skill_run_files (run_id, owner, path)`; `questions.qid`
+`version` and the counts of the files the run wrote (`files_written`, `files_created`, `support_files`,
+`support_scripts`, `support_script_runs`, `inline_scripts`, `inline_script_lines`, `temp_files`, `memory_notes`);
+`skill_run_checks (run_id, check_id)`; `skill_run_files (run_id, owner, path)`; `skill_run_working_files (run_id,
+path)`, every file a run wrote (`skill_runs[].working_files`: `kind`, `location`, `expected`, `created`, `support`,
+`via`, `runs`, `used_by`, `drives`, `api`…); `questions.qid`
 (`<session8>:<qid>`); `question_options (qid, option_no)`; `subagents (session_id, agent_id)`;
 `files_touched (session_id, path)`; `tool_errors (session_id, error_no)`; `de_topics.id` and `de_layers.id`
 (the taxonomy, with `label`, `description`, `sort_order`); `warehouse_load` (the load that produced

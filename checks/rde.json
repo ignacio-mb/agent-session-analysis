@@ -1,6 +1,6 @@
 {
   "skill": "rde",
-  "about": "Rules from skills/rde/SKILL.md, references/collaboration-contract.md and references/transform-tests.md, checked on every rde run; \"interview\" names the topics of rde's questions. Edit freely: see src/session_analytics/checks.py for the check types and src/session_analytics/questions.py for the interview.",
+  "about": "Rules from skills/rde/SKILL.md, references/collaboration-contract.md and references/transform-tests.md, checked on every rde run; \"interview\" names the topics of rde's questions; \"files\" names the working files rde's own text asks for. Edit freely: see src/session_analytics/checks.py for the check types and src/session_analytics/questions.py for the interview.",
   "checks": [
     {
       "id": "state-first",
@@ -155,6 +155,14 @@
       }
     },
     {
+      "id": "working-files-in-scratch",
+      "desc": "Working files go in ./.scratch, never a system temp directory (contract: working files)",
+      "type": "never",
+      "match": {
+        "location": "^temp$"
+      }
+    },
+    {
       "id": "mb-docs-one-section",
       "desc": "Bundled mb skills: reads the one section a step names, never a whole SKILL.md (`mb skills path <name>` then Read the section)",
       "type": "never",
@@ -210,6 +218,41 @@
       }
     }
   ],
+  "files": {
+    "about": "The working files rde's own text asks for, all in ./.scratch (references/collaboration-contract.md: working files go in ./.scratch, never a system temp directory): STATE.md and the probe helper q() (references/state.md), a model's SQL and description (playbooks/build-clean-tables.md), the JSON bodies mb reads with --file, transform-test SQL and CSV extracts (references/transform-tests.md, references/profiling-catalog.md). `match` is a regular expression on the path, relative to the project. A file a run creates that none of these match — and that is not Claude Code's memory — is a support file: a script, a list of ids, a saved response, made to do what the skill did not.",
+    "expected": [
+      {
+        "id": "state",
+        "label": "STATE.md",
+        "match": "(^|/)\\.scratch/STATE\\.md$"
+      },
+      {
+        "id": "probe",
+        "label": "The probe helper, q()",
+        "match": "(^|/)\\.scratch/probe\\.sh$"
+      },
+      {
+        "id": "model-sql",
+        "label": "A model's SQL or transform-test SQL",
+        "match": "(^|/)\\.scratch/(.+/)?[^/]+\\.sql$"
+      },
+      {
+        "id": "model-desc",
+        "label": "A model's description",
+        "match": "(^|/)\\.scratch/(.+/)?[^/]+\\.desc$"
+      },
+      {
+        "id": "body",
+        "label": "A JSON body mb reads with --file",
+        "match": "(^|/)\\.scratch/(.+/)?[^/]+\\.json$"
+      },
+      {
+        "id": "extract",
+        "label": "A CSV extract",
+        "match": "(^|/)\\.scratch/(.+/)?[^/]+\\.csv$"
+      }
+    ]
+  },
   "interview": {
     "about": "What rde's questions are about, in its own terms: SKILL.md (the pre-create gate, where the work lands) and references/collaboration-contract.md (owner and mode, checkpoints, personal data, the decision memo, the hand-back). Topics are tried in order; the first whose `match` finds the header or question wins. `once`: the skill says ask it once per job and never again. `evidence`: a decision the contract wants measured numbers behind ('profile first, then ask'). `prose: avoid`: stops belong in AskUserQuestion, not in prose. `must_ask`: the skill requires the question (a pre-create gate item or an irreversible stop), so an always-accepted recommendation is not a reason to stop asking it.",
     "prose": "avoid",
