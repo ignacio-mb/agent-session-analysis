@@ -729,7 +729,7 @@ def test_the_hook_log_says_this_machine_should_update(tmp_path, monkeypatch, cap
 # What every source shares, by the version that writes it: two checkouts on one version must write the same views and
 # taxonomy, or each load takes away the other's (only a newer version's are left alone). A change to a view, its
 # comment or semantics/questions.json bumps __version__ and adds its fingerprint here; a released one never changes.
-SHARED = {"0.4.0": "841661404a96"}
+SHARED = {"0.4.0": "841661404a96", "0.5.0": "841661404a96"}
 
 
 def test_a_change_to_what_every_source_shares_bumps_the_version():
