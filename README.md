@@ -313,6 +313,14 @@ matrix (click a topic to filter the tab), what came back per topic, a scorecard 
 layer and version, the layers never asked about, and every question with its topic and layer, with
 Data-engineering topic and Layer filters.
 
+## Optional: a lab for testing rde
+
+Nothing above needs it. [`lab/`](lab/) is a small web app that spins up named, throwaway Metabase instances in
+Docker, each with its own copy of the same Postgres (Metabase's Sample Database and a real Stack Exchange site), so
+every test of the rde skill starts from the same place: the fresh Metabase that comparing versions prompt by prompt
+assumes. It needs Docker and Bun, which the skill does not. Copy `lab/.env.example` to `lab/.env` (your email, a
+license token), `make lab`, then open http://localhost:4000; [lab/README.md](lab/README.md) has the rest.
+
 ## Accuracy
 
 Checked against every transcript on the machine this was built on (180 sessions, 700 subagent files):
