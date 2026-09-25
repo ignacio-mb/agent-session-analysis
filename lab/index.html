@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Metabase instances</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --line: #d8dee4; --soft: #f6f8fa;
+    --brand: #509ee3; --ok: #1a7f37; --busy: #9a6700; --err: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --line: #30363d; --soft: #161b22; --ok: #3fb950; --busy: #d29922; --err: #f85149; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1120px; padding: 32px 16px; background: var(--bg); color: var(--fg); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  a { color: var(--brand); }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .muted { color: var(--muted); }
+  form { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 6px; }
+  input { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: inherit; }
+  #name { width: 220px; }
+  #image { flex: 1; min-width: 240px; }
+  button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); color: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button.danger:hover { color: var(--err); border-color: var(--err); }
+  #msg { color: var(--err); min-height: 1.45em; margin: 0; }
+  .table { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; font-weight: 600; color: var(--muted); }
+  td:first-child, td:nth-child(3) { white-space: nowrap; }
+  td:nth-child(2) { min-width: 120px; }
+  td.actions { text-align: right; }
+  td.actions button { padding: 3px 8px; font-size: 12px; margin: 0 0 4px 2px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .ready .dot { background: var(--ok); }
+  .busy .dot, .starting .dot { background: var(--busy); }
+  .error .dot { background: var(--err); }
+  .detail { font-size: 12px; color: var(--muted); max-width: 360px; overflow-wrap: anywhere; }
+  .error .detail { color: var(--err); }
+  .note { color: var(--busy); }
+  .pg { display: block; margin-top: 4px; font-size: 11px; user-select: all; }
+  .empty { padding: 32px 8px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+  <h1>Metabase instances</h1>
+  <div id="info" class="muted">Connecting to Docker…</div>
+
+  <form id="create">
+    <input id="name" placeholder="name, e.g. transforms-1" required maxlength="40" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" title="Lowercase letters, digits and '-': it becomes <name>.localhost" autocomplete="off" spellcheck="false">
+    <input id="image" list="images" placeholder="image" autocomplete="off" spellcheck="false">
+    <datalist id="images"></datalist>
+    <button class="primary">Create</button>
+  </form>
+  <p id="msg"></p>
+
+  <div class="table">
+    <table>
+      <thead><tr><th>Name</th><th>Status</th><th>URL</th><th>Image</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+<script>
+  const $ = (selector) => document.querySelector(selector);
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const LABELS = { ready: "ready", starting: "starting", stopped: "stopped", busy: "working", error: "error" };
+  let instances = [];
+  let rendered = "";
+  let offline = false;
+
+  async function api(method, path, body) {
+    const res = await fetch(path, {
+      method,
+      headers: body ? { "content-type": "application/json" } : {},
+      body: body && JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`);
+    return data;
+  }
+
+  const flash = (text) => ($("#msg").textContent = text);
+
+  async function refresh() {
+    try {
+      instances = await api("GET", "/api/instances");
+    } catch (error) {
+      offline = true;
+      return flash(error instanceof TypeError ? "Can't reach the app server. Is `bun server.ts` running?" : error.message);
+    }
+    if (offline) {
+      offline = false;
+      flash("");
+    }
+    // Re-render only on change, so a poll never swallows a click.
+    const json = JSON.stringify(instances);
+    if (json === rendered) return;
+    rendered = json;
+    $("#rows").innerHTML = instances.length
+      ? instances.map(row).join("")
+      : `<tr><td colspan="5" class="empty">No instances yet. Name one above and hit Create.</td></tr>`;
+    tick();
+  }
+
+  function row(i) {
+    const button = (act, label, cls = "") =>
+      `<button data-act="${act}" data-name="${esc(i.name)}" class="${cls}">${label}</button>`;
+    const idle = i.state !== "busy";
+    const actions = [
+      i.apiKey && button("env", "Copy env"),
+      i.apiKey && button("mb", "Copy mb login"),
+      i.container && button("logs", "Logs"),
+      i.container && idle && (!i.running || i.state === "error") && button("start", i.running ? "Retry" : "Start"),
+      i.running && idle && button("stop", "Stop"),
+      i.container && idle && button("reset", "Reset"),
+      button("delete", i.container ? "Delete" : "Dismiss", "danger"),
+    ].filter(Boolean).join("");
+    const url = !i.url ? ""
+      : i.state === "ready" ? `<a href="${esc(i.url)}" target="_blank" rel="noreferrer">${esc(i.url)}</a>`
+      : `<span class="muted">${esc(i.url)}</span>`;
+    const since = i.since ? ` · <span data-since="${i.since}"></span>` : "";
+    const text = i.detail ?? i.note;
+    const detail = text ? `<div class="detail${i.detail ? "" : " note"}">${esc(text)}${since}</div>` : "";
+    const postgres = (i.postgres ?? [])
+      .map((db) => `<code class="pg muted" title="${esc(db.name)}, as its owner">${esc(db.url)}</code>`)
+      .join("");
+    return `<tr class="${i.state}">
+      <td><strong>${esc(i.name)}</strong></td>
+      <td><span class="dot"></span>${LABELS[i.state]}${detail}</td>
+      <td>${url}${postgres}</td>
+      <td><code class="muted">${esc(i.image)}</code></td>
+      <td class="actions">${actions}</td>
+    </tr>`;
+  }
+
+  function tick() {
+    for (const el of document.querySelectorAll("[data-since]")) {
+      el.textContent = `${Math.max(0, Math.round((Date.now() - Number(el.dataset.since)) / 1000))}s`;
+    }
+  }
+
+  async function copy(text, button) {
+    await navigator.clipboard.writeText(text);
+    const label = button.textContent;
+    button.textContent = "Copied";
+    setTimeout(() => (button.textContent = label), 1200);
+  }
+
+  $("#rows").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-act]");
+    const i = button && instances.find((x) => x.name === button.dataset.name);
+    if (!i) return;
+    const act = button.dataset.act;
+    const path = `/api/instances/${encodeURIComponent(i.name)}`;
+    flash("");
+    try {
+      if (act === "env") return await copy(`export MB_URL=${i.url} MB_API_KEY=${i.apiKey} MBA_URL=${i.url} MBA_API_KEY=${i.apiKey}`, button);
+      if (act === "mb") return await copy(`echo '${i.apiKey}' | mb auth login --profile ${i.name} --url ${i.url}`, button);
+      if (act === "logs") return void window.open(`${path}/logs`, "_blank");
+      if (act === "reset" && !confirm(`Reset "${i.name}"? Its application database and its Postgres are wiped and set up again (new API key).`)) return;
+      if (act === "delete" && i.container && !confirm(`Delete "${i.name}" and its data?`)) return;
+      button.disabled = true;
+      await (act === "delete" ? api("DELETE", path) : api("POST", `${path}/${act}`));
+      await refresh();
+    } catch (error) {
+      flash(error.message);
+      button.disabled = false;
+    }
+  });
+
+  $("#name").addEventListener("input", (event) => (event.target.value = event.target.value.toLowerCase()));
+
+  $("#create").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.target.querySelector("button");
+    const image = $("#image").value.trim();
+    button.disabled = true;
+    flash("");
+    try {
+      await api("POST", "/api/instances", { name: $("#name").value.trim(), image });
+      try { localStorage.setItem("image", image); } catch {}
+      $("#name").value = "";
+      await refresh();
+    } catch (error) {
+      flash(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  (async () => {
+    try {
+      const info = await api("GET", "/api/info");
+      $("#info").innerHTML = `Docker ${esc(info.docker)} · admin <code>${esc(info.admin.email)}</code> / <code>${esc(info.admin.password)}</code> · `
+        + (info.license ? "license token set" : "no license token (premium features off, see README)");
+      let saved = null;
+      try { saved = localStorage.getItem("image"); } catch {}
+      $("#image").value = saved || info.defaultImage;
+      $("#images").innerHTML = (await api("GET", "/api/images")).map((tag) => `<option value="${esc(tag)}">`).join("");
+    } catch (error) {
+      $("#info").textContent = `Can't reach Docker: ${error.message}`;
+    }
+  })();
+  (async function poll() {
+    await refresh();
+    setTimeout(poll, 2000);
+  })();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 PY39 := /usr/bin/python3
 
 .PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-check warehouse-up warehouse-down warehouse-psql \
-	env clickhouse clickhouse-forget clickhouse-dev clickhouse-dev-test clickhouse-dev-down
+	env clickhouse clickhouse-forget clickhouse-dev clickhouse-dev-test clickhouse-dev-down lab
 
 test: test39
 	uv run --no-project --with pytest python -m pytest -q
@@ -72,3 +72,9 @@ clickhouse-dev-test: clickhouse-dev
 # Only the throwaway ClickHouse: `down` would take the Postgres warehouse's container with it.
 clickhouse-dev-down:
 	docker compose --profile clickhouse rm --stop --force clickhouse
+
+# Optional, the skill doesn't use it: the lab (lab/README.md), throwaway Metabase instances on Docker, each with the
+# same Postgres, at http://localhost:4000. Needs bun. Runs from lab/, which holds its settings (.env, from .env.example)
+# and API keys (state.json).
+lab:
+	cd lab && bun server.ts

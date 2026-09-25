@@ -10,5 +10,7 @@ build/
 claude-session-exports/
 .claude/launch.json
 .preview/
-# the ClickHouse connection string (see .env.example)
+# the ClickHouse connection string (see .env.example), and the lab's settings (lab/.env, see lab/.env.example)
 .env
+# the lab's API key for each instance (Metabase can't show a key again)
+lab/state.json
