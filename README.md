@@ -1,4 +1,4 @@
-# convo-analysis
+# agent-session-analysis
 
 > [!IMPORTANT]
 > ## Run the latest version: 0.4.0 or later
