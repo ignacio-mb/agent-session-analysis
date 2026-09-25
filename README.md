@@ -1,5 +1,30 @@
 # convo-analysis
 
+> [!IMPORTANT]
+> ## Run the latest version: 0.4.0 or later
+>
+> A copy older than 0.4.0 overwrites the team warehouse's shared views and taxonomy with outdated ones every time
+> one of your sessions ends. Update before your next session.
+>
+> **Installed as a plugin** (the usual way):
+>
+> ```bash
+> claude plugin marketplace update agent-session-analysis
+> claude plugin update session-export@agent-session-analysis
+> ```
+>
+> **From a checkout** (`./install.sh` links the skill to the checkout, so pulling is all it takes):
+>
+> ```bash
+> git checkout main && git pull
+> ```
+>
+> **Then quit and reopen Claude Code**: skills and hooks load when a session starts. Check the version with
+> `claude plugin list` (plugin) or `PYTHONPATH=src python3 -m session_analytics --version` (checkout).
+>
+> Keep one install, not both: with the plugin and a checkout's hook, every session end loads twice and the older
+> copy undoes the newer one. Not installed yet? See [Install](#install).
+
 Understand what happened in a Claude Code session: which skills were invoked and **how**, every tool call,
 aggregated counts, tokens, cost, subagents, workflows, files, git, errors, hooks, timing and context —
 exported as JSON, CSV, Markdown and an interactive HTML dashboard.
