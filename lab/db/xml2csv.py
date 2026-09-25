@@ -22,6 +22,16 @@ COLUMNS = {
 }
 
 
+class EscapedTabs:
+    # The dump escapes newlines in values (&#xA;) but writes tabs as they are, and an XML parser turns a literal tab in
+    # an attribute into a space. All of them are inside values, so escaping them first keeps them.
+    def __init__(self, raw):
+        self.raw = raw
+
+    def read(self, size=-1):
+        return self.raw.read(size).replace(b"\t", b"&#9;")
+
+
 def field(value):
     return "" if value is None else '"' + value.replace('"', '""') + '"'
 
@@ -31,7 +41,7 @@ columns = COLUMNS[name]
 known = set(columns)
 out = sys.stdout
 out.write(",".join(columns) + "\n")
-for _, element in ET.iterparse(sys.stdin.buffer):
+for _, element in ET.iterparse(EscapedTabs(sys.stdin.buffer)):
     if element.tag != "row":
         continue
     unknown = set(element.attrib) - known

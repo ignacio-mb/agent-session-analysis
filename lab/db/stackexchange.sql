@@ -2,14 +2,13 @@
 -- Runs once, when the image is built, in a single transaction (psql -1) in the stackexchange database. Each XML file of
 -- the dump streams out of the archive through xml2csv.py into COPY, so none of it lands on disk.
 --
--- Every value is real. The only changes to the dump are:
+-- Complete: every row and every value of the dump. The only changes are:
 --   * snake_case names and proper types (all timestamps are UTC, as in the dump);
 --   * post_tags, split out of posts.tags, and the post_types, vote_types and post_history_types lookups, whose names
---     come from Stack Exchange's schema documentation (meta.stackexchange.com/q/2677);
---   * references to content that is missing from the dump (deleted posts and users) are removed, so every foreign key
---     holds: votes, history and links on deleted posts are left out, and a deleted post or user referenced from a post
---     becomes NULL, as the dump already does for deleted users elsewhere;
---   * post_history keeps no text for body revisions (the full markdown of every edit, 3/4 of the dump's size).
+--     come from Stack Exchange's schema documentation (meta.stackexchange.com/q/2677).
+-- The dump leaves out deleted posts, but keeps some rows that point at them (111,161 votes, 22 history rows, 290 links,
+-- 1 accepted answer) and 1 post owned by a deleted user. Those foreign keys are declared NOT VALID: Metabase still sees
+-- them, and joins drop those rows.
 
 \set ON_ERROR_STOP on
 
@@ -69,7 +68,7 @@ INSERT INTO vote_types VALUES
   (6, 'Close', 'Vote to close; since 2013-06-25 close votes are only recorded in post_history'),
   (7, 'Reopen', 'Vote to reopen'),
   (8, 'BountyStart', 'Bounty offered (user_id and bounty_amount are set)'),
-  (9, 'BountyClose', 'Bounty awarded (bounty_amount is set)'),
+  (9, 'BountyClose', 'Bounty awarded or ended (bounty_amount is usually set)'),
   (10, 'Deletion', 'Vote to delete'),
   (11, 'Undeletion', 'Vote to undelete'),
   (12, 'Spam', 'Flagged as spam'),
@@ -172,13 +171,6 @@ SELECT id::integer, post_type_id::smallint, parent_id::integer, accepted_answer_
        creation_date::timestamp, last_edit_date::timestamp, last_activity_date::timestamp, closed_date::timestamp,
        community_owned_date::timestamp, content_license
 FROM staging.posts;
--- An accepted answer that was deleted, and owners and editors whose accounts were deleted.
-UPDATE posts p SET accepted_answer_id = NULL
-WHERE accepted_answer_id IS NOT NULL AND NOT EXISTS (SELECT FROM posts a WHERE a.id = p.accepted_answer_id);
-UPDATE posts p SET owner_user_id = NULL
-WHERE owner_user_id IS NOT NULL AND NOT EXISTS (SELECT FROM users u WHERE u.id = p.owner_user_id);
-UPDATE posts p SET last_editor_user_id = NULL
-WHERE last_editor_user_id IS NOT NULL AND NOT EXISTS (SELECT FROM users u WHERE u.id = p.last_editor_user_id);
 
 CREATE TABLE tags (
   id integer PRIMARY KEY,
@@ -229,8 +221,7 @@ CREATE TABLE votes (
 INSERT INTO votes
 SELECT v.id::integer, v.post_id::integer, v.vote_type_id::smallint, v.user_id::integer, v.bounty_amount::integer,
        v.creation_date::timestamp::date
-FROM staging.votes v
-WHERE EXISTS (SELECT FROM posts p WHERE p.id = v.post_id::integer);  -- votes on deleted posts are left out
+FROM staging.votes v;
 
 CREATE TABLE badges (
   id integer PRIMARY KEY,
@@ -258,11 +249,8 @@ CREATE TABLE post_history (
 );
 INSERT INTO post_history
 SELECT h.id::integer, h.post_id::integer, h.post_history_type_id::smallint, h.revision_guid::uuid, h.user_id::integer,
-       h.user_display_name, h.comment,
-       CASE WHEN h.post_history_type_id::smallint IN (2, 5, 8) THEN NULL ELSE h.text END,  -- no body revisions
-       h.content_license, h.creation_date::timestamp
-FROM staging.post_history h
-WHERE EXISTS (SELECT FROM posts p WHERE p.id = h.post_id::integer);  -- history of deleted posts is left out
+       h.user_display_name, h.comment, h.text, h.content_license, h.creation_date::timestamp
+FROM staging.post_history h;
 
 CREATE TABLE post_links (
   id integer PRIMARY KEY,
@@ -274,19 +262,18 @@ CREATE TABLE post_links (
 INSERT INTO post_links
 SELECT l.id::integer, l.post_id::integer, l.related_post_id::integer, l.link_type_id::smallint,
        l.creation_date::timestamp
-FROM staging.post_links l
-WHERE EXISTS (SELECT FROM posts p WHERE p.id = l.post_id::integer)
-  AND EXISTS (SELECT FROM posts p WHERE p.id = l.related_post_id::integer);  -- links to deleted posts are left out
+FROM staging.post_links l;
 
 DROP SCHEMA staging CASCADE;
 
 -- ---- Keys and indexes -------------------------------------------------------------------------------------------------
 
+-- NOT VALID where the dump has rows pointing at deleted posts or users (see the top).
 ALTER TABLE posts
   ADD FOREIGN KEY (post_type_id) REFERENCES post_types,
   ADD FOREIGN KEY (parent_id) REFERENCES posts,
-  ADD FOREIGN KEY (accepted_answer_id) REFERENCES posts,
-  ADD FOREIGN KEY (owner_user_id) REFERENCES users,
+  ADD FOREIGN KEY (accepted_answer_id) REFERENCES posts NOT VALID,
+  ADD FOREIGN KEY (owner_user_id) REFERENCES users NOT VALID,
   ADD FOREIGN KEY (last_editor_user_id) REFERENCES users;
 ALTER TABLE tags
   ADD FOREIGN KEY (excerpt_post_id) REFERENCES posts,
@@ -298,18 +285,18 @@ ALTER TABLE comments
   ADD FOREIGN KEY (post_id) REFERENCES posts,
   ADD FOREIGN KEY (user_id) REFERENCES users;
 ALTER TABLE votes
-  ADD FOREIGN KEY (post_id) REFERENCES posts,
+  ADD FOREIGN KEY (post_id) REFERENCES posts NOT VALID,
   ADD FOREIGN KEY (vote_type_id) REFERENCES vote_types,
   ADD FOREIGN KEY (user_id) REFERENCES users;
 ALTER TABLE badges
   ADD FOREIGN KEY (user_id) REFERENCES users;
 ALTER TABLE post_history
-  ADD FOREIGN KEY (post_id) REFERENCES posts,
+  ADD FOREIGN KEY (post_id) REFERENCES posts NOT VALID,
   ADD FOREIGN KEY (post_history_type_id) REFERENCES post_history_types,
   ADD FOREIGN KEY (user_id) REFERENCES users;
 ALTER TABLE post_links
   ADD FOREIGN KEY (post_id) REFERENCES posts,
-  ADD FOREIGN KEY (related_post_id) REFERENCES posts;
+  ADD FOREIGN KEY (related_post_id) REFERENCES posts NOT VALID;
 
 CREATE INDEX ON posts (post_type_id);
 CREATE INDEX ON posts (parent_id);
@@ -332,7 +319,7 @@ CREATE INDEX ON users (creation_date);
 
 -- ---- Documentation (Metabase shows these as table and column descriptions) -------------------------------------------
 
-COMMENT ON DATABASE stackexchange IS 'dba.stackexchange.com (Database Administrators Stack Exchange), from the Stack Exchange data dump of 2024-04-06: all activity from the site''s launch in January 2011 to 2024-03-31, plus posts migrated from Stack Overflow since 2008. Timestamps are UTC. Content by Stack Exchange users, licensed CC BY-SA (see content_license).';
+COMMENT ON DATABASE stackexchange IS 'dba.stackexchange.com (Database Administrators Stack Exchange), from the Stack Exchange data dump of 2024-04-06: all activity from the site''s launch in January 2011 to 2024-03-31, plus a few hundred posts migrated from Stack Overflow back to 2008. Per-post and per-user state (scores, counts, last activity, last access) is as of 2024-04-06. Timestamps are UTC. Content by Stack Exchange users, licensed CC BY-SA (see content_license).';
 
 COMMENT ON TABLE users IS 'Every user account on the site, including the Community user (id -1), a background process that owns tag wikis and bumps old questions.';
 COMMENT ON COLUMN users.id IS 'The user''s id on this site.';
@@ -352,7 +339,7 @@ COMMENT ON TABLE posts IS 'Every non-deleted post: questions (post_type_id 1), a
 COMMENT ON COLUMN posts.id IS 'The post''s id; https://dba.stackexchange.com/q/<id> links to it.';
 COMMENT ON COLUMN posts.post_type_id IS 'The kind of post: 1 question, 2 answer, 4 tag wiki excerpt, 5 tag wiki, 6 moderator nomination, 7 wiki placeholder.';
 COMMENT ON COLUMN posts.parent_id IS 'For an answer, the question it answers.';
-COMMENT ON COLUMN posts.accepted_answer_id IS 'For a question, the answer its author accepted, if any.';
+COMMENT ON COLUMN posts.accepted_answer_id IS 'For a question, the answer its author accepted, if any. In one case that answer was deleted.';
 COMMENT ON COLUMN posts.title IS 'The question''s title (questions only).';
 COMMENT ON COLUMN posts.body IS 'The post''s content, as rendered HTML.';
 COMMENT ON COLUMN posts.tags IS 'The question''s tags, as ''|tag1|tag2|'' (questions only). post_tags has them one per row.';
@@ -361,8 +348,8 @@ COMMENT ON COLUMN posts.view_count IS 'Number of times the question was viewed (
 COMMENT ON COLUMN posts.answer_count IS 'Number of non-deleted answers (questions only).';
 COMMENT ON COLUMN posts.comment_count IS 'Number of comments on the post.';
 COMMENT ON COLUMN posts.favorite_count IS 'Number of users who bookmarked the question, when recorded.';
-COMMENT ON COLUMN posts.owner_user_id IS 'The author. NULL if their account was deleted (owner_display_name then holds their name). Always -1, the Community user, for tag wikis.';
-COMMENT ON COLUMN posts.owner_display_name IS 'The author''s name, set when the author is a deleted or anonymous user.';
+COMMENT ON COLUMN posts.owner_user_id IS 'The author. NULL if their account was deleted (owner_display_name then holds their name). -1 is the Community user, which owns some tag wikis.';
+COMMENT ON COLUMN posts.owner_display_name IS 'The author''s name, set when the author is a deleted or anonymous user, or the original author of a post migrated from another site.';
 COMMENT ON COLUMN posts.last_editor_user_id IS 'The user who edited the post last.';
 COMMENT ON COLUMN posts.last_editor_display_name IS 'The last editor''s name, set when the editor is a deleted or anonymous user.';
 COMMENT ON COLUMN posts.creation_date IS 'When the post was created.';
@@ -387,10 +374,10 @@ COMMENT ON COLUMN comments.user_display_name IS 'The commenter''s name, set when
 COMMENT ON COLUMN comments.score IS 'Number of upvotes on the comment.';
 COMMENT ON COLUMN comments.text IS 'The comment, as markdown.';
 
-COMMENT ON TABLE votes IS 'Votes on posts: upvotes, downvotes, accepted answers, bounties, close, delete and spam votes. Anonymous: user_id is only set for bookmarks and bounties. Votes on posts that were later deleted are not included.';
+COMMENT ON TABLE votes IS 'Votes on posts: upvotes, downvotes, accepted answers, bounties, close, delete, spam and moderator votes. Anonymous: user_id is only set for bookmarks and bounties. 111,161 votes are on posts that were later deleted, so their post_id matches no post.';
 COMMENT ON COLUMN votes.post_id IS 'The post voted on.';
 COMMENT ON COLUMN votes.vote_type_id IS 'The kind of vote; see vote_types.';
-COMMENT ON COLUMN votes.user_id IS 'The voter, only for bookmarks (5) and bounty starts (8).';
+COMMENT ON COLUMN votes.user_id IS 'The voter, only for bookmarks (5) and bounty starts (8). -1 when the voter''s account was deleted, which is also the Community user''s id.';
 COMMENT ON COLUMN votes.bounty_amount IS 'Reputation offered or awarded, only for bounty votes (8 and 9).';
 COMMENT ON COLUMN votes.creation_date IS 'The day of the vote (Stack Exchange removes the time of day for privacy).';
 COMMENT ON TABLE vote_types IS 'The kinds of vote (votes.vote_type_id), from the data dump''s documentation.';
@@ -401,17 +388,17 @@ COMMENT ON COLUMN badges.class IS '1 gold, 2 silver, 3 bronze.';
 COMMENT ON COLUMN badges.tag_based IS 'Whether the badge is for a tag (name is then the tag), rather than a named badge.';
 COMMENT ON COLUMN badges.date IS 'When the badge was awarded.';
 
-COMMENT ON TABLE post_history IS 'Every revision and moderation event on posts: initial versions, edits, rollbacks, closures, reopenings, deletions, locks, migrations. One action can record several rows sharing a revision_guid.';
+COMMENT ON TABLE post_history IS 'Every revision and moderation event on posts: initial versions, edits, rollbacks, closures, reopenings, deletions, locks, migrations. One action can record several rows sharing a revision_guid. 22 rows are on posts that were later deleted.';
 COMMENT ON COLUMN post_history.post_history_type_id IS 'The kind of event; see post_history_types.';
 COMMENT ON COLUMN post_history.revision_guid IS 'Groups the rows recorded by a single action.';
-COMMENT ON COLUMN post_history.user_id IS 'Who made the change. NULL if their account was deleted (user_display_name then holds their name).';
+COMMENT ON COLUMN post_history.user_id IS 'Who made the change. NULL if their account was deleted (user_display_name then holds their name), and for some system events.';
 COMMENT ON COLUMN post_history.user_display_name IS 'Who made the change, when their account was deleted, and the author of a migrated post.';
 COMMENT ON COLUMN post_history.comment IS 'The editor''s summary of the change. For closures (10), the close reason: 101 duplicate, 102 off-topic, 103 unclear, 104 too broad, 105 opinion-based (1-20 are older reasons).';
-COMMENT ON COLUMN post_history.text IS 'The new value: the title or tags for title and tag events, a JSON list of voters for closures, reopenings, deletions, locks and protections. NULL for body revisions (2, 5, 8), whose markdown is not included here; posts.body has the current body.';
+COMMENT ON COLUMN post_history.text IS 'The new value: the markdown body for body events (2, 5, 8), the title or tags for title and tag events, a JSON list of voters for closures, reopenings, deletions, locks and protections, migration details for migrations.';
 COMMENT ON COLUMN post_history.content_license IS 'The Creative Commons license of the revision''s content.';
 COMMENT ON TABLE post_history_types IS 'The kinds of post history event (post_history.post_history_type_id), from Stack Exchange''s schema documentation.';
 
-COMMENT ON TABLE post_links IS 'Links between questions: a question linking to another (link_type_id 1) or closed as a duplicate of another (3).';
+COMMENT ON TABLE post_links IS 'Links between questions: a question linking to another (link_type_id 1) or closed as a duplicate of another (3). 290 links point at questions that were later deleted.';
 COMMENT ON COLUMN post_links.post_id IS 'The linking question, or the duplicate.';
 COMMENT ON COLUMN post_links.related_post_id IS 'The linked question, or the original the duplicate points to.';
 COMMENT ON COLUMN post_links.link_type_id IS '1 Linked (post_id links to related_post_id), 3 Duplicate (post_id is a duplicate of related_post_id).';
@@ -421,7 +408,7 @@ COMMENT ON COLUMN post_links.link_type_id IS '1 Linked (post_id links to related
 DO $$
 DECLARE
   expected CONSTANT jsonb := '{"users": 248141, "posts": 243410, "tags": 1242, "post_tags": 278266, "comments": 347838,
-    "votes": 800622, "badges": 429421, "post_history": 833635, "post_links": 19904}';
+    "votes": 911783, "badges": 429421, "post_history": 833657, "post_links": 20194}';
   name text;
   actual bigint;
 BEGIN

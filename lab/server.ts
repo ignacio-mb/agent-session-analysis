@@ -37,8 +37,9 @@ const DATABASES = [
     name: "DBA Stack Exchange",
     description:
       "dba.stackexchange.com, the Database Administrators Q&A site: its users, questions and answers, tags, comments, " +
-      "votes, badges and edit history from January 2011 to March 2024. Real data from Stack Exchange's data dump of " +
-      "2024-04-06, licensed CC BY-SA.",
+      "votes, badges and edit history, from the site's launch in January 2011 to March 2024, plus a few hundred posts " +
+      "migrated from Stack Overflow back to 2008. Real and complete: Stack Exchange's data dump of 2024-04-06, " +
+      "licensed CC BY-SA.",
   },
 ];
 type Database = (typeof DATABASES)[number];
@@ -183,14 +184,16 @@ let buildStep = "";
 
 async function ensurePostgresImage(task: Task) {
   if ((await fetch(`http://docker/images/${PG_IMAGE}/json`, { unix: SOCKET })).ok) return;
+  step(task, "building the Postgres image, first time only");
   if (!building) {
     building = buildPostgresImage().finally(() => (building = undefined));
-    building.catch(() => {}); // failures reach every waiting task below, even if all of them were deleted
+    building.catch(() => {}); // a failure reaches the tasks waiting below, if any are left
   }
-  const done = building.then(() => true);
+  const build = building;
   for (;;) {
-    step(task, `building the Postgres image, first time only: ${buildStep}`);
-    if (await Promise.race([done, Bun.sleep(1000).then(() => false)])) return;
+    task.abort.signal.throwIfAborted();
+    task.step = `building the Postgres image, first time only: ${buildStep}`; // keeping the step's start time
+    if (await Promise.race([build.then(() => true), Bun.sleep(1000).then(() => false)])) return;
   }
 }
 
@@ -413,7 +416,8 @@ async function connectDatabases(task: Task, base: string, session: string, port:
     : `No writable connection: it needs a license token with the writable-connection feature${LICENSE ? "" : " (none set)"}.`;
 }
 
-async function setUp(task: Task, name: string, id: string, port: number) {
+// Signs in as the admin, creating it on a fresh Metabase.
+async function signIn(task: Task, name: string, id: string, port: number) {
   const base = `http://127.0.0.1:${port}`;
   step(task, "starting Metabase");
   await waitReady(task, id, base);
@@ -429,6 +433,11 @@ async function setUp(task: Task, name: string, id: string, port: number) {
   const session = (await metabase(base, "POST", "/api/session", { username: ADMIN.email, password: ADMIN.password })).id;
   // A per-user setting; its default, "auto", follows the OS into dark mode.
   await metabase(base, "PUT", "/api/setting/color-scheme", { value: "light" }, session);
+  return { base, session };
+}
+
+async function setUp(task: Task, name: string, id: string, port: number) {
+  const { base, session } = await signIn(task, name, id, port);
   step(task, "connecting the databases");
   const note = await connectDatabases(task, base, session, port, databasesIn(await findDb(name)));
   step(task, "creating an API key");
@@ -436,6 +445,15 @@ async function setUp(task: Task, name: string, id: string, port: number) {
   const admins = groups.find?.((g: { name: string }) => g.name === "Administrators")?.id ?? 2;
   const key = await metabase(base, "POST", "/api/api-key", { name: `mbo-${Date.now()}`, group_id: admins }, session);
   state[id] = { apiKey: key.unmasked_key, note };
+  saveState();
+}
+
+// A new Postgres under a set-up instance: its read-only role and connections again, keeping the API key.
+async function reconnect(task: Task, name: string, id: string, port: number) {
+  const { base, session } = await signIn(task, name, id, port);
+  step(task, "connecting the databases");
+  const note = await connectDatabases(task, base, session, port, databasesIn(await findDb(name)));
+  state[id] = { ...state[id], note };
   saveState();
 }
 
@@ -559,6 +577,7 @@ async function act(name: string, action: string) {
         await (db ? docker("POST", `/containers/${db.Id}/start`) : launchPostgres(task, name, port));
         await docker("POST", `/containers/${c.Id}/start`);
         if (!state[c.Id]) await setUp(task, name, c.Id, port);
+        else if (!db) await reconnect(task, name, c.Id, port);
       });
     case "stop":
       return run(name, { step: "stopping", ...info }, async () => {
@@ -567,7 +586,9 @@ async function act(name: string, action: string) {
         if (db) await docker("POST", `/containers/${db.Id}/stop?t=10`);
       });
     case "reset": // new containers on the same name and ports: a fresh application database and Postgres
-      return run(name, { step: "wiping", ...info }, async (task) => {
+      return run(name, { step: "checking images", ...info }, async (task) => {
+        await ensurePostgresImage(task); // before wiping, so a failed build leaves the instance as it was
+        step(task, "wiping");
         await drop(name);
         await setUp(task, name, await launch(task, name, image, port), port);
       });

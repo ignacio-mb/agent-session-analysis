@@ -8,7 +8,8 @@
 FROM metabase/qa-databases:postgres-sample-15 AS bake
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl 7zip python3 \
  && rm -rf /var/lib/apt/lists/*
-RUN mkdir /seed && curl -fsSL --retry 5 -o /seed/dump.7z https://archive.org/download/stackexchange/dba.stackexchange.com.7z \
+RUN mkdir /seed && curl -fsSL --retry 5 --retry-all-errors --speed-limit 10000 --speed-time 60 \
+      -o /seed/dump.7z https://archive.org/download/stackexchange/dba.stackexchange.com.7z \
  && echo "1534244d87f57f22e2d2a38a03de907a7c86e217  /seed/dump.7z" | sha1sum -c -
 COPY xml2csv.py stackexchange.sql /seed/
 COPY stackexchange.sh /docker-entrypoint-initdb.d/

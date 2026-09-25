@@ -29,26 +29,26 @@ The image and environment match `rde init`: `metabase/metabase-dev:transform-tes
 
 ## The Stack Exchange database
 
-`stackexchange` is [dba.stackexchange.com](https://dba.stackexchange.com), the Database Administrators Q&A site, as of Stack Exchange's own [data dump](https://archive.org/details/stackexchange) of 2024-04-06: a tech company's real product data from January 2011 to March 2024, with a few older posts migrated from Stack Overflow. The content is by the site's users, licensed [CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/). Every table and column has a description, which Metabase shows.
+`stackexchange` is [dba.stackexchange.com](https://dba.stackexchange.com), the Database Administrators Q&A site, as of Stack Exchange's own [data dump](https://archive.org/details/stackexchange) of 2024-04-06: a tech company's real product data, complete, from the site's launch in January 2011 to March 2024, plus a few hundred posts migrated from Stack Overflow back to 2008. The content is by the site's users, licensed CC BY-SA 2.5, 3.0 or 4.0 depending on when it was written (`content_license` says which). Every table and most columns have a description, which Metabase shows.
 
 | Table | Rows | |
 |---|---:|---|
-| `votes` | 800,622 | upvotes, downvotes, accepted answers, bounties, close and delete votes; anonymous and by day |
-| `post_history` | 833,635 | every revision and moderation event on a post |
+| `votes` | 911,783 | upvotes, downvotes, accepted answers, bounties, close and delete votes; anonymous and by day |
+| `post_history` | 833,657 | every revision and moderation event on a post, with the text of each version |
 | `badges` | 429,421 | badges awarded to users |
 | `comments` | 347,838 | comments on questions and answers |
 | `post_tags` | 278,266 | which tags each question has |
 | `users` | 248,141 | every account, with reputation and profile |
 | `posts` | 243,410 | 103,026 questions, 138,650 answers, and tag wikis |
-| `post_links` | 19,904 | links between questions, and duplicates |
+| `post_links` | 20,194 | links between questions, and duplicates |
 | `tags` | 1,242 | |
 | `post_types`, `vote_types`, `post_history_types` | 15, 15, 35 | the kinds of post, vote and history event |
 
-All values come from the dump. [`db/stackexchange.sql`](db/stackexchange.sql) says exactly what changed on the way in: names, types, `post_tags` and the lookups (named from Stack Exchange's [schema documentation](https://meta.stackexchange.com/q/2677)), no text for body revisions in `post_history`, and no rows pointing at deleted posts, so every foreign key holds.
+Every row and value of the dump is there. [`db/stackexchange.sql`](db/stackexchange.sql) says exactly what changed on the way in: names, types, and `post_tags` and the lookups (named from Stack Exchange's [schema documentation](https://meta.stackexchange.com/q/2677)). The dump leaves out deleted posts but keeps rows that point at them, such as 111,161 votes, so those foreign keys are declared `NOT VALID`: Metabase still sees them, and joins drop those rows.
 
-**The image.** Every instance's Postgres runs `mbo-postgres:<hash>`, built from [`db/`](db/) the first time an instance needs it: it downloads the dump from archive.org (319 MB, checked against its SHA-1), streams it into Postgres, and bakes the data into the image, so later instances start with it at once. The tag is a hash of `db/`: change anything there and the next create or Reset builds a new image. Instances keep the image they were created with; ones created before `db/` existed hold only the Sample Database until you Reset them.
+**The image.** Every instance's Postgres runs `mbo-postgres:<hash>`, built from [`db/`](db/) the first time an instance needs it: it downloads the dump from archive.org (319 MB, checked against its SHA-1), streams it into Postgres, and bakes the data into the image, so later instances start with it at once. The tag is a hash of `db/`: change anything there, restart the app, and the next create or Reset builds a new image. Instances keep the image they were created with; ones created before `db/` existed hold only the Sample Database until you Reset them.
 
-**Disk.** The image is 1.9 GB, 0.9 GB of it the data. The build leaves 1.3 GB of untagged cache that makes rebuilds fast; `docker image prune` removes it. Each instance's Postgres copies the files of the tables it reads, up to 0.9 GB.
+**Disk.** The image is 2.6 GB, 1.4 GB of it the data. The build leaves about 1.8 GB of untagged cache, mostly the download and the loaded data, which makes rebuilds fast; `docker image prune` removes it. Each instance's Postgres copies the files of the tables it reads, up to 1.4 GB.
 
 ## Settings
 
