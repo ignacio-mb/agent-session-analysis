@@ -4,7 +4,8 @@
     make warehouse                                the same
 
 Each table holds one kind of fact (a session, a turn, an API request, a tool call, a CLI call, a skill run, a
-check result, a skill file a run was shown, a question and its options…), and each fact belongs to exactly one
+check result, a skill file a run was shown, a file a run wrote, a question and its options…), and each fact belongs
+to exactly one
 session: transcripts are read own-only, so the history a resumed session copies stays with the session it came
 from. The views answer the tuning questions directly: versions compared, check pass rates, question topics,
 CLI error rates, daily usage. Tables are dropped and recreated on every load; the transcripts are the source of
@@ -106,6 +107,18 @@ TABLES = {
         ("docs_read", INT, "The skill's own files shown, beyond SKILL.md"), ("docs_total", INT, None),
         ("cli_docs_read", INT, None), ("doc_tokens", BIG, None), ("doc_rereads", INT, None), ("doc_listings", INT, None),
         ("checks_passed", INT, None), ("checks_failed", INT, None), ("objects_created", INT, None),
+        ("files_written", INT, "Distinct files the run wrote: Write, Edit, or the shell (heredoc, redirect, tee, cp…)"),
+        ("files_created", INT, "Of them, the files the run created"),
+        ("support_files", INT, "Files the run created that the skill does not name (checks/<skill>.json \"files\") and "
+                               "that are not Claude Code's memory: made to do what the skill did not; empty when the "
+                               "skill names no files"),
+        ("support_scripts", INT, "Of the support files, scripts: code the agent wrote, or a file it ran"),
+        ("support_script_runs", INT, "Times the run executed its own scripts"),
+        ("inline_scripts", INT, "Programs of two lines or more handed to an interpreter without a file "
+                                "(python3 - <<'PY', python3 -c)"),
+        ("inline_script_lines", INT, None),
+        ("temp_files", INT, "Files the run created in a system temp directory"),
+        ("memory_notes", INT, "Claude Code memory files the run wrote"),
         ("end_reason", TEXT, None), ("prompt", TEXT, None), ("args", TEXT, None)], ["run_id"]),
     "skill_run_checks": ("One row per run and declared check (checks/<skill>.json).", [
         ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None), ("check_id", TEXT, None),
@@ -119,6 +132,31 @@ TABLES = {
         ("searches", INT, None), ("rereads", INT, None), ("tokens", INT, None), ("first_read_ms", BIG, None),
         ("found_by", TEXT, None), ("named_by", TEXT, None), ("version_check", TEXT, None), ("sections", TEXT, None)],
         ["run_id", "owner", "path"]),
+    "skill_run_working_files": (
+        "One row per run and file it wrote — with Write, Edit, or the shell (a heredoc into a file, a redirect, tee, "
+        "cp, curl -o) — and whether the skill names it (checks/<skill>.json \"files\"): a file the run created that "
+        "the skill does not name, and that is not Claude Code's memory, is a support file.", [
+            ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None),
+            ("path", TEXT, "Relative to the project, ~ for home, else absolute"), ("name", TEXT, None),
+            ("ext", TEXT, None), ("kind", TEXT, "script | sql | json | data | doc | env | other (a file the run ran "
+                                               "is a script)"),
+            ("location", TEXT, "project | temp (a system temp directory) | memory (Claude Code's) | home | other"),
+            ("expected", TEXT, "Which of the working files the skill names it is, when it names it"),
+            ("expected_label", TEXT, None),
+            ("created", BOOL, "The run created it: a Write that created it, or a shell write to a path the session had "
+                              "not read or written before"),
+            ("support", BOOL, "Created by the run, not named by the skill, not Claude Code's memory: made to do what "
+                              "the skill did not; empty when the skill names no files"),
+            ("via", TEXT, "How the run first wrote it: Write, Edit, heredoc, redirect, append, tee, copy, move, touch, "
+                          "download, shell"),
+            ("first_at", TS, None), ("since_start_ms", BIG, "From the run's start to its first write"),
+            ("turn", INT, None), ("scope", TEXT, "main, subagent or workflow"), ("writes", INT, None),
+            ("edits", INT, None), ("lines", INT, "At its last whole write, when the text is in the transcript"),
+            ("runs", INT, "Times the run executed or sourced it"),
+            ("used_by", TEXT, "What read it afterwards: mb transform create, jq, Read…"),
+            ("drives", TEXT, "For a script: the CLI commands in its text (mb card create…)"),
+            ("api", TEXT, "For a script: the HTTP API paths it calls (/api/card…), or http")],
+        ["run_id", "path"]),
     "questions": ("One row per question Claude put to the user: AskUserQuestion, prose, or a printed checkpoint.", [
         ("qid", TEXT, None), ("session_id", TEXT, None), ("run_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None),
         ("asked_at", TS, None), ("since_start_ms", BIG, None), ("turn", INT, None),
@@ -463,8 +501,12 @@ def session_rows(a, s):
             "docs_total": r.get("docs_total"), "cli_docs_read": r.get("cli_docs_read"), "doc_tokens": r.get("doc_tokens"),
             "doc_rereads": r.get("doc_rereads"), "doc_listings": r.get("doc_listings"),
             "checks_passed": r.get("checks_passed"), "checks_failed": r.get("checks_failed"),
-            "objects_created": r.get("objects_created"), "end_reason": r.get("end_reason"), "prompt": r.get("prompt"),
-            "args": r.get("args")})
+            "objects_created": r.get("objects_created"), "files_written": len(r.get("files_written") or ()),
+            "files_created": r.get("files_created"), "support_files": r.get("support_files"),
+            "support_scripts": r.get("support_scripts"), "support_script_runs": r.get("support_script_runs"),
+            "inline_scripts": r.get("inline_scripts"), "inline_script_lines": r.get("inline_script_lines"),
+            "temp_files": r.get("temp_files"), "memory_notes": r.get("memory_notes"),
+            "end_reason": r.get("end_reason"), "prompt": r.get("prompt"), "args": r.get("args")})
         for ch in r.get("checks") or ():
             rows["skill_run_checks"].append({
                 "run_id": r["run_id"], "session_id": sid, "skill": r["skill"], "version": ver, "check_id": ch.get("id"),
@@ -478,6 +520,16 @@ def session_rows(a, s):
                 "rereads": f.get("rereads"), "tokens": f.get("tokens"), "first_read_ms": f.get("first_dt"),
                 "found_by": f.get("found_by"), "named_by": _join(f.get("named_by")),
                 "version_check": f.get("version"), "sections": _join(f.get("sections"), " · ")})
+        for w in r.get("working_files") or ():
+            rows["skill_run_working_files"].append({
+                "run_id": r["run_id"], "session_id": sid, "skill": r["skill"], "version": ver, "path": w["path"],
+                "name": w.get("name"), "ext": w.get("ext"), "kind": w.get("kind"), "location": w.get("location"),
+                "expected": w.get("expected"), "expected_label": w.get("expected_label"), "created": w.get("created"),
+                "support": w.get("support"), "via": w.get("via"), "first_at": _iso(w.get("first_t")),
+                "since_start_ms": w.get("dt"), "turn": w.get("turn"), "scope": w.get("scope"),
+                "writes": w.get("writes"), "edits": w.get("edits"), "lines": w.get("lines"), "runs": w.get("runs"),
+                "used_by": _join(w.get("used_by")) or None, "drives": _join(w.get("drives")) or None,
+                "api": _join(w.get("api")) or None})
     run_version = {r["run_id"]: _version(r) for r in runs}
     for q in iv.get("questions") or ():
         rows["questions"].append({

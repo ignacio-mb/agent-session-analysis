@@ -101,6 +101,13 @@ or `head` count only the lines they printed. The insights say which changed file
 not see, which files no run was shown, and when the text read was not the version that ran (a stale installed
 copy reads as `older <commit>`). A change a run never saw cannot explain a difference in that run.
 
+For "what did the agent have to build itself" or "where does the skill fall short": every run records each file
+it wrote (Write, Edit, or the shell: heredocs, redirects, `tee`, `cp`) against the working files the skill asks for
+(`"files"` in `checks/<name>.json`). A file the run created that the skill does not name is a support file: report
+support files per run by version, the scripts among them with what they drive (the CLI commands and API paths in
+their text), and the programs run inline (`python3 - <<'PY'`). The same script in run after run is a step the skill
+or its CLI is missing.
+
 For "how is the interview going" or "are the questions good": every question a run asked is recorded with its
 topic (the skill's own, from `checks/<name>.json` "interview"), the options, what came back (the recommended
 option, another one, a typed answer, no preference, declined, unanswered), the wait, and flags against the
