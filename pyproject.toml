@@ -1,6 +1,6 @@
 [project]
 name = "convo-analysis"
-version = "0.3.0"
+version = "0.4.0"
 description = "Export and analyze Claude Code sessions: skills, tools, tokens, cost, subagents, files, timing."
 readme = "README.md"
 requires-python = ">=3.9"

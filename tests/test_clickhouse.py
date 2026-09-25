@@ -1,6 +1,7 @@
 """The ClickHouse load, offline: the connection string, the DDL, the rows, and the load's order of operations against
 a fake server (a live one: `make clickhouse-dev`, then scripts/metabase_dashboard.py --test --clickhouse)."""
 
+import hashlib
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import time
 
 import pytest
 
-from session_analytics import clickhouse, warehouse
+from session_analytics import clickhouse, semantics, warehouse
 from session_analytics.clickhouse import ClickHouseError, Target
 
 
@@ -95,13 +96,14 @@ def test_views_are_the_postgres_views_qualified():
 
 
 class FakeClickHouse:
-    """A tiny ClickHouse over real rows: tables with columns and per-source partitions of row dicts, answering the
-    handful of statement shapes clickhouse.py sends, and logging every statement. Constructing it as a Client counts
-    as a connection (`connections`)."""
+    """A tiny ClickHouse over real rows: tables with columns and per-source partitions of row dicts, and views with
+    their comments, answering the handful of statement shapes clickhouse.py sends, and logging every statement.
+    Constructing it as a Client counts as a connection (`connections`)."""
 
     def __init__(self, tables=None, databases=("sessions",), short=None, short_copy=None):
         # name -> {"comment", "columns", "parts": {source: [row, ...]}}
         self.tables = tables or {}
+        self.views = {}  # name -> comment
         self.databases, self.short, self.short_copy = databases, short, short_copy
         self.sql, self.connections = [], 0
 
@@ -135,8 +137,8 @@ class FakeClickHouse:
         if "system.databases" in sql:
             return [{"name": params["db"]}] if params["db"] in self.databases else []
         if "system.tables" in sql:
-            return [{"name": n, "engine": "MergeTree", "comment": t["comment"]} for n, t in self.tables.items()
-                    if "t" not in params or n == params["t"]]
+            return ([{"name": n, "engine": "MergeTree", "comment": t["comment"]} for n, t in self.tables.items()]
+                    + [{"name": n, "engine": "View", "comment": c} for n, c in self.views.items()])
         if "system.columns" in sql:
             return [{"table": n, "name": c} for n, t in self.tables.items() for c in t["columns"]]
         src = params.get("src")
@@ -165,6 +167,7 @@ class FakeClickHouse:
         self.sql.append(sql.split("\n")[0])
         params = params or {}
         name = lambda x: x.split("`.`")[1].rstrip("`")  # noqa: E731
+        comment = re.search(r"COMMENT '((?:[^'\\]|\\.)*)'\s*$", sql)
         if m := re.match(r"CREATE TABLE (?:IF NOT EXISTS )?(`\S+`)( AS (`\S+`))?", sql):
             n = name(m.group(1))
             if n not in self.tables:
@@ -172,9 +175,10 @@ class FakeClickHouse:
                     like = self.tables[name(m.group(3))]
                     self.tables[n] = self.table(like["comment"], like["columns"])
                 else:
-                    comment = re.search(r"COMMENT '((?:[^'\\]|\\.)*)'\s*$", sql)
                     self.tables[n] = self.table(comment.group(1) if comment else clickhouse.MARK,
                                                 set(re.findall(r"^  `(\w+)`", sql, re.M)))
+        elif m := re.match(r"CREATE OR REPLACE VIEW (`\S+`)", sql):
+            self.views[name(m.group(1))] = comment.group(1)
         elif m := re.match(r"INSERT INTO (`\S+`) SELECT \* FROM (`\S+`) WHERE source", sql):
             ids = self.ids_in(sql)
             kept = [dict(r) for r in self.tables[name(m.group(2))]["parts"].get(params["src"], [])
@@ -381,13 +385,30 @@ def test_forget(monkeypatch):
     assert ch.sessions("sessions", "aaaa") == {"a1", "a3"}
 
 
-def test_the_taxonomy_is_rewritten_only_when_it_changed(monkeypatch):
+STAMP = f"{clickhouse.MARK} {clickhouse.__version__} #"
+TESTS_LAYER = {"id": "tests", "label": "Tests", "description": None, "sort_order": 0}
+
+
+def _shared_writes(ch, since):
+    """The statements from `since` on that wrote a taxonomy table or a view."""
+    return [x for x in ch.sql[since:] if x.startswith("CREATE OR REPLACE VIEW") or "`de_" in x]
+
+
+def test_the_views_and_the_taxonomy_are_rewritten_only_when_they_changed(monkeypatch):
     ch = FakeClickHouse()
     monkeypatch.setattr(clickhouse, "Client", ch)
     sync(_tables({"a1": 1}), ANA)
-    before = sum("de_topics" in x and x.startswith(("EXCHANGE", "RENAME")) for x in ch.sql)
+    assert set(ch.views) == set(clickhouse.VIEWS) and all(c.startswith(STAMP) for c in ch.views.values())
+    assert ch.tables["de_topics"]["comment"].startswith(STAMP)
+    before = len(ch.sql)
     sync(_tables({"a1": 2}), ANA)
-    assert sum("de_topics" in x and x.startswith(("EXCHANGE", "RENAME")) for x in ch.sql) == before
+    assert _shared_writes(ch, before) == []
+    # this version with other content — an edit not yet committed — is written over
+    ch.views["v_daily"] = f"{STAMP}0123456789ab · edited in a checkout"
+    before = len(ch.sql)
+    sync(_tables({"a1": 3}), ANA)
+    assert _shared_writes(ch, before) == ["CREATE OR REPLACE VIEW `sessions`.`v_daily` AS"]
+    assert ch.views["v_daily"].startswith(STAMP) and "edited" not in ch.views["v_daily"]
 
 
 def test_only_the_sessions_that_ran_the_skill_are_shared():
@@ -658,16 +679,65 @@ def test_a_changed_scope_waits_for_rescope(monkeypatch):
     assert sorted(done["removed"]) == ["a1", "a2"] and "aaaa" not in ch.held("sessions")
 
 
-def test_an_older_version_does_not_replace_a_newer_taxonomy(monkeypatch):
+def test_an_older_version_leaves_what_a_newer_one_shared(monkeypatch):
     ch = FakeClickHouse()
     monkeypatch.setattr(clickhouse, "Client", ch)
     sync(_tables({"a1": 1}), ANA)
-    ch.tables["de_topics"]["comment"] = f"{clickhouse.MARK} 99.0.0 · written by a newer version"
-    newer = list(ch.rows_of("de_topics"))
-    t = _tables({"a1": 2})
-    t["de_topics"] = [{"id": "other", "label": "Other", "description": None, "sort_order": 9}]
-    sync(t, ANA)
-    assert ch.rows_of("de_topics") == newer
+    newer = f"{clickhouse.MARK} 99.0.0 #0123456789ab · written by a newer version"
+    ch.tables["de_layers"] = FakeClickHouse.table(newer, {"id", "label", "description", "sort_order"},
+                                                  {"": [TESTS_LAYER]})
+    ch.views["v_interview_questions"] = newer  # with a column this version's lacks
+    before = len(ch.sql)
+    res = sync(_tables({"b1": 3}), BO)  # this version: no tests layer, the older view
+    assert ch.held("questions") == {"aaaa": 1, "bbbb": 3}  # its own rows load as ever
+    assert res["newer"] == {"de_layers": "99.0.0", "v_interview_questions": "99.0.0"}
+    assert ch.rows_of("de_layers") == [TESTS_LAYER] and ch.views["v_interview_questions"] == newer
+    assert _shared_writes(ch, before) == []  # everything else it shares was this version's already
+    clickhouse.load(_tables({"b1": 3}), Target.from_url(URL), BO, log=None)  # nor does a full rebuild replace them
+    assert ch.rows_of("de_layers") == [TESTS_LAYER] and ch.views["v_interview_questions"] == newer
+
+
+def test_a_newer_version_puts_back_what_an_older_one_shared(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    current = _tables({"a1": 1})
+    current["de_layers"] = [TESTS_LAYER]
+    sync(current, ANA)
+    # as an older checkout left them: its taxonomy without the tests layer, its views unversioned
+    ch.tables["de_layers"] = FakeClickHouse.table(f"{clickhouse.MARK} 0.1.0 · old", {"id", "label"}, {})
+    ch.views = {n: f"{clickhouse.MARK} · {d}" for n, d in warehouse.VIEW_COMMENTS.items()}
+    res = sync(current, ANA)
+    assert res["newer"] == {} and ch.rows_of("de_layers") == [TESTS_LAYER]
+    assert ch.tables["de_layers"]["comment"].startswith(STAMP)
+    assert all(c.startswith(STAMP) for c in ch.views.values())
+
+
+def test_the_hook_log_says_this_machine_should_update(tmp_path, monkeypatch, capsys):
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    transcript, queue, args = _hook_setup(tmp_path, monkeypatch, ch)
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    ch.views["v_daily"] = f"{clickhouse.MARK} 99.0.0 #0123456789ab · written by a newer version"
+    (queue / transcript.stem).write_text(f"{transcript}\n")  # the session ends again
+    capsys.readouterr()
+    assert cli.main(args + ["--skills", "demo"]) == 0
+    out = capsys.readouterr().out
+    assert f"as convo-analysis 99.0.0 wrote them, newer than this machine's {clickhouse.__version__}" in out
+    assert "update convo-analysis here" in out
+
+
+# What every source shares, by the version that writes it: two checkouts on one version must write the same views and
+# taxonomy, or each load takes away the other's (only a newer version's are left alone). A change to a view, its
+# comment or semantics/questions.json bumps __version__ and adds its fingerprint here; a released one never changes.
+SHARED = {"0.4.0": "841661404a96"}
+
+
+def test_a_change_to_what_every_source_shares_bumps_the_version():
+    topics, layers = semantics.load().dimensions()
+    digests = clickhouse.shared_digests({"de_topics": topics, "de_layers": layers})
+    got = hashlib.sha256(json.dumps(digests, sort_keys=True).encode()).hexdigest()[:12]
+    assert SHARED.get(clickhouse.__version__) == got, \
+        f"the views or the taxonomy changed: bump __version__ and add its fingerprint to SHARED ({got})"
 
 
 def test_forget_a_session_whose_transcript_is_gone_and_share_it_again(tmp_path, monkeypatch):

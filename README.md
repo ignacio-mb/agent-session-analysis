@@ -240,9 +240,11 @@ it survives a wiped config, and never the id itself — and `person` (`CLICKHOUS
 tables are partitioned by `source`: per table, a sync rebuilds its own partition in a staging table (its rows minus
 the touched sessions', plus their new rows), checks the counts, and swaps it in with `ALTER TABLE … REPLACE
 PARTITION`, atomically, so a dashboard reading meanwhile sees the old partition or the new one. The taxonomy tables
-(`de_topics`, `de_layers`) are the only shared ones: the same for everyone, rewritten when a sync's version of them
-differs — never by an older version than the one that wrote them. A second machine, or a second Claude config directory, is a second source; a session copied between
-machines is counted once per machine that syncs it. To stop sharing altogether, empty `CLICKHOUSE_URL`.
+(`de_topics`, `de_layers`) and the views are the only shared objects: the same for everyone, each rewritten when a
+sync's version of it differs, never over what a newer version wrote. The comment on each records the version that
+wrote it and a hash of its content; a machine on an older version leaves them as they are and says to update, and
+its own rows still load. A second machine, or a second Claude config directory, is a second source; a session copied
+between machines is counted once per machine that syncs it. To stop sharing altogether, empty `CLICKHOUSE_URL`.
 
 `CLICKHOUSE_URL` is the cluster's HTTPS endpoint with a user and password and the database at the end
 (`https://<user>:<password>@<host>:8443/sessions`) — or the JDBC string the ClickHouse Cloud console gives,

@@ -15,11 +15,12 @@ older version shared); every other session — one not read this time, because i
 outside --since — stays. Per table, this source's partition is rebuilt in a staging table (its rows minus those of
 the sessions touched, plus their new rows), the counts checked, and swapped in with ALTER TABLE … REPLACE PARTITION,
 atomically: a dashboard reading meanwhile sees the old partition or the new one, and no other source's partition is
-touched. The taxonomy tables (de_topics, de_layers) are the same for everyone and rewritten only when this version's
-differ. Syncs on one machine hold a lock from reading the transcripts to the last write. Only the ids of sessions
-written or taken out are sent; a hook pass whose sessions never ran the skill, and were never shared (by the local
-record in ~/.config/convo-analysis/shared), makes no request. The target database must already exist: this never
-creates or drops one.
+touched. The taxonomy tables (de_topics, de_layers) and the views are the same for everyone: each is rewritten only
+when this version's differs, and never over what a newer version wrote (write_shared). Syncs on one machine hold a
+lock from reading the transcripts to the last write. Only the ids of sessions written or taken out are sent; a hook
+pass whose sessions never ran the skill, and were never shared (by the local record in
+~/.config/convo-analysis/shared), makes no request. The target database must already exist: this never creates or
+drops one.
 
 Everything this writes carries a comment starting with MARK. A table or view of the same name without it
 belongs to something else, and stops the load before anything is written; objects with other names are never
@@ -346,18 +347,55 @@ def columns(name):
     return out + [(c, TYPES[t] if c in pk else f"Nullable({TYPES[t]})", d) for c, t, d in cols]
 
 
-def table_ddl(db, name, as_name=None):
-    """CREATE TABLE for one warehouse table, partitioned by source (the taxonomy tables are not)."""
+def _stamp(digest=None):
+    """How the comment on everything this writes begins: MARK and the version writing it, and on what every source
+    shares (the taxonomy tables, the views) a hash of its content."""
+    return f"{MARK} {__version__}" + (f" #{digest}" if digest else "")
+
+
+def _written_by(comment):
+    """(version, content hash) of a comment's stamp: None for what an older version left unstamped."""
+    m = re.match(rf"{MARK} (\S+)(?: #([0-9a-f]+))?", comment or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def _numbers(version):
+    """0.3.0 as (0, 3, 0), to compare; no version is older than any."""
+    m = re.match(r"\d+(?:\.\d+)*", version or "")
+    return tuple(int(x) for x in m.group(0).split(".")) if m else ()
+
+
+def _digest(parts):
+    return hashlib.sha256("\n\0".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def _view_digest(name):
+    return _digest([VIEWS[name].strip(), VIEW_COMMENTS[name]])
+
+
+def shared_digests(tables):
+    """{name: content hash} of what every source shares: the taxonomy tables as `tables` holds them, and the views."""
+    out = {}
+    for name in GLOBAL:
+        cols = [(c, t) for c, t, _ in TABLES[name][1]]
+        out[name] = _digest(sorted(json.dumps({c: json_value(r.get(c), t) for c, t in cols}, sort_keys=True,
+                                              default=str) for r in tables.get(name, ())))
+    return dict(out, **{name: _view_digest(name) for name in VIEWS})
+
+
+def table_ddl(db, name, as_name=None, digest=None):
+    """CREATE TABLE for one warehouse table, partitioned by source (the taxonomy tables are not, and carry `digest`,
+    their rows' hash)."""
     comment, _, pk = TABLES[name]
     body = ",\n".join(f"  {ident(c)} {t}" + (f" COMMENT {lit(d)}" if d else "") for c, t, d in columns(name))
     part = "" if name in GLOBAL else "PARTITION BY source\n"
     return (f"CREATE TABLE {qualified(db, as_name or name)} (\n{body}\n)\nENGINE = MergeTree\n{part}"
-            f"ORDER BY ({', '.join(ident(c) for c in pk)})\nCOMMENT {lit(f'{MARK} {__version__} · {comment}')}")
+            f"ORDER BY ({', '.join(ident(c) for c in pk)})\nCOMMENT {lit(f'{_stamp(digest)} · {comment}')}")
 
 
 def view_ddl(db, name):
     return (f"CREATE OR REPLACE VIEW {qualified(db, name)} AS\n{VIEWS[name].format(db=ident(db)).strip()}\n"
-            f"COMMENT {lit(f'{MARK} · {VIEW_COMMENTS[name]}')}")
+            f"COMMENT {lit(f'{_stamp(_view_digest(name))} · {VIEW_COMMENTS[name]}')}")
 
 
 # ---------------------------------------------------------------- rows
@@ -466,14 +504,14 @@ def _replace_own_rows(client, db, name, rows, ident_, existing):
     return got
 
 
-def _replace_whole(client, db, name, rows, ident_, existing):
+def _replace_whole(client, db, name, rows, ident_, digest, exists):
     """A taxonomy table: the same for everyone, so the whole table is swapped (EXCHANGE, or RENAME the first time)."""
     stage = f"{name}__load_{ident_.source}"
     client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
-    client.run(table_ddl(db, name, as_name=stage))
+    client.run(table_ddl(db, name, as_name=stage, digest=digest))
     try:
         got = _insert(client, db, stage, name, rows, {})
-        if name in existing:
+        if exists:
             client.run(f"EXCHANGE TABLES {qualified(db, stage)} AND {qualified(db, name)}")
         else:
             client.run(f"RENAME TABLE {qualified(db, stage)} TO {qualified(db, name)}")
@@ -538,21 +576,43 @@ def machine_lock():
 
 def load(tables, target, ident_, log=print):
     """Replace this source's whole partition with `tables` — only to rebuild tables from before per-source loads
-    (sync does everything else). Returns {table: rows}."""
+    (sync does everything else, and reports what write_shared left to a newer version). Returns {table: rows}."""
     client = Client(target)
     db = target.database
     with machine_lock():
         existing = preflight(client, db)
         counts = {}
         for name in TABLES:
+            if name in GLOBAL:
+                continue
             rows = tables.get(name, ())
-            swap = _replace_whole if name in GLOBAL else _replace_own_rows
-            counts[name] = swap(client, db, name, rows, ident_, existing)
+            counts[name] = _replace_own_rows(client, db, name, rows, ident_, existing)
             if log and len(rows) >= 10000:
                 log(f"  {name}: {counts[name]:,} rows")
-        for name in VIEWS:
-            client.run(view_ddl(db, name))
+        counts.update(write_shared(client, db, tables, ident_)[0])
     return counts
+
+
+def write_shared(client, db, tables, ident_):
+    """What every source shares — the taxonomy tables, then the views over them — written where this version's
+    differ, never over what a newer version wrote: one machine on an older checkout must not take a newer taxonomy, or
+    a view's newer column, away from everyone until someone newer loads again. What an older version wrote is written
+    over, and so is this version's with other content (an uncommitted edit: a committed one bumps the version). Returns
+    ({taxonomy table: rows written}, {name: the newer version that wrote it})."""
+    comments = {r["name"]: r["comment"] for r in client.rows(
+        "SELECT name, comment FROM system.tables WHERE database = {db:String}", {"db": db})}
+    counts, newer = {}, {}
+    for name, digest in shared_digests(tables).items():
+        version, got = _written_by(comments.get(name))
+        if (version, got) == (__version__, digest):
+            continue
+        if _numbers(version) > _numbers(__version__):
+            newer[name] = version
+        elif name in GLOBAL:
+            counts[name] = _replace_whole(client, db, name, tables.get(name, ()), ident_, digest, name in comments)
+        else:
+            client.run(view_ddl(db, name))
+    return counts, newer
 
 
 def _array(values):
@@ -643,27 +703,6 @@ def _shared(client, db, existing, source):
                           {"src": source}, CONSISTENT)
         scope = got[0]["skills"] if got else None
     return held, scope
-
-
-def _version(text):
-    m = re.search(rf"{MARK} (\d+(?:\.\d+)*)", text or "")
-    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
-
-
-def _taxonomy_is_current(client, db, name, rows):
-    """Whether a taxonomy table can be left as it is: it holds these rows already, or a newer version wrote it (one
-    machine on an older version must not take a newer taxonomy away from everyone)."""
-    got = client.rows("SELECT comment FROM system.tables WHERE database = {db:String} AND name = {t:String}",
-                      {"db": db, "t": name})
-    if not got:
-        return False
-    if _version(got[0]["comment"]) > _version(f"{MARK} {__version__}"):
-        return True
-    cols = [(c, t) for c, t, _ in TABLES[name][1]]
-    have = client.rows(f"SELECT {', '.join(ident(c) for c, _ in cols)} FROM {qualified(db, name)}", settings=CONSISTENT)
-    want = [{c: json_value(r.get(c), t) for c, t in cols} for r in rows]
-    key = lambda r: json.dumps(r, sort_keys=True, default=str)  # noqa: E731
-    return sorted(map(key, have)) == sorted(map(key, want))
 
 
 def _write_load_row(client, db, ident_, row, held, scope, since):
@@ -764,28 +803,25 @@ def sync(tables, target, ident_, read_ids, skills, since="all", full=False, resc
                 [r for r in tables.get("skill_invocations", ()) if r.get("session_id") == sid], old)}
         remove = no_longer | out_of_scope | (withdrawn & set(held))
         touch = write | remove
-        counts = {}
+        counts, newer = {}, {}
         if touch:
             rows = only_sessions(tables, write, skills)
             # `sessions` last: a take-out interrupted part-way still shows the session as shared, so a retry finds it
             order = [n for n in TABLES if n not in GLOBAL and n not in ("sessions", "warehouse_load")] + ["sessions"]
             for name in order:
                 counts[name] = _merge_sessions(client, db, name, rows.get(name, ()), ident_, existing, touch)
-            for name in GLOBAL:
-                if not _taxonomy_is_current(client, db, name, tables.get(name, ())):
-                    counts[name] = _replace_whole(client, db, name, tables.get(name, ()), ident_, existing)
         mark = recorded if pending else scope
         if touch or (held and recorded != mark):
             now_held = sorted(_held_ids(client, db, preflight(client, db), ident_.source))
             counts["warehouse_load"] = _write_load_row(client, db, ident_, (tables.get("warehouse_load") or [{}])[0],
                                                        now_held, mark, since)
-            for name in VIEWS:
-                client.run(view_ddl(db, name))
+            shared, newer = write_shared(client, db, tables, ident_)
+            counts.update(shared)
         else:
             now_held = sorted(held)  # nothing to write — and with nothing shared, nothing is written at all
         write_cache(target, ident_.source, skills=scope, ids=now_held)
     return {"written": sorted(write), "removed": sorted(remove), "stale": sorted(out_of_scope), "held": len(now_held),
-            "counts": counts, "scope_pending": pending,
+            "counts": counts, "scope_pending": pending, "newer": newer,
             "withheld": sorted((_qualifying(tables, skills) & read_ids) & withdrawn)}
 
 
