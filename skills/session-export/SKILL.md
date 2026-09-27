@@ -1,7 +1,7 @@
 ---
 name: session-export
-description: Export and analyze a Claude Code session from its transcript — which skills were invoked and how (by Claude through the Skill tool, by the user as /slash commands, or injected by Claude Code), every tool call with timings and errors, aggregated counts, tokens, cost, cache use, subagents, workflows, files changed, git activity, hooks, context and compactions — as JSON, CSV, Markdown and an interactive HTML dashboard. Also rolls up many sessions. Use when the user says "export this session", "session analytics", "what skills/tools did you use", "how much did this session cost", "analyze session <id>", "what did I do in Claude Code this week", or asks for usage across sessions.
-argument-hint: "[current | latest | <session-id or prefix> | <path.jsonl>] [--own-only] [--full] [--no-redact]   ·   rollup [--since 7d] [--all]   ·   list"
+description: Export and analyze a Claude Code session from its transcript — which skills were invoked and how (by Claude through the Skill tool, by the user as /slash commands, or injected by Claude Code), every tool call with timings and errors, aggregated counts, tokens, cost, cache use, subagents, workflows, files changed, git activity, hooks, context and compactions — as JSON, CSV, Markdown and an interactive HTML dashboard. Also rolls up many sessions. Use when the user says "export this session", "session analytics", "what skills/tools did you use", "how much did this session cost", "analyze session <id>", "what did I do in Claude Code this week", or asks for usage across sessions. Also shares sessions that ran rde with the team as a file ("share my rde sessions", "send my sessions to the team"), and loads such files into the team's ClickHouse.
+argument-hint: "[current | latest | <session-id or prefix> | <path.jsonl>] [--own-only] [--full] [--no-redact]   ·   rollup [--since 7d] [--all]   ·   list   ·   share"
 ---
 
 # Session export
@@ -26,6 +26,8 @@ Arguments the user gave: `$ARGUMENTS`
 | everything in a local database, to query with SQL or explore in Metabase ("load my sessions into Postgres", "a local warehouse") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --up --load --check` (needs Docker; `--since 90d` to narrow; `--check` recounts every session from its raw transcript and compares — report whether it matched). Then give the connection: `postgresql://convo@127.0.0.1:55432/claude_sessions`, or `host.docker.internal:55432` from a Metabase in Docker |
 | the shared ClickHouse warehouse ("load / export / push my sessions into ClickHouse", "update the shared warehouse", "refresh the team dashboard") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse --check` — see **The shared warehouse** below. Report the rows loaded, whose they were, and whether the check matched |
 | to take their sessions out of the shared warehouse | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse-forget` (removes this machine's rows only) |
+| to share their sessions with the team without the ClickHouse connection string ("share my rde sessions", "send my sessions to <someone>", "make a file of my sessions for the team") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" share` — see **Sharing a file** below |
+| to load the share files others sent them (they hold the ClickHouse connection) | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --import <file or folder>` — report, per file, whose it was, the sessions loaded or taken out, and the runs labelled with a commit |
 | two runs of a skill side by side ("compare run X with run Y") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" compare <session>:<n> <session>:<n>` (run ids come from the reports) |
 
 ### The shared warehouse
@@ -53,6 +55,22 @@ this one ("push this session").
   even one whose transcript is gone) and keeps them out; `--clickhouse --session <id>` shares one again. To stop
   sharing, empty `CLICKHOUSE_URL`. If a sync reports that `CLICKHOUSE_SKILLS` changed, say how many sessions
   `--rescope` would take out and run it only if the user wants that.
+
+### Sharing a file
+
+The connection string can create and drop tables, so most people don't get one: they share a file, and whoever holds
+the connection imports it. `share` writes this machine's sessions in which rde ran to one file,
+`~/claude-session-exports/_share/sessions-<name>-<time>.json`: the same rows a sync would send, secret-looking strings
+masked, and who and which machine they come from. It sends nothing anywhere.
+
+- Report the file's path, how many sessions it holds, and that it holds every turn, tool call, file path and error of
+  those sessions. Suggest they read it before sending it (JSON, one row per line), then send it to whoever loads the
+  team's warehouse themselves. Never upload or send the file yourself.
+- `share --exclude <id>` leaves a session out of this file and every later one, and the next import takes it out of
+  the warehouse; `share --include <id>` puts it back. `--gzip` makes the file about a tenth of the size.
+- `warehouse --import` loads each file under its sender's name: a newer file from the same machine updates their
+  sessions, an older one is skipped, and no one else's rows change. It labels each run with the commit that ran,
+  against the importer's checkout of the skill (`--source <dir>` when it is not under ~/dev).
 
 Pass through any flags the user asked for:
 

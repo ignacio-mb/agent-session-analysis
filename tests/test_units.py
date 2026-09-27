@@ -70,6 +70,18 @@ def test_redact():
     assert redact(pem) == "‹redacted›"
 
 
+def test_redact_metabase_credentials():
+    key = "mb_" + "Fake0nlyForTests" * 2 + "abcdefghijk="  # the shape of a Metabase API key; not a real one
+    assert redact(f"echo '{key}' | mb auth login --profile t1") == "echo '‹redacted›' | mb auth login --profile t1"
+    assert redact(f"x-api-key: {key}") == "x-api-key: ‹redacted›"
+    token = "0123456789abcdef" * 4
+    assert redact(f"the token is {token}.") == "the token is ‹redacted›."
+    digest = f"metabase/metabase@sha256:{token}"
+    assert redact(digest) == digest  # an image digest is not a secret
+    assert redact(f"{token}ff") == f"{token}ff"  # nor a longer hex string
+    assert redact("mb_profile_default and MB_URL stay") == "mb_profile_default and MB_URL stay"
+
+
 def test_pricing_lookup_and_cost(tmp_path):
     p = Pricing()
     assert normalize_model("claude-opus-5[1m]") == "claude-opus-5"

@@ -6,6 +6,8 @@
     session-analytics skill rde             every run of a skill across sessions, by version, with checks
     session-analytics compare A B           two skill runs side by side (run ids like b3734789:1)
     session-analytics warehouse --up --load  every session into a local Postgres (tables + views)
+    session-analytics share                 the sessions that ran rde, as one file to send (no ClickHouse access)
+    session-analytics warehouse --import F  load files others sent into ClickHouse, each under its sender
     session-analytics schema [SESSION]      event-type inventory; flags what this version does not know
     session-analytics pricing               the price table used for estimates
 """
@@ -123,6 +125,12 @@ def build_parser():
     wh.add_argument("--rescope", action="store_true",
                     help="CLICKHOUSE_SKILLS changed: take out the shared sessions the new scope no longer covers (a "
                          "sync only reports them until then, so a typo there cannot delete history)")
+    wh.add_argument("--import", dest="import_files", action="append", metavar="FILE",
+                    help="load share files (session-analytics share) into ClickHouse, each under its sender's source; a "
+                         "folder loads the .json and .json.gz files in it; repeatable")
+    wh.add_argument("--source", action="append", default=[], metavar="DIR",
+                    help="--import: the skill's git checkout, to label runs with the commit that ran (default: found "
+                         "under ~/dev and friends)")
     wh.add_argument("--init-env", action="store_true",
                     help="create ~/.config/convo-analysis/.env from .env.example, to fill in CLICKHOUSE_URL")
     wh.add_argument("--env-file", help="read CLICKHOUSE_URL from this file instead of ~/.config/convo-analysis/.env")
@@ -134,6 +142,23 @@ def build_parser():
     wh.add_argument("--no-redact", action="store_true")
     wh.add_argument("--json", action="store_true")
     _common(wh)
+
+    sh = sub.add_parser("share", help="write this machine's sessions that ran rde to one file, for whoever loads the "
+                                      "team's ClickHouse (no connection string needed)")
+    sh.add_argument("--out", help="the file to write (default: ~/claude-session-exports/_share/sessions-<you>-<time>.json)")
+    sh.add_argument("--since", default="all", help="all (default), 90d, 7d, or a date (YYYY-MM-DD)")
+    sh.add_argument("--skills", help="the sessions that ran one of these skills (comma separated; * for every session). "
+                                     "Default: CLICKHOUSE_SKILLS in the env file, else rde")
+    sh.add_argument("--exclude", action="append", default=[], metavar="SESSION",
+                    help="leave this session out, of this file and every later one (an id, its prefix, or current); "
+                         "repeatable")
+    sh.add_argument("--include", action="append", default=[], metavar="SESSION",
+                    help="share a session left out earlier again; repeatable")
+    sh.add_argument("--gzip", action="store_true", help="compress the file (.json.gz, about a tenth of the size)")
+    sh.add_argument("--env-file", help="read CLICKHOUSE_PERSON and CLICKHOUSE_SKILLS from this file instead of "
+                                       "~/.config/convo-analysis/.env")
+    sh.add_argument("--json", action="store_true")
+    _common(sh)
 
     sc = sub.add_parser("schema", help="inventory event types; flag ones this version does not recognise")
     sc.add_argument("session", nargs="?", help="a session (default: every transcript)")
@@ -393,6 +418,8 @@ def cmd_warehouse(args):
         path, created = clickhouse.init_env()
         print(f"{'Created' if created else 'Already there:'} {path} — fill in CLICKHOUSE_URL (its comments say how).")
         return 0
+    if args.import_files:
+        return _import_shares(args, log)
     default_cdir = Path(locate.claude_dir(args.claude_dir))
     target, unusable = None, None
     if args.clickhouse or args.clickhouse_forget:
@@ -566,6 +593,107 @@ def cmd_warehouse(args):
     return 0 if ok else 1
 
 
+def _when(v):
+    """A row's timestamp (ISO text or epoch ms) in local time, to the minute."""
+    from .util import parse_ts
+    ms = v if isinstance(v, (int, float)) else parse_ts(v)
+    return local_str(ms, "%Y-%m-%d %H:%M") if ms else ""
+
+
+def cmd_share(args):
+    from . import clickhouse, share
+    log = (lambda *_: None) if args.json else (lambda m: print(m, file=sys.stderr))
+    try:
+        share.update_excluded(args.exclude, args.include, args.claude_dir)
+    except locate.SessionNotFound as exc:
+        print(f"session-analytics: share: {exc}", file=sys.stderr)
+        return 2
+    skills = clickhouse.skills_setting(args.env_file, args.skills)
+    doc, info = share.build(args.claude_dir, args.since, skills, args.env_file, log=log)
+    path = Path(args.out).expanduser() if args.out else share.default_path(doc, args.gzip)
+    size = share.write(doc, path, compress=args.gzip)
+    sessions = sorted(doc["tables"]["sessions"], key=lambda r: str(r.get("start_at") or ""))
+    if args.json:
+        print(json.dumps({"path": str(path), "bytes": size, "person": doc["person"], "source": doc["source"],
+                          "skills": doc["skills"], "left_out": info["left_out"], "failed": info["failed"],
+                          "sessions": [{k: r.get(k) for k in ("session_id", "start_at", "project", "title")}
+                                       for r in sessions]}, indent=2, default=str))
+        return 0
+    what = ", ".join(doc["skills"])
+    print(f"Wrote {path} ({size / 1e6:.1f} MB): {len(sessions)} session(s) that ran {what}, as {doc['person']}.")
+    for r in sessions:
+        print(f"  {_when(r.get('start_at')):<16}  {r['session_id'][:8]}  {(r.get('project') or '')[:30]:<30}  "
+              f"{(r.get('title') or '')[:60]}")
+    if info["left_out"]:
+        print(f"{len(info['left_out'])} session(s) you left out stay out (`share --include <id>` puts one back).")
+    if info["failed"]:
+        print(f"{len(info['failed'])} transcript(s) could not be read: "
+              + ", ".join(Path(f["transcript"]).stem[:8] for f in info["failed"][:5]))
+    print("\nIt holds every turn, tool call, file path and error of those sessions, with secret-looking strings "
+          "masked: JSON, one row per line, so read it before you send it. `share --exclude <id>` leaves a session out "
+          "of this file and every later one.\nSend it to whoever loads the team's warehouse: they load it with "
+          "`session-analytics warehouse --import <file>`.")
+    return 0
+
+
+def _import_shares(args, log):
+    """warehouse --import: share files into ClickHouse, oldest first, each under its sender's source."""
+    from . import clickhouse, share
+    try:
+        target = clickhouse.target_from_settings(args.env_file)
+    except clickhouse.ClickHouseError as exc:
+        print(f"session-analytics: warehouse --import: {exc}", file=sys.stderr)
+        return 1
+    skills = clickhouse.skills_setting(args.env_file, args.skills)
+    docs, ok = [], True
+    for f in share.expand(args.import_files):
+        try:
+            docs.append((f, share.read(f)))
+        except share.ShareError as exc:
+            print(f"session-analytics: warehouse --import {f}: {exc}", file=sys.stderr)
+            ok = False
+    if not docs and ok:
+        print("session-analytics: warehouse --import: no share files there", file=sys.stderr)
+        return 1
+    results = []
+    for f, doc in sorted(docs, key=lambda d: str(d[1].get("created_at") or "")):
+        try:
+            res = share.import_doc(doc, target, skills, args.source, rescope=args.rescope, log=log)
+        except clickhouse.ClickHouseError as exc:
+            print(f"session-analytics: warehouse --import {f}: {exc}", file=sys.stderr)
+            ok = False
+            continue
+        results.append(dict(res, file=str(f), person=doc["person"], machine=doc.get("machine"), source=doc["source"],
+                            made_with=doc.get("generator_version"), created_at=doc.get("created_at")))
+        if args.json:
+            continue
+        who = f"{doc['person']} ({doc.get('machine') or 'unknown machine'}, source {doc['source'][:8]})"
+        made = f"{f.name}, made with {doc.get('generator_version')} on {_when(doc.get('created_at'))}"
+        if res["skipped"]:
+            print(f"{who}: {made} — older than the last file imported from that machine "
+                  f"({_when(res['skipped'])}): skipped, so nothing rolls back.")
+            continue
+        what = []
+        if res["written"]:
+            what.append(f"shared {len(res['written'])} session(s) that ran {','.join(skills)}")
+        if res["removed"]:
+            what.append(f"took out {len(res['removed'])} (left out by them, or no longer running {','.join(skills)})")
+        if res["relabelled"]:
+            what.append(f"labelled {res['relabelled']} run(s) with the commit that ran")
+        print(f"{who}: {made} — {'; '.join(what) or 'nothing changed'}. This source now holds {res['held']} "
+              f"session(s); every other source's rows are untouched.")
+        if res.get("scope_pending"):
+            sp = res["scope_pending"]
+            print(f"  Its sessions were shared under {sp['from']}, now {sp['to']}: {sp['would_take_out']} stay until "
+                  f"`warehouse --import <file> --rescope`.")
+        if res.get("newer"):
+            print(f"  Left {len(res['newer'])} shared view(s) and taxonomy table(s) to a newer version "
+                  f"({', '.join(sorted(set(res['newer'].values())))}): update this checkout or plugin.")
+    if args.json:
+        print(json.dumps(results, indent=1, default=str))
+    return 0 if ok else 1
+
+
 def cmd_schema(args):
     from .schema_scan import scan
     cdir = locate.claude_dir(args.claude_dir)
@@ -615,7 +743,7 @@ def main(argv=None):
         args = build_parser().parse_args(["export"] + list(argv or sys.argv[1:]))
     started = time.time()
     code = {"export": cmd_export, "list": cmd_list, "rollup": cmd_rollup, "skill": cmd_skill, "compare": cmd_compare,
-            "schema": cmd_schema, "pricing": cmd_pricing, "warehouse": cmd_warehouse}[args.cmd](args)
+            "schema": cmd_schema, "pricing": cmd_pricing, "warehouse": cmd_warehouse, "share": cmd_share}[args.cmd](args)
     if os.environ.get("SESSION_ANALYTICS_TIMING"):
         print(f"({time.time() - started:.2f}s)", file=sys.stderr)
     return code

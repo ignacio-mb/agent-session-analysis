@@ -309,6 +309,8 @@ def build_runs(ctx, reqs, calls, trace, check_files=(), sources_extra=(), docs=N
             "start_ms": start, "end_ms": max(ts_all) if ts_all else start, "window_end_ms": end,
             "end_reason": g["end_reason"],
             "version": version, "fingerprint": inv.fingerprint, "base_dir": inv.base_dir,
+            # what the version was resolved from, so a machine with the skill's git history can label it again
+            "invoked_ms": inv.ts, "read_hashes": read_hashes,
             "body_chars": inv.content_chars,
             "nested_skills": [{"name": x.canonical or x.name, "mode": x.mode, "t": x.ts} for x in g["nested"]],
             "failed_invocations": [{"name": x.name, "t": x.ts, "error": ctx.text(x.error, 160)} for x in failed

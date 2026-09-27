@@ -35,6 +35,10 @@ _PATTERNS = [
     re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
     # Bearer tokens in headers
     re.compile(r"(?i)(?<=bearer\s)[A-Za-z0-9._~+/\-]{20,}=*"),
+    # Metabase API keys, as `mb` and the Admin settings show them (echo 'mb_…' | mb auth login)
+    re.compile(r"\bmb_[A-Za-z0-9+/]{30,}={0,2}"),
+    # Metabase license tokens: 64 hex characters standing alone (a sha256:… image digest is left alone)
+    re.compile(r"(?<![0-9A-Za-z:])[0-9a-f]{64}(?![0-9A-Za-z])"),
 ]
 
 # key=value / key: value where the key names a secret; keeps the key, masks the value.

@@ -705,10 +705,11 @@ def _shared(client, db, existing, source):
     return held, scope
 
 
-def _write_load_row(client, db, ident_, row, held, scope, since):
-    """warehouse_load: one row per source saying what it holds; none once it holds nothing (no trace of who loaded)."""
+def _write_load_row(client, db, ident_, row, held, scope, since, generator=None):
+    """warehouse_load: one row per source saying what it holds; none once it holds nothing (no trace of who loaded).
+    `generator`: the version that built the rows, when not this one (a share file made elsewhere)."""
     rows = [dict(row or {}, loaded_at=util.iso(time.time() * 1000), transcripts=len(held), sessions=len(held),
-                 since=since, generator_version=__version__, skills=scope)] if held else []
+                 since=since, generator_version=generator or __version__, skills=scope)] if held else []
     return _replace_own_rows(client, db, "warehouse_load", rows, ident_, preflight(client, db))
 
 
@@ -756,8 +757,9 @@ def needs_sync(target, ident_, read_ids, qualifying, skills):
     return bool(set(read_ids) & set(cache.get("ids") or ()))
 
 
-def sync(tables, target, ident_, read_ids, skills, since="all", full=False, rescope=False, log=print):
-    """Bring this source's rows in line with the transcripts just read (`read_ids`: sessions, `tables`: their rows).
+def sync(tables, target, ident_, read_ids, skills, since="all", full=False, rescope=False, log=print, generator=None):
+    """Bring this source's rows in line with the transcripts just read (`read_ids`: sessions, `tables`: their rows;
+    `generator`: the version that built them, when a share file brought them from another machine).
       - a session read that ran one of `skills` is written (added, or its rows replaced) — unless it was withdrawn;
       - a session read that did not is taken out, if it was there;
       - a shared session whose own rows in the warehouse show it does not qualify is taken out, read or not (what an
@@ -814,7 +816,7 @@ def sync(tables, target, ident_, read_ids, skills, since="all", full=False, resc
         if touch or (held and recorded != mark):
             now_held = sorted(_held_ids(client, db, preflight(client, db), ident_.source))
             counts["warehouse_load"] = _write_load_row(client, db, ident_, (tables.get("warehouse_load") or [{}])[0],
-                                                       now_held, mark, since)
+                                                       now_held, mark, since, generator)
             shared, newer = write_shared(client, db, tables, ident_)
             counts.update(shared)
         else:
