@@ -298,6 +298,34 @@ else in the database is touched. A newer version's columns are added to the tabl
 table from before per-source loads is rebuilt once. `make clickhouse-dev-test` tries the whole path on a throwaway
 local ClickHouse (docker compose, profile `clickhouse`; `make clickhouse-dev-down` removes it).
 
+### Sharing a file instead of the connection string
+
+The connection string above can create and drop tables, so it stays with whoever runs the warehouse. Everyone else
+shares a file, and that person imports it:
+
+```bash
+session-analytics share                        # this machine's sessions that ran rde, as one file
+session-analytics share --exclude <id>         # leave a session out, of this file and every later one
+session-analytics warehouse --import <files>   # whoever holds the connection: load them (a folder works too)
+```
+
+(Through the plugin: ask Claude Code to "share my rde sessions", or run `session_export.py share`.)
+
+`share` writes `~/claude-session-exports/_share/sessions-<name>-<time>.json`: the rows a sync would write for the
+sessions in which rde ran (`--skills`, as `CLICKHOUSE_SKILLS`), with secret-looking strings masked and the person and
+source they come from. It is JSON with one row per line, so the sender can read exactly what they send; `--gzip`
+makes it about a tenth of the size. A session that never ran rde leaves neither its rows nor its id, and only the
+transcripts that invoke the skill are parsed. Nothing is sent anywhere: the sender passes the file on themselves,
+somewhere only the importer reads it.
+
+`warehouse --import` loads each file, oldest first, with the same sync as a direct load, under the sender's source: a
+newer file from the same machine updates their sessions, an older one is skipped so nothing rolls back, and no one
+else's rows change. A session the sender left out is taken out, and stays out until a later file includes it. The
+taxonomy is the importer's, as in a direct load. Each run is labelled again with the git commit that ran, against the
+importer's checkout of the skill (`--source <dir>` when it is not under ~/dev): a tester who installed rde without
+its git history can't label their runs, but the file carries what the label is resolved from — the fingerprint of
+the SKILL.md that ran, and the skill files each run read.
+
 ### A Metabase dashboard on either
 
 `scripts/metabase_dashboard.py` builds a Metabase dashboard on the warehouse — Overview, Skill versions,
@@ -356,7 +384,7 @@ passwords, credentials in URLs) are masked by default; `--no-redact` turns that 
 unless you pass `--full`. Nothing is sent anywhere unless you load a warehouse: the files stay where they are
 written. A ClickHouse load (and a Metabase dashboard on it) puts prompt previews, questions and answers, command
 summaries, error messages and file paths, with your name on them, wherever that cluster and that collection are
-readable; `--clickhouse-forget` takes them out.
+readable; `--clickhouse-forget` takes them out. A share file holds the same, and goes wherever you send it.
 
 ## Development
 

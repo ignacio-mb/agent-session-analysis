@@ -607,6 +607,7 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
     seen_keys = {k: set() for k in TABLES}
     failed = []
     read = set()  # the sessions whose transcripts read cleanly, empty ones included
+    versions = {}  # run_id: what its version was resolved from (share files carry it, to be labelled elsewhere)
     for n, f in enumerate(files, 1):
         try:
             s = parse_session(f, own_only=True)
@@ -622,6 +623,12 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
                         continue  # a session file seen twice (a relocated copy): keep the first
                     seen_keys[k].add(key)
                     tables[k].append(r)
+            for r in a.get("skill_runs") or ():
+                v = r.get("version") or {}
+                versions.setdefault(r["run_id"], {
+                    "session_id": s.session_id, "skill": r["skill"], "fingerprint": r.get("fingerprint"),
+                    "invoked_ms": r.get("invoked_ms"), "read_hashes": r.get("read_hashes") or {},
+                    "status": v.get("status"), "label": v.get("label")})
             read.add(s.session_id)
         except Exception as exc:  # one unreadable transcript must not sink the warehouse
             failed.append({"transcript": str(f), "error": f"{type(exc).__name__}: {exc}"})
@@ -632,7 +639,7 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
                                   "sessions": len(tables["sessions"]), "since": since, "generator_version": __version__,
                                   "skills": "*"}]
     return tables, {"transcripts": len(files), "failed": failed, "cutoff": cutoff, "now": now, "read": read,
-                    "files": files}
+                    "files": files, "versions": versions}
 
 
 DEFAULT_SKILLS = ("rde",)  # the shared warehouse's scope when nothing else is set: sessions that ran the rde skill
