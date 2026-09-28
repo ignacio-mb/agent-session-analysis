@@ -16,7 +16,8 @@ Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432
 `tool_calls`, `cli_calls` (every program in every shell command, by signature), `skill_invocations`,
 `skill_runs`, `skill_run_checks`, `skill_run_files`, `skill_run_working_files` (every file a run wrote, and
 whether the skill names it), `questions`, `question_options`, `subagents`,
-`files_touched`, `tool_errors`, plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
+`files_touched`, `tool_errors`, `run_instances`, `run_artifacts`, `run_artifact_checks`, `run_source_tables` (what
+each skill run left in its Metabase, below), plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
 that answer the usual questions: `v_skill_versions` (each version of a skill compared), `v_check_rates`,
 `v_question_topics`, `v_question_semantics` (questions by data-engineering topic × layer, per version),
 `v_interview_questions` (one row per question, ready to explore), `v_question_outcomes`, `v_typed_answers`,
@@ -62,7 +63,8 @@ make clickhouse-forget  # take this machine's sessions out, and keep them out (-
 separated; a plugin's `…:rde` counts, and `agent-skills:rde` means only that plugin's; `*` for every session). Only
 a Skill call that completed counts: rejected, failed, or still waiting at the permission prompt, it did not run the
 skill. Once rde ran in a session, all of that session goes: every turn and prompt preview, tool call, file path and
-error, other skills' runs, subagents — before and after the rde run. Sessions that never ran rde stay on the
+error, other skills' runs, subagents — before and after the rde run — and the snapshot of what its rde runs built in
+their Metabase (names, descriptions and SQL; source tables as counts, never a value). Sessions that never ran rde stay on the
 machine: not their rows, not their ids. Once `CLICKHOUSE_URL` is set, the SessionEnd hook shares each qualifying
 session as it ends, automatically; one that never ran rde makes no request either — except the very first pass on a
 machine (or after `~/.config` was wiped), which asks the cluster, with this machine's source hash only, what the
@@ -135,3 +137,31 @@ taxonomy is the importer's, as in a direct load. Each run is labelled again with
 importer's checkout of the skill (`--source <dir>` when it is not under ~/dev): a tester who installed rde without
 its git history can't label their runs, but the file carries what the label is resolved from — the fingerprint of
 the SKILL.md that ran, and the skill files each run read.
+
+## What a run built: a snapshot of its Metabase
+
+The transcript holds what the agent did; the Metabase it worked on holds what it made, and that instance is often a
+local Docker container gone soon after. So when the SessionEnd hook (or `warehouse --session`) syncs a session, it
+first takes a snapshot of the Metabase each rde run used (`src/session_analytics/instance.py`), once per run, into
+`~/claude-session-exports/_instances/<session id>/<run id>.json`; every load, Postgres or ClickHouse, reads the file,
+so a reload never needs the instance again.
+
+- **Which instance**: the mb CLI profile the run's commands name (`--profile x`, `-p x`, `MB_PROFILE=x`, `PROFILE=x`),
+  else the profile whose URL the prompt names. Everything goes through `mb` with that profile, so no credential is
+  read here. Only a local instance is captured (localhost, 127.0.0.1, `*.localhost`, host.docker.internal): listing a
+  shared production Metabase's content from a hook would load it for everyone. A remote one is recorded as not
+  captured; one that does not answer is recorded as such and tried again on the next sync.
+- **What the run built** (`run_artifacts`): every transform, transform test, question, model, metric, measure,
+  segment, dashboard and document created or changed between the run's start and its last event, with its definition
+  (SQL, or MBQL), and whether each question runs and how many rows it returns. An object two overlapping runs saw is
+  the later run's. A kind the instance lacks (transform tests without the feature) is skipped and said so; an
+  instance with more than 5,000 questions is not listed whole.
+- **Checks on it** (`run_artifact_checks`, `instance.CHECKS`): it runs; it returns rows (questions on a dashboard);
+  it has a description; the transform's last run succeeded and it has a transform test; the question is on a
+  dashboard and, when it aggregates, does it with a metric or measure by id; the dashboard's filters reach every card
+  and it has a text card; its name is not a probe's or a leftover's. The checks are worked out when the snapshot is
+  loaded, so changing one needs no instance.
+- **The data it built on** (`run_source_tables`): every active table no transform writes in the databases the run's
+  transforms and questions read, as counts: rows, columns by kind, keys and relationships, JSON and coerced columns,
+  empty and mostly-empty columns. Never a value.
+- `--no-capture` loads without taking snapshots.

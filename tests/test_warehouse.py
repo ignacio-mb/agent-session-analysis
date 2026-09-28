@@ -31,6 +31,16 @@ def test_session_rows_cover_every_table(claude_dir, skill_dir, checks_file):  # 
             assert all(r.get(k) is not None for k in pk), (name, pk)
 
 
+def test_a_session_is_keyed_by_its_opening_prompt_as_a_run_is():
+    typed = [{"trigger": "task_notification", "prompt": "done"},
+             {"trigger": "prompt", "prompt": "I want to use @/tmp/a.csv Sample database data, https://x.io/y to build"},
+             {"trigger": "prompt", "prompt": "now a dashboard"}]
+    assert warehouse._first_prompt_key(typed) == "i want to use sample database data to"
+    command = [{"trigger": "command", "prompt": None, "command": "/rde", "command_args": "I want to use Sample data"}]
+    assert warehouse._first_prompt_key(command) == "i want to use sample data"
+    assert warehouse._first_prompt_key([{"trigger": "bash", "prompt": "ls"}]) is None
+
+
 def test_bundle_and_sql(claude_dir, skill_dir, checks_file, tmp_path):  # noqa: F811
     interview_session(claude_dir, skill_dir)
     tables, meta = warehouse.build(claude_dir=claude_dir, since="all")

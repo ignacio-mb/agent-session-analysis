@@ -26,7 +26,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import locate, semantics, util
+from . import instance, locate, semantics, skillruns, util
 from .analyze import analyze, categorize_error, cli_calls, primary_program
 from .export import default_root
 from .parse import parse_session
@@ -75,7 +75,9 @@ TABLES = {
         ("claude_code_version", TEXT, "Claude Code version (the most used, if several)"),
         ("entrypoint", TEXT, "How Claude Code was started: cli, desktop, sdk…"),
         ("git_branch", TEXT, "git branch (the most used, if several)"), ("cwd", TEXT, "Working directory"),
-        ("transcript", TEXT, "Path of the transcript file")], ["session_id"]),
+        ("transcript", TEXT, "Path of the transcript file"),
+        ("prompt_key", TEXT, "The first prompt's opening words, lowercased, as skill_runs.prompt_key: a session "
+                             "and a skill run given the same prompt share it")], ["session_id"]),
     "turns": ("One row per turn: a prompt and everything Claude did before handing back.", [
         ("session_id", TEXT, "The session (sessions.session_id)"),
         ("turn", INT, "Turn number within the session, from 0"), ("start_at", TS, "When the turn started"),
@@ -317,6 +319,66 @@ TABLES = {
         ("creates", INT, "Writes that created the file"), ("lines_added", INT, "Lines added"),
         ("lines_removed", INT, "Lines removed"), ("errors", INT, "Calls on it that returned an error")],
         ["session_id", "path"]),
+    "run_instances": ("One row per skill run and Metabase instance it used: the snapshot taken when its session "
+                      "ended (instance.py).", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance: host and port, never a path or a credential"),
+        ("profile", TEXT, "The mb CLI profile the run used"), ("captured_at", TS, "When the snapshot was taken"),
+        ("reachable", BOOL, "The instance answered; when not, nothing below it was captured"),
+        ("error", TEXT, "Why it did not answer"),
+        ("skipped", TEXT, "What the instance could not list (a feature it lacks), with why"),
+        ("objects_created", INT, "Objects the run created (run_artifacts, in_run = created)"),
+        ("objects_changed", INT, "Objects created earlier that the run changed"),
+        ("source_tables", INT, "Source tables profiled (run_source_tables)")], ["session_id", "run_id", "host"]),
+    "run_artifacts": ("One row per Metabase object a skill run created or changed: its definition, and whether it "
+                      "works, as the instance held it when the session ended.", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance (run_instances.host)"),
+        ("kind", TEXT, "question | model | metric | transform | transform_test | dashboard | measure | segment | "
+                       "document"),
+        ("object_id", BIG, "Its id in that instance"), ("name", TEXT, "Its name"),
+        ("in_run", TEXT, "created: the run made it; changed: it existed and the run changed it"),
+        ("created_at", TS, "When it was created"), ("updated_at", TS, "When it was last changed"),
+        ("collection_id", BIG, "Its collection"), ("description", TEXT, "Its description (truncated)"),
+        ("query_kind", TEXT, "native (SQL) | mbql (query builder, metrics and measures by id)"),
+        ("definition", TEXT, "Its SQL, or its MBQL as JSON (truncated)"), ("display", TEXT, "Questions: the chart"),
+        ("database_id", BIG, "The database it reads or writes"),
+        ("dashboard_id", BIG, "A question saved inside a dashboard: that dashboard"),
+        ("target_table", TEXT, "Transforms: the table it writes, schema.table"),
+        ("last_run_status", TEXT, "Transforms: how its last run ended"),
+        ("transform_tests", INT, "Transforms: transform tests the run wrote for it"),
+        ("tabs", INT, "Dashboards: tabs"), ("dashboard_filters", INT, "Dashboards: filters"),
+        ("dashcards", INT, "Dashboards: cards, text included"), ("card_dashcards", INT, "Dashboards: cards of a question"),
+        ("text_dashcards", INT, "Dashboards: text and heading cards"),
+        ("unmapped_dashcards", INT, "Dashboards with filters: question cards wired to none of them"),
+        ("on_dashboards", INT, "Questions: the run's dashboards showing it"),
+        ("uses_metric", BOOL, "Questions: aggregates a metric or measure by id"),
+        ("run_status", TEXT, "Questions, models, metrics: how running it ended (completed | failed)"),
+        ("row_count", BIG, "Rows it returned"), ("run_error", TEXT, "What running it said, when it failed")],
+        ["session_id", "run_id", "host", "kind", "object_id"]),
+    "run_artifact_checks": ("One row per object a skill run made and check on it (instance.CHECKS): does it run, "
+                            "is it described, tested, wired, reused.", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance (run_instances.host)"), ("kind", TEXT, "The object's kind (run_artifacts.kind)"),
+        ("object_id", BIG, "The object (run_artifacts.object_id)"), ("check_id", TEXT, "The check"),
+        ("status", TEXT, "pass | fail"), ("detail", TEXT, "Why it failed")],
+        ["session_id", "run_id", "host", "kind", "object_id", "check_id"]),
+    "run_source_tables": ("One row per source table a skill run built on, profiled from Metabase's metadata: its "
+                          "size and shape, never a value it holds.", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance (run_instances.host)"), ("table_id", BIG, "The table's id in that instance"),
+        ("db_id", BIG, "Its database"), ("schema_name", TEXT, "Its schema"), ("table_name", TEXT, "Its name"),
+        ("rows", BIG, "Rows (Metabase's estimate, else counted)"), ("columns", INT, "Columns"),
+        ("pk_columns", INT, "Primary-key columns"), ("fk_columns", INT, "Foreign-key columns"),
+        ("numeric_columns", INT, "Number columns"), ("temporal_columns", INT, "Date and time columns"),
+        ("text_columns", INT, "Text columns"), ("boolean_columns", INT, "True/false columns"),
+        ("json_columns", INT, "JSON, array and dictionary columns"),
+        ("text_json_columns", INT, "Text columns that mostly hold JSON"),
+        ("coerced_columns", INT, "Columns Metabase reads as another type (a date kept as text or a number)"),
+        ("empty_columns", INT, "Columns with no value at all"),
+        ("mostly_empty_columns", INT, "Columns empty in half the rows or more"),
+        ("max_null_share", NUM, "The largest share of empty values in one column")],
+        ["session_id", "run_id", "host", "table_id"]),
     "warehouse_load": ("The load that produced these tables: when, and from how many transcripts.", [
         ("loaded_at", TS, "When the load ran"), ("transcripts", INT, "Transcripts read"),
         ("sessions", INT, "Sessions loaded"), ("since", TEXT, "How far back transcripts were read (--since)"),
@@ -537,6 +599,17 @@ def _version(run):
     return v.get("commit") or v.get("label")
 
 
+def _first_prompt_key(turns):
+    """The key of the prompt that opened the session (its first typed prompt or /slash command), as a skill run keys
+    its own: a session given a run's prompt without the skill is compared with that run."""
+    first = next((t for t in turns if t.get("trigger") in ("prompt", "command")), None)
+    if first is None:
+        return None
+    if first.get("trigger") == "command":
+        return skillruns.prompt_key(f"{first.get('command') or ''} {first.get('command_args') or ''}")
+    return skillruns.prompt_key(first.get("prompt"))
+
+
 def session_rows(a, s):
     """{table: [row, ...]} for one analyzed session (`a`) and its parsed transcript (`s`)."""
     sid = s.session_id
@@ -567,7 +640,8 @@ def session_rows(a, s):
         "commits": tot.get("commits"), "pull_requests": tot.get("pull_requests"),
         "models": ", ".join(m.get("model") or "" for m in se.get("models") or ()),
         "claude_code_version": _top(se.get("claude_code_versions")), "entrypoint": _top(se.get("entrypoints")),
-        "git_branch": _top(se.get("git_branches")), "cwd": se.get("cwd"), "transcript": se.get("transcript")})
+        "git_branch": _top(se.get("git_branches")), "cwd": se.get("cwd"), "transcript": se.get("transcript"),
+        "prompt_key": _first_prompt_key(a["turns"]["rows"])})
     for t in a["turns"]["rows"]:
         rows["turns"].append({
             "session_id": sid, "turn": t["index"], "start_at": t.get("start"), "end_at": t.get("end"),
@@ -727,8 +801,10 @@ def _cell(v):
 
 
 def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, pricing=None, now_ms=None, log=None,
-          transcripts=None):
-    """Analyze every transcript in scope — or only `transcripts` (main transcript paths): ({table: rows}, meta)."""
+          transcripts=None, capture=None, instances_root=None, capture_skills=None):
+    """Analyze every transcript in scope — or only `transcripts` (main transcript paths): ({table: rows}, meta). For
+    the sessions in `capture` (ids), first snapshot what their runs of `capture_skills` built in Metabase
+    (instance.py); every session's snapshots on disk load with it."""
     from . import __version__
     now = now_ms if now_ms is not None else time.time() * 1000
     cutoff = parse_since(since, now)
@@ -751,7 +827,16 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
                 read.add(s.session_id)
                 continue
             a = analyze(s, pricing, redactor=R, now_ms=now)
-            for k, rs in session_rows(a, s).items():
+            if capture is not None and s.session_id in capture:
+                try:
+                    instance.capture_session(a, s, now, root=instances_root, log=log,
+                                             wanted=lambda run: _captures(run, capture_skills or DEFAULT_SKILLS))
+                except instance.MbError as exc:  # no CLI, or it cannot list its profiles: load what there is
+                    if log:
+                        log(f"  no instance snapshot for {s.session_id[:8]}: {exc}")
+            rows = session_rows(a, s)
+            rows.update(instance.session_rows(s.session_id, R, instances_root))
+            for k, rs in rows.items():
                 pk = TABLES[k][2]
                 for r in rs:
                     key = tuple(r.get(c) for c in pk)
@@ -787,6 +872,11 @@ def _skill_matches(name, skills):
     if not name:
         return False
     return any(name == w or (":" not in w and name.rsplit(":", 1)[-1] == w) for w in skills)
+
+
+def _captures(run, skills):
+    """A run whose instance gets a snapshot: one of the skills the warehouse shares (`*`: every skill)."""
+    return "*" in skills or _skill_matches(run.get("skill") or "", skills)
 
 
 def qualifies(invocations, skills):
@@ -886,12 +976,14 @@ def load(out_dir, psql):
 
 def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_load=False, start=False,
                   container=CONTAINER, dsn=None, redact=True, pricing=None, log=print, clickhouse_target=None,
-                  clickhouse_identity=None, sessions=None, skills=DEFAULT_SKILLS, rescope=False, write_files=True):
+                  clickhouse_identity=None, sessions=None, skills=DEFAULT_SKILLS, rescope=False, write_files=True,
+                  capture=True):
     """Analyze once; write the files; load Postgres (do_load: every session) and/or sync ClickHouse
     (clickhouse_target, as clickhouse_identity: see clickhouse.sync — sessions that ran one of `skills` are shared,
     and only that source's rows change). `sessions` (main transcript paths: the SessionEnd hook) limits what is read
-    for ClickHouse to those; without, every transcript in scope is read. A target that fails does not stop the
-    other: its error is in `errors`."""
+    for ClickHouse to those; without, every transcript in scope is read. Those sessions' skill runs get a snapshot of
+    what they built in Metabase (capture; once per run, when the instance answers). A target that fails does not stop
+    the other: its error is in `errors`."""
     out = Path(out_dir) if out_dir else default_root() / "_warehouse" / datetime.now().strftime("%Y-%m-%d_%H%M")
     if start:
         log("Starting Postgres (docker compose up -d --wait)…")
@@ -905,7 +997,9 @@ def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_l
         log("Analyzing transcripts…")
         # Postgres always gets every session; ClickHouse alone, per session, needs only those transcripts read.
         only = sessions if sessions is not None and not do_load else None
-        tables, meta = build(claude_dir, project, since, redact=redact, pricing=pricing, log=log, transcripts=only)
+        snap = {Path(t).stem for t in sessions} if capture and sessions else None
+        tables, meta = build(claude_dir, project, since, redact=redact, pricing=pricing, log=log, transcripts=only,
+                             capture=snap, capture_skills=skills)
         counts = write_bundle(tables, out) if write_files else {k: len(v) for k, v in tables.items()}
         res = {"out_dir": str(out), "counts": counts, "meta": meta, "loaded": False, "clickhouse": None, "errors": {},
                "connection": {"host": "127.0.0.1", "port": PORT, "database": DATABASE, "user": USER,

@@ -122,6 +122,9 @@ def build_parser():
     wh.add_argument("--session-queue", metavar="DIR",
                     help="ClickHouse: update only the sessions queued in DIR (one file per session, holding its "
                          "transcript path; the SessionEnd hook writes them), and clear what was handled")
+    wh.add_argument("--no-capture", action="store_true",
+                    help="with --session / --session-queue: do not snapshot what those sessions' skill runs built in "
+                         "their Metabase instance (taken once per run, through the mb CLI, when the instance answers)")
     wh.add_argument("--rescope", action="store_true",
                     help="CLICKHOUSE_SKILLS changed: take out the shared sessions the new scope no longer covers (a "
                          "sync only reports them until then, so a typo there cannot delete history)")
@@ -519,7 +522,8 @@ def cmd_warehouse(args):
                                           start=args.up and n == 0, container=args.container, dsn=args.dsn,
                                           redact=not args.no_redact, pricing=Pricing(args.pricing), log=log,
                                           clickhouse_target=target, clickhouse_identity=ident, sessions=group,
-                                          skills=skills, rescope=args.rescope, write_files=n == 0)
+                                          skills=skills, rescope=args.rescope, write_files=n == 0,
+                                          capture=not args.no_capture)
         except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
             detail = getattr(exc, "stderr", None) or str(exc)
             print(f"session-analytics: warehouse: {detail}".strip(), file=sys.stderr)
