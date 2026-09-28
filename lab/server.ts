@@ -18,12 +18,20 @@ const LICENSE = process.env.MB_PREMIUM_EMBEDDING_TOKEN || process.env.RDE_LICENS
 const STATE_FILE = `${import.meta.dir}/state.json`;
 // A hostname label (the instance lives at <name>.localhost), and no ".", so `mbo-<name>.postgres` never names an instance.
 const NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
-const LABEL = { name: "mbo.name", port: "mbo.port", image: "mbo.image", db: "mbo.db", databases: "mbo.databases" };
+const LABEL = {
+  name: "mbo.name",
+  port: "mbo.port",
+  image: "mbo.image",
+  db: "mbo.db",
+  databases: "mbo.databases",
+  appDb: "mbo.appdb",
+};
 const READY_TIMEOUT_MS = 15 * 60_000;
 
 // Every instance gets its own Postgres, on its port + 10000, holding the databases below, each connected in Metabase.
 // Metabase reads through a read-only role and writes (transforms, uploads, actions) through the writable connection.
-// The image is built from db/: the Sample Database image `rde init` uses, with dba.stackexchange.com baked in.
+// The image is built from db/: the Sample Database image `rde init` uses, with an analytics database baked in, one
+// schema per dataset.
 const PG = {
   portOffset: 10_000,
   owner: "metabase",
@@ -32,6 +40,19 @@ const PG = {
 };
 const DATABASES = [
   { dbname: "sample", name: "Sample Database", description: null },
+  {
+    dbname: "analytics",
+    name: "Analytics",
+    description:
+      "Two real datasets, complete, one per schema. dba: dba.stackexchange.com, the Database Administrators Q&A " +
+      "site: its users, questions and answers, tags, comments, votes, badges and edit history, from the site's " +
+      "launch in January 2011 to March 2024 (Stack Exchange's data dump of 2024-04-06, licensed CC BY-SA). " +
+      "flight_delays: every domestic flight of 14 US airlines in 2015, with its delays, cancellations and " +
+      "diversions (the US Department of Transportation's on-time reports, public domain).",
+  },
+];
+// Postgres containers built before the analytics database hold Stack Exchange as a database of its own.
+const LEGACY_DATABASES = [
   {
     dbname: "stackexchange",
     name: "DBA Stack Exchange",
@@ -42,7 +63,15 @@ const DATABASES = [
       "licensed CC BY-SA.",
   },
 ];
-type Database = (typeof DATABASES)[number];
+// Metabase runs on this one, in the same Postgres, and it is connected too, read-only: a write there can break Metabase.
+const APP_DB = {
+  dbname: "metabase_app",
+  name: "Metabase Application Database",
+  description:
+    "The application database this Metabase runs on: its users, groups and permissions, collections, questions, " +
+    "models, metrics, dashboards, transforms, settings, query history and audit log. Read-only.",
+};
+type Database = (typeof DATABASES)[number] | (typeof LEGACY_DATABASES)[number] | typeof APP_DB;
 const readOnlyRole = (dbname: string) => `
   DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${PG.reader}') THEN
@@ -50,8 +79,13 @@ const readOnlyRole = (dbname: string) => `
     END IF;
   END $$;
   GRANT CONNECT ON DATABASE ${dbname} TO ${PG.reader};
-  GRANT USAGE ON SCHEMA public TO ${PG.reader};
-  GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${PG.reader};
+  -- every schema there is: public, or one per dataset
+  DO $$ DECLARE s text; BEGIN
+    FOR s IN SELECT nspname FROM pg_namespace WHERE nspname <> 'information_schema' AND nspname !~ '^pg_' LOOP
+      EXECUTE format('GRANT USAGE ON SCHEMA %I TO ${PG.reader}', s);
+      EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO ${PG.reader}', s);
+    END LOOP;
+  END $$;
   -- what the owner creates later through the writable connection stays readable, new schemas included
   ALTER DEFAULT PRIVILEGES FOR ROLE ${PG.owner} GRANT SELECT ON TABLES TO ${PG.reader};
   ALTER DEFAULT PRIVILEGES FOR ROLE ${PG.owner} GRANT USAGE ON SCHEMAS TO ${PG.reader};
@@ -178,7 +212,7 @@ async function ensureImage(task: Task, image: string) {
 }
 
 // The Postgres image is built here, from db/, the first time an instance needs it: a few minutes, most of them
-// downloading the Stack Exchange dump. Instances created meanwhile wait for the same build.
+// downloading and loading the datasets. Instances created meanwhile wait for the same build.
 let building: Promise<void> | undefined;
 let buildStep = "";
 
@@ -224,6 +258,12 @@ async function buildPostgresImage() {
 function metabaseSpec(name: string, image: string, port: number) {
   const env = {
     MB_SITE_URL: siteUrl(name, port),
+    MB_DB_TYPE: "postgres",
+    MB_DB_HOST: "host.docker.internal",
+    MB_DB_PORT: String(dbPortOf(port)),
+    MB_DB_DBNAME: APP_DB.dbname,
+    MB_DB_USER: PG.owner,
+    MB_DB_PASS: PG.password,
     MB_LOAD_SAMPLE_CONTENT: "false", // no H2 Sample Database, no example collection
     MB_WAREHOUSE_ALLOWED_NETWORKS: "allow-all", // warehouses on localhost / host.docker.internal
     MB_RUN_MODE: "e2e", // with MB_STORE_USE_STAGING: the token store `rde init` uses
@@ -234,7 +274,7 @@ function metabaseSpec(name: string, image: string, port: number) {
   };
   return {
     Image: image,
-    Labels: { [LABEL.name]: name, [LABEL.port]: String(port), [LABEL.image]: image },
+    Labels: { [LABEL.name]: name, [LABEL.port]: String(port), [LABEL.image]: image, [LABEL.appDb]: APP_DB.dbname },
     Env: Object.entries(env).map(([key, value]) => `${key}=${value}`),
     ExposedPorts: { "3000/tcp": {} },
     HostConfig: {
@@ -254,11 +294,14 @@ function postgresSpec(name: string, port: number) {
   };
 }
 
-// The databases a Postgres container holds. Those created before db/ existed hold the Sample Database only.
-function databasesIn(db: Container | undefined): Database[] {
+// The databases an instance's Postgres holds: those of the image, and the application database when Metabase runs on
+// it. Postgres containers created before db/ existed hold the Sample Database only; Metabase containers without the
+// mbo.appdb label run on H2.
+function databasesIn(c: Container | undefined, db: Container | undefined): Database[] {
   if (!db) return [];
   const names = (db.Labels[LABEL.databases] ?? "sample").split(",");
-  return DATABASES.filter((d) => names.includes(d.dbname));
+  const appDb = c?.Labels[LABEL.appDb] ? [APP_DB] : [];
+  return [...DATABASES, ...LEGACY_DATABASES].filter((d) => names.includes(d.dbname)).concat(appDb);
 }
 
 async function createAndStart(containerName: string, spec: object): Promise<string> {
@@ -273,9 +316,10 @@ async function launchPostgres(task: Task, name: string, port: number) {
   return createAndStart(`mbo-${name}.postgres`, postgresSpec(name, port));
 }
 
-// A fresh pair: Postgres first, then Metabase. Returns the Metabase container id.
+// A fresh pair: Postgres first, with the application database, then Metabase. Returns the Metabase container id.
 async function launch(task: Task, name: string, image: string, port: number) {
   await launchPostgres(task, name, port);
+  await createAppDatabase(task, port);
   return createAndStart(`mbo-${name}`, metabaseSpec(name, image, port));
 }
 
@@ -342,12 +386,13 @@ async function waitReady(task: Task, id: string, base: string) {
   throw new Error("Metabase did not come up in 15 minutes, see logs");
 }
 
-async function createReadOnlyRole(task: Task, port: number, dbname: string) {
+// Runs as the owner, retrying while a fresh Postgres starts up.
+async function asOwner<T>(task: Task, port: number, dbname: string, query: (sql: SQL) => Promise<T>) {
   const url = `postgres://${PG.owner}:${PG.password}@127.0.0.1:${dbPortOf(port)}/${dbname}`;
   for (let attempt = 1; ; attempt++) {
     const sql = new SQL({ url, max: 1 });
     try {
-      return await sql.unsafe(readOnlyRole(dbname));
+      return await query(sql);
     } catch (error) {
       if (attempt === 30) throw new Error(`Postgres on :${dbPortOf(port)}: ${error instanceof Error ? error.message : error}`);
     } finally {
@@ -357,6 +402,16 @@ async function createReadOnlyRole(task: Task, port: number, dbname: string) {
     await Bun.sleep(1000);
   }
 }
+
+const createReadOnlyRole = (task: Task, port: number, dbname: string) =>
+  asOwner(task, port, dbname, (sql) => sql.unsafe(readOnlyRole(dbname)));
+
+// Before Metabase starts: it exits when it can't reach its application database. CREATE DATABASE has no IF NOT EXISTS.
+const createAppDatabase = (task: Task, port: number) =>
+  asOwner(task, port, "postgres", async (sql) => {
+    const [existing] = await sql`SELECT 1 FROM pg_database WHERE datname = ${APP_DB.dbname}`;
+    if (!existing) await sql.unsafe(`CREATE DATABASE ${APP_DB.dbname} OWNER ${PG.owner}`);
+  });
 
 const details = (port: number, dbname: string, user: string) => ({
   host: "host.docker.internal",
@@ -375,7 +430,9 @@ async function connectDatabases(task: Task, base: string, session: string, port:
   const features = (await call("GET", "/api/session/properties"))["token-features"] ?? {};
   const writable = Boolean(features.writable_connection || features["writable-connection"]);
   // The main connection is final from the start: changing it closes its pool and aborts a running sync.
-  // Without a writable connection it keeps the owner, so writes still work.
+  // Without a writable connection it keeps the owner, so writes still work. The application database takes no writes.
+  const writes = (database: Database) => writable && database !== APP_DB;
+  const mainUser = (database: Database) => (writable || database === APP_DB ? PG.reader : PG.owner);
   const { data } = await call("GET", "/api/database");
   const connected: { id: number; database: Database }[] = [];
   for (const database of databases) {
@@ -384,7 +441,7 @@ async function connectDatabases(task: Task, base: string, session: string, port:
       (await call("POST", "/api/database", {
         engine: "postgres",
         name: database.name,
-        details: details(port, database.dbname, writable ? PG.reader : PG.owner),
+        details: details(port, database.dbname, mainUser(database)),
       }));
     connected.push({ id: db.id, database });
   }
@@ -405,7 +462,7 @@ async function connectDatabases(task: Task, base: string, session: string, port:
     // marker; Metabase tests it before saving.
     const changes = {
       ...(database.description && { description: database.description }),
-      ...(writable && {
+      ...(writes(database) && {
         write_data_details: { ...details(port, database.dbname, PG.owner), "write-data-connection": true },
       }),
     };
@@ -439,7 +496,7 @@ async function signIn(task: Task, name: string, id: string, port: number) {
 async function setUp(task: Task, name: string, id: string, port: number) {
   const { base, session } = await signIn(task, name, id, port);
   step(task, "connecting the databases");
-  const note = await connectDatabases(task, base, session, port, databasesIn(await findDb(name)));
+  const note = await connectDatabases(task, base, session, port, databasesIn(await find(name), await findDb(name)));
   step(task, "creating an API key");
   const groups = await metabase(base, "GET", "/api/permissions/group", undefined, session);
   const admins = groups.find?.((g: { name: string }) => g.name === "Administrators")?.id ?? 2;
@@ -452,7 +509,7 @@ async function setUp(task: Task, name: string, id: string, port: number) {
 async function reconnect(task: Task, name: string, id: string, port: number) {
   const { base, session } = await signIn(task, name, id, port);
   step(task, "connecting the databases");
-  const note = await connectDatabases(task, base, session, port, databasesIn(await findDb(name)));
+  const note = await connectDatabases(task, base, session, port, databasesIn(await find(name), await findDb(name)));
   state[id] = { ...state[id], note };
   saveState();
 }
@@ -530,7 +587,7 @@ async function list() {
       const saved = state[c.Id];
       const facts = {
         container: true,
-        postgres: databasesIn(postgres.get(name)),
+        postgres: databasesIn(c, postgres.get(name)),
         running,
         healthy,
         apiKey: saved?.apiKey ?? null,
@@ -541,7 +598,7 @@ async function list() {
   );
   for (const [name, task] of tasks) {
     if (!rows.some((row) => row.name === name)) {
-      const facts = { container: false, postgres: databasesIn(postgres.get(name)), running: false, healthy: false, apiKey: null, note: null };
+      const facts = { container: false, postgres: databasesIn(undefined, postgres.get(name)), running: false, healthy: false, apiKey: null, note: null };
       rows.push(view(name, task.port, task.image, task, facts));
     }
   }
@@ -574,9 +631,12 @@ async function act(name: string, action: string) {
     case "start": // also retries a failed setup on a running container
       return run(name, { step: "starting containers", ...info }, async (task) => {
         const db = await findDb(name);
+        const onPostgres = Boolean(c.Labels[LABEL.appDb]);
         await (db ? docker("POST", `/containers/${db.Id}/start`) : launchPostgres(task, name, port));
+        if (onPostgres) await createAppDatabase(task, port);
         await docker("POST", `/containers/${c.Id}/start`);
-        if (!state[c.Id]) await setUp(task, name, c.Id, port);
+        // A new Postgres holds an empty application database: Metabase starts over, and the saved API key is gone.
+        if (!state[c.Id] || (!db && onPostgres)) await setUp(task, name, c.Id, port);
         else if (!db) await reconnect(task, name, c.Id, port);
       });
     case "stop":
