@@ -32,7 +32,7 @@ cp lab/.env.example lab/.env     # your email and a Metabase license token
 make lab                         # then open http://localhost:4000
 ```
 
-## Already installed? Update to 0.7.0
+## Already installed? Update to 0.8.0
 
 1. **Update the skill**, then quit and reopen Claude Code (skills and hooks load when a session starts):
 
@@ -41,12 +41,12 @@ make lab                         # then open http://localhost:4000
    git checkout main && git pull            # instead, if you installed from a checkout
    ```
 
-   `claude plugin list` should show 0.7.0. Keep one install: the plugin, or a checkout with its hook, not both.
+   `claude plugin list` should show 0.8.0. Keep one install: the plugin, or a checkout with its hook, not both.
 
-2. **Share your sessions again, once**, so the rows you shared before get the new columns (each run's and
-   session's prompt key, column descriptions). In Claude Code: `/session-export update the shared warehouse`, or
-   `make clickhouse` from a checkout. Without the connection string, `/session-export share` makes a new file to
-   send. Sessions you took out stay out.
+2. **Share your sessions again, once**, so the rows you shared before get the new columns (each session's and
+   run's dataset; from 0.6.0 or older, their prompt keys and column descriptions too). In Claude Code:
+   `/session-export update the shared warehouse`, or `make clickhouse` from a checkout. Without the connection
+   string, `/session-export share` makes a new file to send. Sessions you took out stay out.
 
 3. **Keep `mb` logged in to your local Metabase.** When an rde session ends, the hook also records what the run
    built in its Metabase and the source tables it used (counts only, never values). It reaches the instance through
@@ -97,6 +97,7 @@ make clickhouse                                  # this machine's rde sessions i
 make clickhouse-forget                           # take them out, and keep them out
 session-analytics share                          # the same sessions as a file, no connection string needed
 session-analytics warehouse --import <files>     # load files others shared
+make clickhouse-datasets                         # label every shared session and run with its dataset again
 ```
 
 Update (then quit and reopen Claude Code):

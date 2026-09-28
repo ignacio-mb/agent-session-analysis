@@ -1,7 +1,7 @@
 PY39 := /usr/bin/python3
 
 .PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-check warehouse-up warehouse-down warehouse-psql \
-	env clickhouse clickhouse-forget clickhouse-dev clickhouse-dev-test clickhouse-dev-down lab
+	env clickhouse clickhouse-forget clickhouse-datasets clickhouse-dev clickhouse-dev-test clickhouse-dev-down lab
 
 test: test39
 	uv run --no-project --with pytest python -m pytest -q
@@ -56,6 +56,11 @@ clickhouse:
 # Take this machine's rows out of the shared ClickHouse; everyone else's stay.
 clickhouse-forget:
 	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse-forget
+
+# Every source's sessions and skill runs in the shared ClickHouse placed on their dataset again (semantics/datasets.json),
+# from the rows it holds: only the dataset columns change. DRY_RUN=1 prints what it would set and writes nothing.
+clickhouse-datasets:
+	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse-datasets $(if $(DRY_RUN),--dry-run)
 
 # A throwaway local ClickHouse (docker-compose.yml, profile clickhouse) to try the load on.
 clickhouse-dev:

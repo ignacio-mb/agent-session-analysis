@@ -494,7 +494,12 @@ path)`, every file a run wrote (`skill_runs[].working_files`: `kind`, `location`
 (`<session8>:<qid>`); `question_options (qid, option_no)`; `subagents (session_id, agent_id)`;
 `files_touched (session_id, path)`; `tool_errors (session_id, error_no)`; `de_topics.id` and `de_layers.id`
 (the taxonomy, with `label`, `description`, `sort_order`); `warehouse_load` (the load that produced
-the tables: `loaded_at`, `transcripts`, `sessions`, `since`, `generator_version`). `v_skill_versions` carries
+the tables: `loaded_at`, `transcripts`, `sessions`, `since`, `generator_version`). `sessions.dataset` and
+`skill_runs.dataset` name the standard dataset the session or run was on (`Stripe`, `Airline Flight Delays`, `Toy
+Store`, `DBA Stack Exchange`, `Contrast`, `Sample Database`; NULL for none), and `dataset_by` what decided it (a run: `prompt`,
+`snapshot`, `tool calls: Stripe 12`, `instance` or `session`; a session: `runs`, `title`, `snapshot`, `tool calls:
+…`, `instance` or `runs: Stripe 2, Toy Store 1`), placed from the rows themselves (`datasets.py`, rules in
+`semantics/datasets.json`; [warehouse.md](warehouse.md#which-dataset-a-session-ran-on)). `v_skill_versions` carries
 per-run averages (`avg_questions_asked`, `avg_prose_questions`, `avg_question_rounds`) beside the totals.
 `warehouse --check` (reconcile.py) recounts every session from its raw JSONL and compares — with Postgres, or after
 `--clickhouse` with ClickHouse; a session any of whose files was written after the load is live, not compared.

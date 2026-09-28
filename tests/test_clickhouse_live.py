@@ -67,3 +67,34 @@ def test_a_column_added_by_a_newer_version_on_a_real_clickhouse(target):
     clickhouse.Client(target).run(f"ALTER TABLE `{target.database}`.`questions` DROP COLUMN reask_of")
     sync(target, _tables({"a2": 1}), ANA)  # the column comes back; the copy of a1's rows still lines up
     assert held(target, "questions", "aaaa") == {"a1": 2, "a2": 1}
+
+
+def test_the_datasets_are_set_in_place_on_a_real_clickhouse(target):
+    ana = _tables({"a1": 2, "a2": 1})
+    ana["sessions"][0]["title"] = "Stripe star schema"
+    ana["skill_runs"] = [{"run_id": "a1:1", "session_id": "a1", "skill": "rde", "cost_usd": 1.25,
+                          "prompt": "it's raw_contrast's turn \\ now", "start_at": "2026-09-16T17:47:12.345Z"}]
+    sync(target, ana, ANA)
+    sync(target, _tables({"b1": 1}), BO)
+    c, db = clickhouse.Client(target), target.database
+    for name in clickhouse.DATASET_KEYS:  # as a version before the columns left the tables
+        c.run(f"ALTER TABLE `{db}`.`{name}` DROP COLUMN dataset, DROP COLUMN dataset_by")
+
+    def sums(name, cols):
+        return c.rows(f"SELECT source, count() AS n, toString(sum(cityHash64(toString(tuple({cols}))))) AS h "
+                      f"FROM `{db}`.`{name}` GROUP BY source ORDER BY source")
+    others = {n: ", ".join(f"`{x}`" for x, _, _ in clickhouse.columns(n) if x not in ("dataset", "dataset_by"))
+              for n in clickhouse.DATASET_KEYS}
+    before = {n: sums(n, cols) for n, cols in others.items()}
+    assert [r["changed"] for r in clickhouse.fill_datasets(target, dry_run=True, log=None)] == \
+        [{"sessions": 1, "skill_runs": 1}, {"sessions": 0, "skill_runs": 0}]
+    assert "dataset" not in {r["name"] for r in c.rows(f"SELECT name FROM system.columns WHERE database = '{db}' "
+                                                        "AND table = 'sessions'")}  # the dry run added nothing
+    clickhouse.fill_datasets(target, log=None)
+    assert {n: sums(n, cols) for n, cols in others.items()} == before  # every other column as it was
+    got = {r["session_id"]: (r["dataset"], r["dataset_by"]) for r in c.rows(
+        f"SELECT session_id, dataset, dataset_by FROM `{db}`.`sessions`")}
+    assert got == {"a1": ("Contrast", "runs"), "a2": (None, None), "b1": (None, None)}
+    (run,) = c.rows(f"SELECT dataset, dataset_by, prompt FROM `{db}`.`skill_runs`")
+    assert (run["dataset"], run["dataset_by"], run["prompt"]) == ("Contrast", "prompt", "it's raw_contrast's turn \\ now")
+    assert not [r for r in c.rows(f"SELECT name FROM system.tables WHERE database = '{db}'") if "__datasets" in r["name"]]

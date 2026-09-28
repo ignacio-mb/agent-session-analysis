@@ -27,7 +27,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import instance, locate, semantics, skillruns, util
+from . import datasets, instance, locate, semantics, skillruns, util
 from .analyze import analyze, categorize_error, cli_calls, primary_program
 from .export import default_root
 from .parse import parse_session
@@ -80,7 +80,13 @@ TABLES = {
         ("prompt_key", TEXT, "The first prompt's opening words, lowercased, as skill_runs.prompt_key: a session "
                              "and a skill run given the same prompt share it"),
         ("baseline", BOOL, "The first prompt opened with `baseline:`: a direct agent given, without the skill, a "
-                           "prompt the skill is compared on; shared with the skill's sessions")], ["session_id"]),
+                           "prompt the skill is compared on; shared with the skill's sessions"),
+        ("dataset", TEXT, "The standard dataset the session ran on (semantics/datasets.json): Stripe, Airline Flight "
+                          "Delays, Toy Store, DBA Stack Exchange, Contrast, Sample Database; empty when nothing "
+                          "settles it"),
+        ("dataset_by", TEXT, "What decided the dataset: runs (its runs' own datasets agree), title, snapshot, tool "
+                             "calls (with how many name each), instance, or runs: the split, when they disagree")],
+        ["session_id"]),
     "turns": ("One row per turn: a prompt and everything Claude did before handing back.", [
         ("session_id", TEXT, "The session (sessions.session_id)"),
         ("turn", INT, "Turn number within the session, from 0"), ("start_at", TS, "When the turn started"),
@@ -212,7 +218,12 @@ TABLES = {
                              "| harness-injected skill"),
         ("prompt", TEXT, "What the user asked when the run started (redacted, truncated)"),
         ("prompt_key", TEXT, "The prompt's opening words, lowercased: runs of one prompt share it"),
-        ("args", TEXT, "Arguments the skill was invoked with")], ["run_id"]),
+        ("args", TEXT, "Arguments the skill was invoked with"),
+        ("dataset", TEXT, "The standard dataset the run was on (semantics/datasets.json): from its own prompt, "
+                          "snapshot, tool calls or instance, else its session's; empty when neither it nor its session "
+                          "settles it"),
+        ("dataset_by", TEXT, "What decided the dataset: prompt (with the arguments), snapshot, tool calls (with how "
+                             "many name each), instance, or session")], ["run_id"]),
     "skill_run_checks": ("One row per run and declared check (checks/<skill>.json).", [
         ("run_id", TEXT, "The run (skill_runs.run_id)"), ("session_id", TEXT, "The session (sessions.session_id)"),
         ("skill", TEXT, "The skill that ran"), ("version", TEXT, "The version that ran (skill_runs.version)"),
@@ -887,6 +898,7 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
             failed.append({"transcript": str(f), "error": f"{type(exc).__name__}: {exc}"})
         if log and n % 25 == 0:
             log(f"  {n}/{len(files)} transcripts")
+    datasets.fill(tables)  # from the rows, snapshots included: an import, and the backfill, place them the same way
     tables["de_topics"], tables["de_layers"] = semantics.load().dimensions()
     tables["warehouse_load"] = [{"loaded_at": util.iso(now), "transcripts": len(files),
                                   "sessions": len(tables["sessions"]), "since": since, "generator_version": __version__,

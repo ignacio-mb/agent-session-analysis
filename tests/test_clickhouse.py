@@ -107,6 +107,10 @@ class FakeClickHouse:
         self.databases, self.short, self.short_copy = databases, short, short_copy
         self.sql, self.connections = [], 0
 
+    # the SQL key of a row that clickhouse._set_datasets may name (DATASET_KEYS), in Python
+    KEYS = {"session_id": lambda r: r.get("session_id"),
+            "concat(ifNull(session_id, ''), ' ', run_id)": lambda r: f"{r.get('session_id') or ''} {r.get('run_id')}"}
+
     def __call__(self, target, timeout=300):
         self.t = target
         self.connections += 1
@@ -184,6 +188,20 @@ class FakeClickHouse:
                         r"^  `(\w+)` .*? COMMENT '((?:[^'\\]|\\.)*)',?$", sql, re.M)}
         elif m := re.match(r"CREATE OR REPLACE VIEW (`\S+`)", sql):
             self.views[name(m.group(1))] = comment.group(1)
+        elif m := re.match(r"INSERT INTO (`\S+`)\nWITH (\[.*?\]) AS keys_, (\[.*?\]) AS datasets_, (\[.*?\]) AS by_\n"
+                           r"SELECT \* REPLACE \(\n  if\(indexOf\(keys_, (.*?)\) = 0, dataset,.*\)\nFROM (`\S+`) WHERE source",
+                           sql, re.S):
+            # the dataset columns set again (clickhouse._set_datasets), by the key expression it names: one of the two
+            # this fake knows how to evaluate, or a KeyError
+            unquote = lambda a: [v.replace("\\'", "'").replace("\\\\", "\\")  # noqa: E731
+                                 for v in re.findall(r"'((?:[^'\\]|\\.)*)'", a)]
+            key = self.KEYS[m.group(5)]
+            new = dict(zip(unquote(m.group(2)), zip(unquote(m.group(3)), unquote(m.group(4)))))
+            for r in self.tables[name(m.group(6))]["parts"].get(params["src"], []):
+                r = dict(r)
+                if key(r) in new:
+                    r["dataset"], r["dataset_by"] = (v or None for v in new[key(r)])
+                self.tables[name(m.group(1))]["parts"].setdefault(params["src"], []).append(r)
         elif m := re.match(r"INSERT INTO (`\S+`) SELECT \* FROM (`\S+`) WHERE source", sql):
             ids = self.ids_in(sql)
             kept = [dict(r) for r in self.tables[name(m.group(2))]["parts"].get(params["src"], [])
@@ -758,7 +776,8 @@ def test_the_hook_log_says_this_machine_should_update(tmp_path, monkeypatch, cap
 # What every source shares, by the version that writes it: two checkouts on one version must write the same views and
 # taxonomy, or each load takes away the other's (only a newer version's are left alone). A change to a view, its
 # comment or semantics/questions.json bumps __version__ and adds its fingerprint here; a released one never changes.
-SHARED = {"0.4.0": "841661404a96", "0.5.0": "841661404a96", "0.6.0": "841661404a96", "0.7.0": "662f213158e2"}
+SHARED = {"0.4.0": "841661404a96", "0.5.0": "841661404a96", "0.6.0": "841661404a96", "0.7.0": "662f213158e2",
+          "0.8.0": "662f213158e2"}
 
 
 def test_a_change_to_what_every_source_shares_bumps_the_version():
@@ -802,3 +821,135 @@ def test_a_shared_baseline_stays_though_it_ran_no_skill(monkeypatch):
     unmarked = _tables({"b1": 1}, skill=None)
     res = sync(unmarked, ANA)  # b1 read again without its marker: no longer in scope
     assert res["removed"] == ["b1"]
+
+
+def _shared_before_datasets(ch):
+    """Two sources' rows as a version before 0.8.0 shared them: no dataset columns at all (james's direct sync)."""
+    ana = _tables({"a1": 1, "a2": 0})
+    ana["sessions"][0]["title"] = "Stripe star schema in ClickHouse"
+    ana["skill_runs"] = [{"run_id": "a1:1", "session_id": "a1", "skill": "rde", "prompt": "/rde", "cost_usd": 1.25},
+                         {"run_id": "a2:1", "session_id": "a2", "skill": "rde", "prompt": "go on", "cost_usd": 0.5}]
+    ana["tool_calls"] = [{"session_id": "a2", "tool_use_id": f"t{i}", "run_id": "a2:1",
+                          "input": "mb query 'select * from raw_contrast.event'"} for i in range(10)]
+    bo = _tables({"b1": 2})
+    bo["skill_runs"] = [{"run_id": "b1:1", "session_id": "b1", "skill": "rde", "prompt": "build reports",
+                         "args": "Instance: http://toy-store2.localhost:3202, the Maven Fuzzy Factory toy store"}]
+    sync(ana, ANA)
+    sync(bo, BO)
+    for name in clickhouse.DATASET_KEYS:
+        ch.tables[name]["columns"] -= {"dataset", "dataset_by"}
+        for rows in ch.tables[name]["parts"].values():
+            for r in rows:
+                del r["dataset"], r["dataset_by"]
+
+
+def _without_datasets(tables):
+    return {n: {src: [{k: v for k, v in r.items() if k not in ("dataset", "dataset_by")} for r in rows]
+                for src, rows in t["parts"].items()} for n, t in tables.items()}
+
+
+def test_the_datasets_of_what_is_shared_are_set_in_place(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    _shared_before_datasets(ch)
+    before, first = _without_datasets(ch.tables), len(ch.sql)
+    res = clickhouse.fill_datasets(Target.from_url(URL), log=None)
+    for name in clickhouse.DATASET_KEYS:  # the columns first, with their descriptions
+        for col, says in (("dataset", "The standard dataset"), ("dataset_by", "What decided the dataset")):
+            assert any(x.startswith(f"ALTER TABLE `sessions`.`{name}` ADD COLUMN IF NOT EXISTS `{col}` Nullable(String) "
+                                    f"COMMENT '{says}") for x in ch.sql[first:])
+    assert {r["source"]: (dict(r["sessions"]), dict(r["skill_runs"]), r["changed"]) for r in res} == {
+        "aaaa": ({"Stripe": 1, "Contrast": 1}, {"Stripe": 1, "Contrast": 1}, {"sessions": 2, "skill_runs": 2}),
+        "bbbb": ({"Toy Store": 1}, {"Toy Store": 1}, {"sessions": 1, "skill_runs": 1})}
+    assert {r["session_id"]: (r["dataset"], r["dataset_by"]) for r in ch.rows_of("sessions")} == {
+        "a1": ("Stripe", "title"), "a2": ("Contrast", "runs"), "b1": ("Toy Store", "runs")}
+    assert {r["run_id"]: (r["dataset"], r["dataset_by"]) for r in ch.rows_of("skill_runs")} == {
+        "a1:1": ("Stripe", "session"), "a2:1": ("Contrast", "tool calls: Contrast 10"), "b1:1": ("Toy Store", "prompt")}
+    assert _without_datasets(ch.tables) == before  # every other column of every row, every other table: as it was
+    writes = [x for x in ch.sql[first:] if x.startswith(("INSERT", "ALTER", "CREATE", "DROP", "EXCHANGE", "RENAME"))]
+    assert {re.search(r"`sessions`\.`(\w+?)(__datasets_\w+)?`", x).group(1) for x in writes} == set(clickhouse.DATASET_KEYS)
+    assert "INSERT INTO `sessions`.`skill_runs__datasets_bbbb`" in writes
+    assert "ALTER TABLE `sessions`.`skill_runs` REPLACE PARTITION 'bbbb' FROM `sessions`.`skill_runs__datasets_bbbb`" \
+        in writes and not any("__datasets" in n for n in ch.tables)
+    again = len(ch.sql)
+    res = clickhouse.fill_datasets(Target.from_url(URL), log=None)  # already so: nothing to write
+    assert [r["changed"] for r in res] == [{"sessions": 0, "skill_runs": 0}] * 2
+    assert not any(x.startswith(("INSERT", "ALTER", "CREATE", "DROP")) for x in ch.sql[again:])
+
+
+def test_the_datasets_statement_names_only_the_rows_that_change_once_however_many(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    many = _tables({f"{i:08}-0000-4000-8000-000000000000": 0 for i in range(5000)})
+    for r in many["sessions"]:
+        r["title"] = "Stripe star schema"
+    sync(many, ANA)
+    sent, run = [], ch.run
+    ch.run = lambda sql, data=None, params=None, settings=None, compress=False: (
+        sent.append((sql, settings or {})), run(sql, data, params, settings, compress))[1]
+    (res,) = clickhouse.fill_datasets(Target.from_url(URL), log=None)
+    assert res["changed"] == {"sessions": 5000, "skill_runs": 0}
+    ((sql, settings),) = [(q, st) for q, st in sent if q.startswith("INSERT INTO `sessions`.`sessions__datasets")]
+    assert sql.count("'00004999-") == 1 and len(sql) > 262144  # past ClickHouse's default max_query_size: raised
+    assert int(settings["max_query_size"]) > len(sql.encode("utf-8"))
+    assert {r["dataset"] for r in ch.rows_of("sessions")} == {"Stripe"}
+    ch.tables["sessions"]["parts"]["aaaa"][7]["title"] = "Toy store orders"  # one label changes: only it is named
+    sent.clear()
+    (res,) = clickhouse.fill_datasets(Target.from_url(URL), log=None)
+    ((sql, _),) = [(q, st) for q, st in sent if q.startswith("INSERT INTO `sessions`.`sessions__datasets")]
+    assert res["changed"]["sessions"] == 1 and "'00000007-" in sql and "'00000008-" not in sql
+
+
+def test_a_partition_that_changes_under_the_datasets_swap_is_an_error_not_a_retry(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    _shared_before_datasets(ch)
+    run, first = ch.run, len(ch.sql)
+
+    def racing(sql, data=None, params=None, settings=None, compress=False):  # bo's machine syncs right after the swap
+        out = run(sql, data, params, settings, compress)
+        if sql.startswith("ALTER TABLE `sessions`.`sessions` REPLACE PARTITION 'bbbb'"):
+            ch.tables["sessions"]["parts"]["bbbb"].append({"source": "bbbb", "session_id": "b2"})
+        return out
+    ch.run = racing
+    with pytest.raises(ClickHouseError, match="partition changed while it was being labelled"):
+        clickhouse.fill_datasets(Target.from_url(URL), log=None)
+    assert sum(x.startswith("ALTER TABLE `sessions`.`sessions` REPLACE PARTITION 'bbbb'") for x in ch.sql[first:]) == 1
+    assert "b2" in ch.sessions("sessions", "bbbb")  # the sync that landed is still there
+    assert not any("__datasets" in n for n in ch.tables)
+
+
+def test_a_datasets_swap_that_set_nothing_is_an_error(monkeypatch):
+    # a key expression that matches no row (no space: never _dataset_key) swaps in the partition unchanged
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    monkeypatch.setitem(clickhouse.DATASET_KEYS, "skill_runs", "concat(ifNull(session_id, ''), run_id)")
+    monkeypatch.setitem(FakeClickHouse.KEYS, "concat(ifNull(session_id, ''), run_id)",
+                        lambda r: f"{r.get('session_id') or ''}{r.get('run_id')}")
+    _shared_before_datasets(ch)
+    with pytest.raises(ClickHouseError, match="partition changed while it was being labelled"):
+        clickhouse.fill_datasets(Target.from_url(URL), log=None)
+
+
+def test_the_datasets_dry_run_reads_only(monkeypatch, tmp_path, capsys):
+    import copy
+
+    from session_analytics import cli
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    _shared_before_datasets(ch)
+    held, first = copy.deepcopy(ch.tables), len(ch.sql)
+    reads, real = [], ch.rows
+    ch.rows = lambda sql, params=None, settings=None: (reads.append(settings or {}), real(sql, params, settings))[1]
+    env = tmp_path / "ch.env"
+    env.write_text(f"CLICKHOUSE_URL={URL}\n")
+    assert cli.main(["warehouse", "--clickhouse-datasets", "--dry-run", "--env-file", str(env)]) == 0
+    out = capsys.readouterr().out
+    assert "Would set (nothing written)" in out and "Contrast 1, Stripe 1" in out and "would change 2 session" in out
+    assert len(ch.sql) == first and ch.tables == held  # not one statement: no column added, no row changed
+    assert reads and all(s.get("readonly") == "2" for s in reads)  # and the server would refuse one anyway
+    with pytest.raises(ClickHouseError, match="read-only: refused DROP TABLE"):
+        clickhouse.ReadOnly(ch).run("DROP TABLE `sessions`.`sessions`")
+    assert cli.main(["warehouse", "--clickhouse-datasets", "--env-file", str(env)]) == 0
+    assert {r["dataset"] for r in ch.rows_of("sessions")} == {"Stripe", "Contrast", "Toy Store"}
+    assert "Only dataset and dataset_by changed" in capsys.readouterr().out

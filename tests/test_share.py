@@ -175,3 +175,24 @@ def test_what_is_not_a_share_file_or_comes_from_a_newer_version_is_refused(tmp_p
         share.read(tmp_path / "new.json")
     share.write(dict(doc, generator_version=__version__), tmp_path / "ok.json.gz", compress=True)
     assert share.read(tmp_path / "ok.json.gz")["person"] == "a@example.com"  # gzipped files read as well
+
+
+def test_an_import_places_each_session_and_run_on_its_dataset(sender, tmp_path, monkeypatch, capsys):
+    doc = share_file(sender["claude"], tmp_path / "share.json")
+    assert {r["dataset"] for r in doc["tables"]["sessions"]} == {None}  # "build revenue reporting" names none
+    # as a version before the columns wrote it: no dataset at all, and a run whose arguments name the toy store
+    for name in ("sessions", "skill_runs"):
+        for r in doc["tables"][name]:
+            del r["dataset"], r["dataset_by"]
+    doc["tables"]["skill_runs"][0]["args"] = "Instance: http://toy-store2.localhost:3202, the Maven Fuzzy Factory data"
+    share.write(dict(doc, generator_version="0.7.0"), tmp_path / "old.json")
+    ch = FakeClickHouse()
+    args = as_importer(monkeypatch, tmp_path, ch)
+    capsys.readouterr()
+    assert cli.main(args[:-1] + ["other", "--import", str(tmp_path / "old.json")]) == 0  # out of scope: none written
+    assert "by dataset" not in capsys.readouterr().out
+    assert cli.main(args + ["--import", str(tmp_path / "old.json")]) == 0
+    ((s,), (r,)) = ch.rows_of("sessions"), ch.rows_of("skill_runs")
+    assert (s["dataset"], s["dataset_by"]) == ("Toy Store", "runs") and (r["dataset"], r["dataset_by"]) == \
+        ("Toy Store", "prompt")
+    assert "shared 1 session(s) that ran demo, by dataset: Toy Store 1" in capsys.readouterr().out

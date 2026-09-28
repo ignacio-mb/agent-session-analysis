@@ -1,0 +1,75 @@
+{
+  "about": "Which of the standard datasets an rde test session, and each skill run in it, was run on: the label a dashboard shows and filters by (none when nothing settles it). `match`: regular expressions (case-insensitive) for the dataset's name and its distinctive schemas, tables, columns and transform prefixes (not rde's domain prefixes, such as mart_store_, which any store's data gets), tried on prompts and arguments, titles, what a run built in its Metabase and tool-call inputs; never a word datasets share (users, posts, orders, products, customer, invoice, subscription, card) or Metabase's own (owner_user_id), the bare word flight (pre-flight checks), stackexchange (the Postgres database the lab's older instances load their dataset into, whichever it is), or a port. `instances`: the mb profile, or the first label of the instance host, of a lab instance named after the dataset (the whole name). Every lab instance also holds Metabase's Sample Database, whatever it is named after: it is a dataset of its own, so a run on it is not placed by its instance's name. A run is decided by its prompt and arguments (never a URL's query string: a dashboard link carries its filters' values), then what it built, then its tool calls (at least `min_calls` of them name the dataset, and `margin` times as many as name the runner-up: a run that names several, as probes of lab instances, is not settled by them), then its instance (unless its prompt or its session's title names another dataset), else by its session. Edit freely; see src/session_analytics/datasets.py.",
+  "min_calls": 10,
+  "margin": 3,
+  "datasets": [
+    {
+      "label": "Stripe",
+      "description": "Stripe billing data loaded by dlt (or Stitch) into ClickHouse: raw_stripe_dlt_spike, raw_stripe_stitch; built into stripe_star, stripe_rde_v*.",
+      "match": [
+        "\\bstripe",
+        "_stripe",
+        "\\bbilling_reason\\b|\\brecurring__interval\\b|\\binvoice__lines__data\\b"
+      ],
+      "instances": []
+    },
+    {
+      "label": "Airline Flight Delays",
+      "description": "Maven Analytics' Airline Flight Delays: US DOT on-time data for 2015, schema flight_delays (airlines, airports, cancellation_codes, flights).",
+      "match": [
+        "flight[ _-]?delay",
+        "\\bairlines?\\b",
+        "\\bcancellation_codes\\b",
+        "\\b(departure|arrival|air_system|security|airline|late_aircraft|weather)_delay\\b",
+        "\\b(origin|destination)_airport\\b|\\btail_number\\b|\\bwheels_(on|off)\\b",
+        "\\b(stg|int|mart|cfg)_bts(_|\\b)"
+      ],
+      "instances": [
+        "airline-flight-delays\\d*"
+      ]
+    },
+    {
+      "label": "Toy Store",
+      "description": "Maven Analytics' Maven Fuzzy Factory, an online toy store: website_sessions, website_pageviews, orders, order_items, order_item_refunds, products.",
+      "match": [
+        "toy[ _-]?store",
+        "fuzzy[ _+-]?factory",
+        "\\bwebsite_(sessions|pageviews)\\b|\\border_item_refunds\\b",
+        "\\b(website_session_id|website_pageview_id|pageview_url|is_repeat_session|is_primary_item|primary_product_id|items_purchased|refund_amount_usd)\\b"
+      ],
+      "instances": [
+        "toy-store\\d*"
+      ]
+    },
+    {
+      "label": "DBA Stack Exchange",
+      "description": "The Stack Exchange data dump of dba.stackexchange.com: posts, users, votes, comments, badges, tags, post_history, post_links.",
+      "match": [
+        "dba[ ._-]?stack[ _-]?exchange",
+        "\\bpost_(history|history_types|links|tags|types)\\b|\\bvote_types\\b",
+        "\\b(post_type_id|accepted_answer_id|community_owned_date|revision_guid|vote_type_id)\\b",
+        "\\b(stg|int|mart|cfg)_se(_|\\b)",
+        "\\bdba\\.(posts|users|votes|comments|badges|tags)\\b"
+      ],
+      "instances": [
+        "dba\\d*"
+      ]
+    },
+    {
+      "label": "Contrast",
+      "description": "Contrast event and registration data in ClickHouse, raw_contrast (event, registration, live_view, replay_view, poll_vote); built into contrast_rde_v*.",
+      "match": [
+        "raw_contrast|contrast_rde"
+      ],
+      "instances": []
+    },
+    {
+      "label": "Sample Database",
+      "description": "Metabase's own sample data (orders, people, products, reviews, accounts, invoices), which every instance holds, whatever it is named after.",
+      "match": [
+        "\\bsample[ _-]?database\\b"
+      ],
+      "instances": []
+    }
+  ]
+}

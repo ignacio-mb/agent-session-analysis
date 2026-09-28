@@ -13,7 +13,9 @@ same machine updates their sessions, and no one else's rows change. A file older
 that machine is skipped, so sending an old file again rolls nothing back. The shared taxonomy is the importer's, as
 in a direct load. The skill versions are labelled again on the importer's side: a tester who installed the skill
 without its git history can't tell which commit ran, so each run carries what its version is resolved from (the
-fingerprint of the injected SKILL.md, and the skill files it read), resolved against the importer's checkout.
+fingerprint of the injected SKILL.md, and the skill files it read), resolved against the importer's checkout. The
+dataset each session and run was for (Stripe, Toy Store…) is placed again on the importer's side too, from the rows
+in the file (datasets.py): a file made before 0.8.0 gets it, and every file is placed by the importer's rules.
 """
 
 from __future__ import annotations
@@ -23,9 +25,10 @@ import json
 import os
 import re
 import time
+from collections import Counter
 from pathlib import Path
 
-from . import __version__, clickhouse, locate, semantics, util, versions, warehouse
+from . import __version__, clickhouse, datasets, locate, semantics, util, versions, warehouse
 from .export import _slug, default_root
 from .rollup import parse_since
 
@@ -236,8 +239,8 @@ def relabel(tables, runs, sources_extra=()):
 def import_doc(doc, target, skills, sources_extra=(), rescope=False, log=None):
     """Load one share file into ClickHouse under its sender's source (see clickhouse.sync). The sender's list of
     sessions left out is theirs to say: those are taken out, and stay out until a later file includes them. Returns
-    sync's result, with `relabelled` (runs given a commit here) and `skipped` (the file was older than the last one
-    imported from that machine)."""
+    sync's result, with `relabelled` (runs given a commit here), `datasets` (the sessions written, by the dataset placed
+    here: datasets.fill) and `skipped` (the file was older than the last one imported from that machine)."""
     ident = clickhouse.Identity(doc["source"], doc["person"], doc.get("machine") or "")
     cache = clickhouse.read_cache(target, ident.source) or {}
     last = cache.get("share_created_at")
@@ -246,9 +249,12 @@ def import_doc(doc, target, skills, sources_extra=(), rescope=False, log=None):
     tables = {k: [dict(r) for r in doc["tables"].get(k) or ()] for k in warehouse.TABLES if k not in clickhouse.GLOBAL}
     tables["de_topics"], tables["de_layers"] = semantics.load().dimensions()  # the importer's, as in a direct load
     relabelled = relabel(tables, doc.get("versions") or {}, sources_extra)
+    datasets.fill(tables)  # always: an older file gets the columns, every file the importer's rules
     clickhouse.write_cache(target, ident.source, withdrawn=sorted(set(doc.get("withdrawn") or ())))
     res = clickhouse.sync(tables, target, ident, {r.get("session_id") for r in tables["sessions"]}, skills,
                           since=doc.get("since") or "all", rescope=rescope, log=log,
                           generator=doc.get("generator_version"))
     clickhouse.write_cache(target, ident.source, share_created_at=doc.get("created_at"))
-    return dict(res, relabelled=relabelled, skipped=None)
+    written = set(res["written"])
+    placed = Counter(r.get("dataset") for r in tables["sessions"] if r.get("session_id") in written)
+    return dict(res, relabelled=relabelled, datasets=placed, skipped=None)

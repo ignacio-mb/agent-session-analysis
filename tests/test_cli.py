@@ -110,3 +110,20 @@ def test_list_and_pricing_commands(rich, claude_dir, capsys):
     assert rows[0]["id"] == SID and rows[0]["title"] == "Fix the failing test"
     assert cli.main(["pricing"]) == 0
     assert "claude-opus-5" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", [["--clickhouse-forget"], ["--clickhouse"], ["--import", "share.json"], ["--load"],
+                                  []])
+def test_a_dry_run_is_refused_by_every_warehouse_mode_that_would_write(mode, tmp_path, monkeypatch, capsys):
+    from session_analytics import clickhouse
+
+    def connect(*_a, **_k):
+        raise AssertionError("connected")
+    monkeypatch.setattr(clickhouse, "Client", connect)
+    env = tmp_path / "ch.env"
+    env.write_text("CLICKHOUSE_URL=https://u:p@h:8443/sessions\n")
+    assert cli.main(["warehouse", *mode, "--dry-run", "--env-file", str(env)]) == 2
+    assert "--dry-run only goes with --clickhouse-datasets" in capsys.readouterr().err
+    if mode:  # and the backfill does not ride along with another mode, where it would be skipped
+        assert cli.main(["warehouse", "--clickhouse-datasets", *mode, "--env-file", str(env)]) == 2
+        assert f"--clickhouse-datasets goes alone, not with {mode[0]}" in capsys.readouterr().err

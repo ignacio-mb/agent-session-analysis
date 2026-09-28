@@ -17,7 +17,8 @@ Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432
 `skill_runs`, `skill_run_checks`, `skill_run_files`, `skill_run_working_files` (every file a run wrote, and
 whether the skill names it), `questions`, `question_options`, `subagents`,
 `files_touched`, `tool_errors`, `run_instances`, `run_artifacts`, `run_artifact_checks`, `run_source_tables` (what
-each skill run left in its Metabase, below), plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
+each skill run left in its Metabase, below), plus `de_topics` and `de_layers` (the data-engineering taxonomy); each
+session and skill run also carries the standard dataset it ran on (below) — and views
 that answer the usual questions: `v_skill_versions` (each version of a skill compared), `v_check_rates`,
 `v_question_topics`, `v_question_semantics` (questions by data-engineering topic × layer, per version),
 `v_interview_questions` (one row per question, ready to explore), `v_question_outcomes`, `v_typed_answers`,
@@ -140,6 +141,60 @@ taxonomy is the importer's, as in a direct load. Each run is labelled again with
 importer's checkout of the skill (`--source <dir>` when it is not under ~/dev): a tester who installed rde without
 its git history can't label their runs, but the file carries what the label is resolved from — the fingerprint of
 the SKILL.md that ran, and the skill files each run read.
+The dataset each session and run was on is placed again on the importer's side too, from the rows in the file
+(below): a file made before 0.8.0 gets it, and every file is placed by the importer's rules.
+
+## Which dataset a session ran on
+
+rde is tested on a few standard datasets — Stripe, Airline Flight Delays, Toy Store (Maven Fuzzy Factory), DBA Stack
+Exchange, and Contrast — and `sessions.dataset` and `skill_runs.dataset` say which, so a dashboard can show it on its
+cards and filter by it; NULL when nothing settles it. `dataset_by` says what decided, so each label can be checked.
+Both are placed from the warehouse rows alone (`src/session_analytics/datasets.py`, rules in
+`semantics/datasets.json`), so a session gets the same dataset when it is loaded, when a share file of it is
+imported, and when its rows are read back from ClickHouse. A run is placed by the first of these that names exactly
+one dataset:
+
+- `prompt`: the prompt it started from, and the arguments it was invoked with;
+- `snapshot`: what it built in its Metabase (names, descriptions, SQL, target tables);
+- `tool calls`: at least 10 of its tool calls name the dataset, and three times as many as name the runner-up
+  (`tool calls: Stripe 12, Airline Flight Delays 2` records the counts);
+- `instance`: its mb profile or instance host is named after the dataset (`toy-store2`, `dba`,
+  `airline-flight-delays`), and neither its prompt nor its session's title names another: a lab instance can hold
+  more than the dataset it is named after;
+- `session`: else, its session's.
+
+A session takes its runs' own datasets when they agree (`runs`); else its title (Claude Code's summary of it, or its
+first prompt); else the snapshots and instances of its runs, and all the session's tool calls (in a skill run or not),
+taken together; else its runs' by majority (`runs: Stripe 2, Toy Store 1`). A baseline is placed as one run,
+`<session>:0`, whose prompt is the session's first (the prompt of the rde run it copies) and whose tool calls are
+those no skill run made. The rules match a dataset's name and its distinctive schemas, tables, columns and transform prefixes
+(`raw_stripe_dlt_spike`, `flight_delays`, `website_sessions`, `post_history`, `raw_contrast`), never a word datasets
+share, never the query string of a URL in a prompt or title (a pasted dashboard link carries its filters' values, such
+as `?dataset=Stripe`; its path counts: `/schema/flight_delays`), and never the source tables a run built on: those
+list whole databases, one lab database holds several datasets, and the lab's older instances load their dataset into
+a Postgres database named `stackexchange`, whichever it is. Metabase's Sample Database, which every instance holds,
+is a dataset of its own: a run on it is placed there by what it says, whatever its instance is named.
+
+What is already in the shared ClickHouse — rows shared before these columns, or placed by rules since changed — is
+placed again by whoever holds the connection:
+
+```bash
+make clickhouse-datasets            # every source's sessions and runs, from their rows
+make clickhouse-datasets DRY_RUN=1  # only print what it would set
+```
+
+It reads every source's rows back, places them by the same rules, and rewrites only `dataset` and `dataset_by` of
+`sessions` and `skill_runs`, one source's partition at a time, as a sync swaps it: a staging copy of the live
+partition with those two columns set anew on the rows whose label changes (`INSERT … SELECT * REPLACE`), counted,
+then `ALTER TABLE … REPLACE PARTITION`, and read back. Every other column is copied as it is, and a source whose
+labels are already these is not written. It adds the columns first when they are missing, and holds the machine's
+sync lock. That lock covers this machine only: a source that still syncs from its own machine
+(`warehouse --clickhouse`, not a share file) can land a sync while its partition is being labelled. One that lands
+after the copy is caught (the counts, or the labels read back, differ) and stops it: run it again. One that lands in
+the instant between the last count and the swap is undone until that machine syncs the session again (its
+transcript changes, or `make clickhouse` there); run it while those machines are idle. `--dry-run` (`DRY_RUN=1`) only reads, with every query read-only
+(`readonly=2`), so the server refuses a write; every other mode of `warehouse` refuses it. A machine still on an older
+version shares its sessions without a dataset; run it again once they have updated.
 
 ## What a run built: a snapshot of its Metabase
 
