@@ -275,5 +275,7 @@ def rich(claude_dir):
 @pytest.fixture(autouse=True)
 def _private_config(tmp_path_factory, monkeypatch):
     """Every test gets its own ~/.config/convo-analysis: never the real machine lock, env file or shared-sessions cache
-    (a real hook load holds the lock; flock would make the test wait on it)."""
+    (a real hook load holds the lock; flock would make the test wait on it); and its own export root, so no real
+    instance snapshot loads with a test's sessions."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("config")))
+    monkeypatch.setenv("SESSION_ANALYTICS_OUT", str(tmp_path_factory.mktemp("exports")))

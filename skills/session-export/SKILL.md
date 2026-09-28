@@ -34,8 +34,10 @@ Arguments the user gave: `$ARGUMENTS`
 
 Many people sync into one ClickHouse database, each from their own machines. Only sessions in which the rde skill
 ran go there (`CLICKHOUSE_SKILLS` in the env file, default `rde`; `*` for every session), and such a session is
-shared whole — every turn, tool call, file path and error in it, not just the rde run. Sessions that never ran rde
-stay on the machine. Every row carries `source` (this machine and Claude config directory, hashed) and `person`
+shared whole — every turn, tool call, file path and error in it, not just the rde run — with a snapshot of what its
+rde runs built in their local Metabase, taken as the session ends (names, definitions and SQL; source tables as counts,
+never a value). A session whose first prompt opens with `baseline:` is shared too: a direct agent given, without
+rde, the prompt an rde run got, so the two can be compared. Every other session stays on the machine. Every row carries `source` (this machine and Claude config directory, hashed) and `person`
 (`CLICKHOUSE_PERSON`, else the git email); a sync changes only its own source's rows (plus the shared topic and
 layer lists when its version is newer), never anyone else's, and never takes out a session just because its
 transcript is gone — so it is safe to run as often as wanted.

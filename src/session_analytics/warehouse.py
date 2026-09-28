@@ -20,13 +20,14 @@ from __future__ import annotations
 import contextlib
 import csv
 import json
+import re
 import shutil
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
-from . import locate, semantics, util
+from . import instance, locate, semantics, skillruns, util
 from .analyze import analyze, categorize_error, cli_calls, primary_program
 from .export import default_root
 from .parse import parse_session
@@ -43,70 +44,158 @@ TEXT, INT, BIG, NUM, TS, BOOL = "text", "integer", "bigint", "numeric", "timesta
 # name: (comment, [(column, type, comment or None)], primary key)
 TABLES = {
     "sessions": ("One row per Claude Code session (own events only).", [
-        ("session_id", TEXT, None), ("project", TEXT, "Project directory name"), ("title", TEXT, None),
-        ("start_at", TS, None), ("end_at", TS, None), ("wall_ms", BIG, "End minus start"),
-        ("active_ms", BIG, "Time Claude or a tool was working (turn durations)"), ("turns", INT, None), ("prompts", INT, None),
-        ("api_requests", INT, None), ("tool_calls", INT, None), ("tool_errors", INT, None), ("tool_denials", INT, None),
-        ("subagents", INT, None), ("skills_invoked", INT, None), ("skill_runs", INT, None),
-        ("questions", INT, "Questions Claude asked (AskUserQuestion and prose)"), ("questions_prose", INT, None),
-        ("input_tokens", BIG, None), ("output_tokens", BIG, None), ("cache_read_tokens", BIG, None),
-        ("cache_write_tokens", BIG, None), ("cache_hit_ratio", NUM, None),
-        ("cost_usd", NUM, "Estimated at list prices, API-equivalent"), ("reported_cost_usd", NUM, "Claude Code's own figure"),
-        ("peak_context_tokens", BIG, None), ("compactions", INT, None), ("interruptions", INT, None),
-        ("files_modified", INT, None), ("lines_added", INT, None), ("lines_removed", INT, None), ("commits", INT, None),
-        ("pull_requests", INT, None), ("models", TEXT, None), ("claude_code_version", TEXT, None), ("entrypoint", TEXT, None),
-        ("git_branch", TEXT, None), ("cwd", TEXT, None), ("transcript", TEXT, None)], ["session_id"]),
+        ("session_id", TEXT, "Claude Code's session id"), ("project", TEXT, "Project directory name"),
+        ("title", TEXT, "The session's title (its summary, or its first prompt)"),
+        ("start_at", TS, "First event of the session"), ("end_at", TS, "Last event of the session"),
+        ("wall_ms", BIG, "End minus start"),
+        ("active_ms", BIG, "Time Claude or a tool was working (turn durations)"),
+        ("turns", INT, "Turns: a prompt, command, notification or ! command and everything done before handing back"),
+        ("prompts", INT, "Prompts the user typed"),
+        ("api_requests", INT, "Claude API requests, subagents included"),
+        ("tool_calls", INT, "Tool calls, subagents included"),
+        ("tool_errors", INT, "Tool calls that returned an error"),
+        ("tool_denials", INT, "Tool calls the user or a permission rule refused"),
+        ("subagents", INT, "Subagents and workflow agents launched"),
+        ("skills_invoked", INT, "Skill invocations: by Claude, by the user as /slash commands, or injected"),
+        ("skill_runs", INT, "Skill runs (see skill_runs)"),
+        ("questions", INT, "Questions Claude asked (AskUserQuestion and prose)"),
+        ("questions_prose", INT, "Of those, questions asked in the text of a reply rather than through "
+                                 "AskUserQuestion"),
+        ("input_tokens", BIG, "Uncached input tokens"), ("output_tokens", BIG, "Output tokens, thinking included"),
+        ("cache_read_tokens", BIG, "Input tokens read from the prompt cache"),
+        ("cache_write_tokens", BIG, "Input tokens written to the prompt cache"),
+        ("cache_hit_ratio", NUM, "Cache read / (input + cache read + cache write)"),
+        ("cost_usd", NUM, "Estimated at list prices, API-equivalent"),
+        ("reported_cost_usd", NUM, "Claude Code's own figure"),
+        ("peak_context_tokens", BIG, "Largest context sent in one request (input + cache read + cache write)"),
+        ("compactions", INT, "Times the conversation was compacted"),
+        ("interruptions", INT, "Times the user interrupted Claude"),
+        ("files_modified", INT, "Files edited or written"), ("lines_added", INT, "Lines added by edits and writes"),
+        ("lines_removed", INT, "Lines removed by edits and writes"), ("commits", INT, "git commits made"),
+        ("pull_requests", INT, "Pull requests created or updated"), ("models", TEXT, "Models used, comma-separated"),
+        ("claude_code_version", TEXT, "Claude Code version (the most used, if several)"),
+        ("entrypoint", TEXT, "How Claude Code was started: cli, desktop, sdk…"),
+        ("git_branch", TEXT, "git branch (the most used, if several)"), ("cwd", TEXT, "Working directory"),
+        ("transcript", TEXT, "Path of the transcript file"),
+        ("prompt_key", TEXT, "The first prompt's opening words, lowercased, as skill_runs.prompt_key: a session "
+                             "and a skill run given the same prompt share it"),
+        ("baseline", BOOL, "The first prompt opened with `baseline:`: a direct agent given, without the skill, a "
+                           "prompt the skill is compared on; shared with the skill's sessions")], ["session_id"]),
     "turns": ("One row per turn: a prompt and everything Claude did before handing back.", [
-        ("session_id", TEXT, None), ("turn", INT, None), ("start_at", TS, None), ("end_at", TS, None),
-        ("duration_ms", BIG, None), ("trigger", TEXT, "prompt | command | task_notification | bash"),
-        ("prompt", TEXT, "What was asked (redacted, truncated)"), ("prompt_chars", INT, None), ("command", TEXT, None),
-        ("requests", INT, None), ("tool_calls", INT, None), ("tool_errors", INT, None), ("cost_usd", NUM, None),
-        ("input_tokens", BIG, None), ("output_tokens", BIG, None), ("cache_read_tokens", BIG, None),
-        ("cache_write_tokens", BIG, None), ("max_context_tokens", BIG, None), ("skills_invoked", TEXT, None),
-        ("interrupted", BOOL, None), ("compacted", BOOL, None), ("permission_mode", TEXT, None),
-        ("stop_reason", TEXT, None)], ["session_id", "turn"]),
+        ("session_id", TEXT, "The session (sessions.session_id)"),
+        ("turn", INT, "Turn number within the session, from 0"), ("start_at", TS, "When the turn started"),
+        ("end_at", TS, "When Claude handed back"),
+        ("duration_ms", BIG, "How long the turn took"),
+        ("trigger", TEXT, "prompt | command | task_notification | bash"),
+        ("prompt", TEXT, "What was asked (redacted, truncated)"), ("prompt_chars", INT, "Length of the prompt"),
+        ("command", TEXT, "The /slash command, when the turn is one"),
+        ("requests", INT, "Claude API requests"), ("tool_calls", INT, "Tool calls"),
+        ("tool_errors", INT, "Tool calls that returned an error"), ("cost_usd", NUM, "Estimated at list prices"),
+        ("input_tokens", BIG, "Uncached input tokens"), ("output_tokens", BIG, "Output tokens"),
+        ("cache_read_tokens", BIG, "Input tokens read from the prompt cache"),
+        ("cache_write_tokens", BIG, "Input tokens written to the prompt cache"),
+        ("max_context_tokens", BIG, "Largest context sent in one of the turn's requests"),
+        ("skills_invoked", TEXT, "Skills invoked during the turn, comma-separated"),
+        ("interrupted", BOOL, "The user interrupted the turn"), ("compacted", BOOL, "The conversation was compacted"),
+        ("permission_mode", TEXT, "Permission mode the prompt was sent in: default, plan, acceptEdits, auto…"),
+        ("stop_reason", TEXT, "Why the turn's last API response stopped: end_turn, tool_use, max_tokens…")],
+        ["session_id", "turn"]),
     "api_requests": ("One row per Claude API request (streamed lines merged).", [
-        ("session_id", TEXT, None), ("request_no", INT, None), ("at", TS, None), ("turn", INT, None),
-        ("scope", TEXT, "main or subagent"), ("agent_id", TEXT, None), ("model", TEXT, None), ("stop_reason", TEXT, None),
-        ("input_tokens", BIG, None), ("output_tokens", BIG, None), ("cache_read_tokens", BIG, None),
-        ("cache_write_5m_tokens", BIG, None), ("cache_write_1h_tokens", BIG, None), ("thinking_tokens", BIG, None),
-        ("context_tokens", BIG, "Tokens sent: input + cache read + cache write"), ("cost_usd", NUM, None),
-        ("latency_ms", BIG, "To the first content block"), ("duration_ms", BIG, None),
-        ("skill", TEXT, "Claude Code's attribution"), ("tools", TEXT, "Tools this response called"), ("effort", TEXT, None),
-        ("cache_miss_reason", TEXT, None)], ["session_id", "request_no"]),
+        ("session_id", TEXT, "The session (sessions.session_id)"),
+        ("request_no", INT, "Request number within the session"), ("at", TS, "When the response started"),
+        ("turn", INT, "The turn it belongs to"),
+        ("scope", TEXT, "main or subagent"), ("agent_id", TEXT, "The subagent that sent it (subagents.agent_id)"),
+        ("model", TEXT, "Model that answered"), ("stop_reason", TEXT, "end_turn | tool_use | max_tokens | …"),
+        ("input_tokens", BIG, "Uncached input tokens"), ("output_tokens", BIG, "Output tokens, thinking included"),
+        ("cache_read_tokens", BIG, "Input tokens read from the prompt cache"),
+        ("cache_write_5m_tokens", BIG, "Input tokens written to the 5-minute prompt cache"),
+        ("cache_write_1h_tokens", BIG, "Input tokens written to the 1-hour prompt cache"),
+        ("thinking_tokens", BIG, "Output tokens spent thinking (estimated)"),
+        ("context_tokens", BIG, "Tokens sent: input + cache read + cache write"),
+        ("cost_usd", NUM, "Estimated at list prices"),
+        ("latency_ms", BIG, "To the first content block"), ("duration_ms", BIG, "First to last streamed line"),
+        ("skill", TEXT, "Claude Code's attribution"), ("tools", TEXT, "Tools this response called"),
+        ("effort", TEXT, "Reasoning effort the request ran at"),
+        ("cache_miss_reason", TEXT, "Why Claude Code says the prompt cache missed, when it did")],
+        ["session_id", "request_no"]),
     "tool_calls": ("One row per tool call.", [
-        ("session_id", TEXT, None), ("tool_use_id", TEXT, None), ("at", TS, None), ("turn", INT, None), ("scope", TEXT, None),
-        ("agent_id", TEXT, None), ("tool", TEXT, None), ("category", TEXT, None),
-        ("status", TEXT, "ok | error | denied | interrupted | pending"), ("duration_ms", BIG, None),
-        ("error_category", TEXT, None), ("program", TEXT, "For Bash: the program the command is about"),
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("tool_use_id", TEXT, "The call's id"),
+        ("at", TS, "When the call was made"), ("turn", INT, "The turn it belongs to"),
+        ("scope", TEXT, "main, subagent or workflow"),
+        ("agent_id", TEXT, "The subagent that made it"),
+        ("tool", TEXT, "Tool name (mcp__<server>__<tool> for MCP tools)"),
+        ("category", TEXT, "files | edits | search | shell | web | agents | skills | planning | outputs | mcp | other"),
+        ("status", TEXT, "ok | error | denied | interrupted | pending"), ("duration_ms", BIG, "Call to result"),
+        ("error_category", TEXT, "What kind of error: file_not_found, input_validation, permission, timeout…"),
+        ("program", TEXT, "For Bash: the program the command is about"),
         ("run_id", TEXT, "The skill run the call belongs to"), ("skill", TEXT, "Claude Code's attribution"),
-        ("input", TEXT, "Input summary (redacted, truncated)"), ("error", TEXT, None), ("result_chars", INT, None),
+        ("input", TEXT, "Input summary (redacted, truncated)"), ("error", TEXT, "The error it returned (truncated)"),
+        ("result_chars", INT, "Size of the result Claude was shown"),
         ("batch_size", INT, "Calls issued in parallel with it")], ["session_id", "tool_use_id"]),
     "cli_calls": ("One row per program invocation inside a Bash command, by signature (`mb transform create`).", [
-        ("session_id", TEXT, None), ("tool_use_id", TEXT, None), ("seq", INT, "Position in the command"),
-        ("at", TS, None), ("run_id", TEXT, None), ("program", TEXT, None), ("signature", TEXT, None),
+        ("session_id", TEXT, "The session (sessions.session_id)"),
+        ("tool_use_id", TEXT, "The Bash call it ran in (tool_calls.tool_use_id)"),
+        ("seq", INT, "Position in the command"),
+        ("at", TS, "When the Bash call was made"), ("run_id", TEXT, "The skill run the call belongs to"),
+        ("program", TEXT, "The program: mb, git, jq…"),
+        ("signature", TEXT, "Program and subcommands, without arguments: `mb transform create`, `git commit`"),
         ("is_help", BOOL, "A --help lookup"), ("status", TEXT, "Status of the whole Bash call"),
-        ("error_category", TEXT, None)], ["session_id", "tool_use_id", "seq"]),
+        ("error_category", TEXT, "What kind of error the Bash call returned")], ["session_id", "tool_use_id", "seq"]),
     "skill_invocations": ("One row per skill invocation.", [
-        ("session_id", TEXT, None), ("invocation_no", INT, None), ("at", TS, None), ("turn", INT, None), ("skill", TEXT, None),
-        ("canonical", TEXT, None), ("mode", TEXT, "model (Skill tool) | user (/slash) | harness"), ("via", TEXT, None),
-        ("scope", TEXT, None), ("success", BOOL, None), ("status", TEXT, None), ("args", TEXT, None),
+        ("session_id", TEXT, "The session (sessions.session_id)"),
+        ("invocation_no", INT, "Invocation number in the session"), ("at", TS, "When the skill was invoked"),
+        ("turn", INT, "The turn it was invoked in"), ("skill", TEXT, "Skill name as invoked"),
+        ("canonical", TEXT, "Skill name as Claude Code resolved it"),
+        ("mode", TEXT, "model (Skill tool) | user (/slash) | harness"),
+        ("via", TEXT, "Skill | SlashCommand (tools Claude called) | slash (typed by the user) | harness"),
+        ("scope", TEXT, "main, subagent or workflow"), ("success", BOOL, "The skill loaded"),
+        ("status", TEXT, "ok | error | denied | interrupted | forked"), ("args", TEXT, "Arguments it was invoked with"),
         ("content_chars", INT, "Size of the SKILL.md body injected")], ["session_id", "invocation_no"]),
     "skill_runs": ("One row per skill run: an invocation plus the follow-up turns it steered.", [
-        ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("mode", TEXT, None),
-        ("version", TEXT, "Git commit that ran (or a label when unknown)"), ("version_status", TEXT, None),
-        ("version_date", TS, None), ("version_subject", TEXT, None), ("start_at", TS, None), ("end_at", TS, None),
-        ("duration_ms", BIG, None), ("active_ms", BIG, None), ("turns", INT, None), ("follow_up_turns", INT, None),
-        ("requests", INT, None), ("attributed_requests", INT, None), ("tool_calls", INT, None), ("tool_errors", INT, None),
-        ("error_rate", NUM, None), ("cli_calls", INT, None), ("help_lookups", INT, None), ("retries_after_error", INT, None),
-        ("cost_usd", NUM, None), ("attributed_cost_usd", NUM, None), ("input_tokens", BIG, None), ("output_tokens", BIG, None),
-        ("context_peak", BIG, None), ("questions_asked", INT, "Through AskUserQuestion"), ("question_rounds", INT, None),
-        ("prose_questions", INT, None), ("recommended_offered", INT, None), ("recommended_taken", INT, None),
-        ("recommended_rate", NUM, None), ("typed_answers", INT, None), ("unanswered_questions", INT, None),
-        ("question_wait_p50_ms", BIG, None), ("questions_flagged", INT, None), ("questions_before_create", INT, None),
-        ("docs_read", INT, "The skill's own files shown, beyond SKILL.md"), ("docs_total", INT, None),
-        ("cli_docs_read", INT, None), ("doc_tokens", BIG, None), ("doc_rereads", INT, None), ("doc_listings", INT, None),
-        ("checks_passed", INT, None), ("checks_failed", INT, None), ("objects_created", INT, None),
+        ("run_id", TEXT, "<first 8 characters of the session id>:<run number in the session>"),
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("skill", TEXT, "The skill that ran"),
+        ("mode", TEXT, "model (Skill tool) | user (/slash) | harness"),
+        ("version", TEXT, "Git commit that ran (or a label when unknown)"),
+        ("version_status", TEXT, "How the version was found: commit | working-tree | installed | unknown"),
+        ("version_date", TS, "Date of the version's commit"),
+        ("version_subject", TEXT, "Subject of the version's commit"), ("start_at", TS, "When the skill was invoked"),
+        ("end_at", TS, "Last request or tool result of the run"),
+        ("duration_ms", BIG, "Start to the run's last event"),
+        ("active_ms", BIG, "Time Claude or a tool was working in the run's turns"),
+        ("turns", INT, "Turns the run spans"),
+        ("follow_up_turns", INT, "Of those, turns where no request was attributed to the skill"),
+        ("requests", INT, "Claude API requests in the run, subagents included"),
+        ("attributed_requests", INT, "Of those, requests Claude Code attributed to the skill"),
+        ("tool_calls", INT, "Tool calls in the run, subagents included"),
+        ("tool_errors", INT, "Tool calls that returned an error"),
+        ("error_rate", NUM, "tool_errors / tool_calls"),
+        ("cli_calls", INT, "Bash calls running a CLI subcommand (`mb …`, `gh …`), main thread"),
+        ("help_lookups", INT, "--help lookups of a CLI subcommand"),
+        ("retries_after_error", INT, "Bash calls that ran a subcommand again right after it failed"),
+        ("cost_usd", NUM, "Estimated at list prices, all the run's requests"),
+        ("attributed_cost_usd", NUM, "Estimated cost of the requests attributed to the skill"),
+        ("input_tokens", BIG, "Uncached input tokens"), ("output_tokens", BIG, "Output tokens"),
+        ("context_peak", BIG, "Largest context sent in one main-thread request"),
+        ("questions_asked", INT, "Through AskUserQuestion"),
+        ("question_rounds", INT, "AskUserQuestion calls (one can ask several questions)"),
+        ("prose_questions", INT, "Questions asked in the text of a reply"),
+        ("recommended_offered", INT, "Answered single-choice questions that offered a recommended option"),
+        ("recommended_taken", INT, "Of those, questions where the recommended option was picked"),
+        ("recommended_rate", NUM, "recommended_taken / recommended_offered"),
+        ("typed_answers", INT, "Questions answered by typing rather than picking an option"),
+        ("unanswered_questions", INT, "AskUserQuestion questions declined or left unanswered"),
+        ("question_wait_p50_ms", BIG, "Median wait for an answer to AskUserQuestion"),
+        ("questions_flagged", INT, "Questions that broke one of the skill's rules (see questions.flags)"),
+        ("questions_before_create", INT, "AskUserQuestion questions asked before the first CLI `create`"),
+        ("docs_read", INT, "The skill's own files shown, beyond SKILL.md"),
+        ("docs_total", INT, "Files the skill ships"),
+        ("cli_docs_read", INT, "Documents of other skills or CLIs the run touched"),
+        ("doc_tokens", BIG, "Estimated tokens of skill documents shown (characters / 4)"),
+        ("doc_rereads", INT, "Times a skill document was read again"),
+        ("doc_listings", INT, "Listings of a skill directory"),
+        ("checks_passed", INT, "Declared checks (checks/<skill>.json) the run passed; n/a counts in neither"),
+        ("checks_failed", INT, "Declared checks the run failed; one failure when the checks file would not load"),
+        ("objects_created", INT, "Objects a CLI `create` reported creating (Metabase transforms, cards…)"),
         ("files_written", INT, "Distinct files the run wrote: Write, Edit, or the shell (heredoc, redirect, tee, cp…)"),
         ("files_created", INT, "Of them, the files the run created"),
         ("support_files", INT, "Files the run created that the skill does not name (checks/<skill>.json \"files\") and "
@@ -116,84 +205,195 @@ TABLES = {
         ("support_script_runs", INT, "Times the run executed its own scripts"),
         ("inline_scripts", INT, "Programs of two lines or more handed to an interpreter without a file "
                                 "(python3 - <<'PY', python3 -c)"),
-        ("inline_script_lines", INT, None),
+        ("inline_script_lines", INT, "Lines in those programs"),
         ("temp_files", INT, "Files the run created in a system temp directory"),
         ("memory_notes", INT, "Claude Code memory files the run wrote"),
-        ("end_reason", TEXT, None), ("prompt", TEXT, None), ("args", TEXT, None)], ["run_id"]),
+        ("end_reason", TEXT, "What ended the run: next skill: <name> | session end | session still live | agent end "
+                             "| harness-injected skill"),
+        ("prompt", TEXT, "What the user asked when the run started (redacted, truncated)"),
+        ("prompt_key", TEXT, "The prompt's opening words, lowercased: runs of one prompt share it"),
+        ("args", TEXT, "Arguments the skill was invoked with")], ["run_id"]),
     "skill_run_checks": ("One row per run and declared check (checks/<skill>.json).", [
-        ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None), ("check_id", TEXT, None),
-        ("description", TEXT, None), ("status", TEXT, "pass | fail | n/a | error"), ("detail", TEXT, None)],
+        ("run_id", TEXT, "The run (skill_runs.run_id)"), ("session_id", TEXT, "The session (sessions.session_id)"),
+        ("skill", TEXT, "The skill that ran"), ("version", TEXT, "The version that ran (skill_runs.version)"),
+        ("check_id", TEXT, "The check's id in the checks file"),
+        ("description", TEXT, "What the check expects"), ("status", TEXT, "pass | fail | n/a | error"),
+        ("detail", TEXT, "Why: the event that broke it, or the count")],
         ["run_id", "check_id"]),
     "skill_run_files": ("One row per run and skill document it touched, measured by what Claude was shown.", [
-        ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None),
-        ("owner", TEXT, "The skill, another skill, or a CLI (mb)"), ("path", TEXT, None), ("kind", TEXT, None),
-        ("read_order", INT, "0 is SKILL.md's injection"), ("how", TEXT, None), ("coverage", NUM, "Share of lines shown"),
-        ("lines_seen", INT, None), ("total_lines", INT, None), ("accesses", INT, None), ("reads", INT, None),
-        ("searches", INT, None), ("rereads", INT, None), ("tokens", INT, None), ("first_read_ms", BIG, None),
-        ("found_by", TEXT, None), ("named_by", TEXT, None), ("version_check", TEXT, None), ("sections", TEXT, None)],
+        ("run_id", TEXT, "The run (skill_runs.run_id)"), ("session_id", TEXT, "The session (sessions.session_id)"),
+        ("skill", TEXT, "The skill that ran"), ("version", TEXT, "The version that ran (skill_runs.version)"),
+        ("owner", TEXT, "The skill, another skill, or a CLI (mb)"), ("path", TEXT, "Path within the owner's directory"),
+        ("kind", TEXT, "The file's directory in the skill (playbooks, references, . for the top), or its owner"),
+        ("read_order", INT, "0 is SKILL.md's injection"),
+        ("how", TEXT, "full | partial | hits | injected | injected + re-read | not shown | no hits | missing"),
+        ("coverage", NUM, "Share of lines shown"),
+        ("lines_seen", INT, "Distinct lines shown"), ("total_lines", INT, "Lines in the file"),
+        ("accesses", INT, "Reads, searches and listings of it"), ("reads", INT, "Reads of it"),
+        ("searches", INT, "Searches that looked in it"), ("rereads", INT, "Reads after the first"),
+        ("tokens", INT, "Estimated tokens shown (characters / 4)"),
+        ("first_read_ms", BIG, "From the run's start to the first access"),
+        ("found_by", TEXT, "How Claude got to it: named | listing | search | resolved path | unprompted"),
+        ("named_by", TEXT, "Documents shown earlier in the run that name it"),
+        ("version_check", TEXT, "Whether the text shown is the run's version: match | differs | changed since | a "
+                                "commit"),
+        ("sections", TEXT, "Headings of the sections shown, when not the whole file")],
         ["run_id", "owner", "path"]),
     "skill_run_working_files": (
         "One row per run and file it wrote — with Write, Edit, or the shell (a heredoc into a file, a redirect, tee, "
         "cp, curl -o) — and whether the skill names it (checks/<skill>.json \"files\"): a file the run created that "
         "the skill does not name, and that is not Claude Code's memory, is a support file.", [
-            ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None),
-            ("path", TEXT, "Relative to the project, ~ for home, else absolute"), ("name", TEXT, None),
-            ("ext", TEXT, None), ("kind", TEXT, "script | sql | json | data | doc | env | other (a file the run ran "
-                                               "is a script)"),
+            ("run_id", TEXT, "The run (skill_runs.run_id)"), ("session_id", TEXT, "The session (sessions.session_id)"),
+            ("skill", TEXT, "The skill that ran"), ("version", TEXT, "The version that ran (skill_runs.version)"),
+            ("path", TEXT, "Relative to the project, ~ for home, else absolute"), ("name", TEXT, "File name"),
+            ("ext", TEXT, "File extension"),
+            ("kind", TEXT, "script | sql | json | data | doc | env | other (a file the run ran is a script)"),
             ("location", TEXT, "project | temp (a system temp directory) | memory (Claude Code's) | home | other"),
             ("expected", TEXT, "Which of the working files the skill names it is, when it names it"),
-            ("expected_label", TEXT, None),
+            ("expected_label", TEXT, "Display name of the working file it is"),
             ("created", BOOL, "The run created it: a Write that created it, or a shell write to a path the session had "
                               "not read or written before"),
             ("support", BOOL, "Created by the run, not named by the skill, not Claude Code's memory: made to do what "
                               "the skill did not; empty when the skill names no files"),
             ("via", TEXT, "How the run first wrote it: Write, Edit, heredoc, redirect, append, tee, copy, move, touch, "
                           "download, shell"),
-            ("first_at", TS, None), ("since_start_ms", BIG, "From the run's start to its first write"),
-            ("turn", INT, None), ("scope", TEXT, "main, subagent or workflow"), ("writes", INT, None),
-            ("edits", INT, None), ("lines", INT, "At its last whole write, when the text is in the transcript"),
+            ("first_at", TS, "When the run first wrote it"),
+            ("since_start_ms", BIG, "From the run's start to its first write"),
+            ("turn", INT, "The turn it was first written in"), ("scope", TEXT, "main, subagent or workflow"),
+            ("writes", INT, "Whole writes of it (Write, or the shell)"),
+            ("edits", INT, "Edits of it"),
+            ("lines", INT, "At its last whole write, when the text is in the transcript"),
             ("runs", INT, "Times the run executed or sourced it"),
             ("used_by", TEXT, "What read it afterwards: mb transform create, jq, Read…"),
             ("drives", TEXT, "For a script: the CLI commands in its text (mb card create…)"),
             ("api", TEXT, "For a script: the HTTP API paths it calls (/api/card…), or http")],
         ["run_id", "path"]),
     "questions": ("One row per question Claude put to the user: AskUserQuestion, prose, or a printed checkpoint.", [
-        ("qid", TEXT, None), ("session_id", TEXT, None), ("run_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None),
-        ("asked_at", TS, None), ("since_start_ms", BIG, None), ("turn", INT, None),
-        ("channel", TEXT, "ask | prose | checkpoint"), ("form", TEXT, None),
-        ("topic", TEXT, "The skill's own interview topic (checks/<skill>.json)"), ("topic_label", TEXT, None),
-        ("de_topic", TEXT, "Data-engineering topic (semantics/questions.json)"), ("de_topic_label", TEXT, None),
-        ("layer", TEXT, "Where in the data stack the question sits"), ("layer_label", TEXT, None),
+        ("qid", TEXT, "<first 8 characters of the session id>:<question id>"),
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The skill run it was asked in"),
+        ("skill", TEXT, "The skill of that run"), ("version", TEXT, "The version of that run"),
+        ("asked_at", TS, "When it was asked"), ("since_start_ms", BIG, "From the run's start to the question"),
+        ("turn", INT, "The turn it was asked in"),
+        ("channel", TEXT, "ask | prose | checkpoint"),
+        ("form", TEXT, "choice | confirm | multi (AskUserQuestion) | prose | checkpoint | offer"),
+        ("topic", TEXT, "The skill's own interview topic (checks/<skill>.json)"),
+        ("topic_label", TEXT, "The interview topic's display name"),
+        ("de_topic", TEXT, "Data-engineering topic (semantics/questions.json)"),
+        ("de_topic_label", TEXT, "The data-engineering topic's display name"),
+        ("layer", TEXT, "Where in the data stack the question sits"), ("layer_label", TEXT, "The layer's display name"),
         ("semantics_by", TEXT, "What decided topic/layer: header, question or fallback"),
-        ("header", TEXT, None), ("question", TEXT, None), ("options", INT, None), ("multi", BOOL, None),
-        ("recommended_label", TEXT, None), ("outcome", TEXT, None), ("answer", TEXT, None), ("typed", TEXT, None),
-        ("reply", TEXT, None), ("notes", TEXT, None), ("feedback", TEXT, None), ("wait_ms", BIG, None), ("batch_size", INT, None),
-        ("flags", TEXT, None), ("flag_count", INT, None), ("before_create", BOOL, None), ("reask_of", TEXT, None)],
+        ("header", TEXT, "AskUserQuestion's short header"), ("question", TEXT, "The question (redacted, truncated)"),
+        ("options", INT, "Options offered"), ("multi", BOOL, "Several options could be picked"),
+        ("recommended_label", TEXT, "The option marked recommended"),
+        ("outcome", TEXT, "recommended | other option | picked | typed | typed + picked | no preference | declined | "
+                          "unanswered | interrupted | error; prose: replied | accepted | turned down | unanswered"),
+        ("answer", TEXT, "The answer AskUserQuestion returned"), ("typed", TEXT, "Text typed instead of an option"),
+        ("reply", TEXT, "For prose and checkpoints: the next prompt"),
+        ("notes", TEXT, "Notes the user added to the answer"), ("feedback", TEXT, "What the user said when declining"),
+        ("wait_ms", BIG, "From the question to the answer, or to the next prompt"),
+        ("batch_size", INT, "Questions in the same AskUserQuestion call"),
+        ("flags", TEXT, "The skill's rules it broke, semicolon-separated"), ("flag_count", INT, "Number of flags"),
+        ("before_create", BOOL, "Asked before the run's first CLI `create`"),
+        ("reask_of", TEXT, "The earlier question it repeats (questions.qid)")],
         ["qid"]),
     "de_topics": ("The data-engineering topics questions are mapped to, in display order.", [
-        ("id", TEXT, None), ("label", TEXT, None), ("description", TEXT, None), ("sort_order", INT, None)], ["id"]),
+        ("id", TEXT, "Topic id (questions.de_topic)"), ("label", TEXT, "Display name"),
+        ("description", TEXT, "What questions on this topic are about"), ("sort_order", INT, "Display order")], ["id"]),
     "de_layers": ("The data-stack layers questions are mapped to, in display order.", [
-        ("id", TEXT, None), ("label", TEXT, None), ("description", TEXT, None), ("sort_order", INT, None)], ["id"]),
+        ("id", TEXT, "Layer id (questions.layer)"), ("label", TEXT, "Display name"),
+        ("description", TEXT, "What the layer covers"), ("sort_order", INT, "Display order")], ["id"]),
     "question_options": ("One row per option offered with a question.", [
-        ("qid", TEXT, None), ("session_id", TEXT, None), ("option_no", INT, None), ("label", TEXT, None),
-        ("description", TEXT, None), ("recommended", BOOL, None), ("chosen", BOOL, None)], ["qid", "option_no"]),
+        ("qid", TEXT, "The question (questions.qid)"), ("session_id", TEXT, "The session (sessions.session_id)"),
+        ("option_no", INT, "Position among the options, from 0"), ("label", TEXT, "The option's label"),
+        ("description", TEXT, "The option's description"), ("recommended", BOOL, "Marked recommended"),
+        ("chosen", BOOL, "The user picked it")], ["qid", "option_no"]),
     "subagents": ("One row per subagent or workflow agent.", [
-        ("session_id", TEXT, None), ("agent_id", TEXT, None), ("kind", TEXT, None), ("agent_type", TEXT, None),
-        ("description", TEXT, None), ("start_at", TS, None), ("duration_ms", BIG, None), ("requests", INT, None),
-        ("tool_calls", INT, None), ("tool_errors", INT, None), ("input_tokens", BIG, None), ("output_tokens", BIG, None),
-        ("cost_usd", NUM, None), ("models", TEXT, None)], ["session_id", "agent_id"]),
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("agent_id", TEXT, "The agent's id"),
+        ("kind", TEXT, "subagent or workflow"), ("agent_type", TEXT, "Agent type: general-purpose, Explore…"),
+        ("description", TEXT, "The task it was given (short)"), ("start_at", TS, "Its first event"),
+        ("duration_ms", BIG, "First to last event"), ("requests", INT, "Claude API requests"),
+        ("tool_calls", INT, "Tool calls"), ("tool_errors", INT, "Tool calls that returned an error"),
+        ("input_tokens", BIG, "Uncached input tokens"), ("output_tokens", BIG, "Output tokens"),
+        ("cost_usd", NUM, "Estimated at list prices"),
+        ("models", TEXT, "Models used, comma-separated")], ["session_id", "agent_id"]),
     "files_touched": ("One row per file a session read or changed.", [
-        ("session_id", TEXT, None), ("path", TEXT, None), ("reads", INT, None), ("edits", INT, None), ("writes", INT, None),
-        ("creates", INT, None), ("lines_added", INT, None), ("lines_removed", INT, None), ("errors", INT, None)],
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("path", TEXT, "File path"), ("reads", INT, "Reads"),
+        ("edits", INT, "Edits"), ("writes", INT, "Whole-file writes"),
+        ("creates", INT, "Writes that created the file"), ("lines_added", INT, "Lines added"),
+        ("lines_removed", INT, "Lines removed"), ("errors", INT, "Calls on it that returned an error")],
         ["session_id", "path"]),
+    "run_instances": ("One row per skill run and Metabase instance it used: the snapshot taken when its session "
+                      "ended (instance.py).", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance: host and port, never a path or a credential"),
+        ("profile", TEXT, "The mb CLI profile the run used"), ("captured_at", TS, "When the snapshot was taken"),
+        ("reachable", BOOL, "The instance answered; when not, nothing below it was captured"),
+        ("error", TEXT, "Why it did not answer"),
+        ("skipped", TEXT, "What the instance could not list (a feature it lacks), with why"),
+        ("objects_created", INT, "Objects the run created (run_artifacts, in_run = created)"),
+        ("objects_changed", INT, "Objects created earlier that the run changed"),
+        ("source_tables", INT, "Source tables profiled (run_source_tables)")], ["session_id", "run_id", "host"]),
+    "run_artifacts": ("One row per Metabase object a skill run created or changed: its definition, and whether it "
+                      "works, as the instance held it when the session ended.", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance (run_instances.host)"),
+        ("kind", TEXT, "question | model | metric | transform | transform_test | dashboard | measure | segment | "
+                       "document"),
+        ("object_id", BIG, "Its id in that instance"), ("name", TEXT, "Its name"),
+        ("in_run", TEXT, "created: the run made it; changed: it existed and the run changed it"),
+        ("created_at", TS, "When it was created"), ("updated_at", TS, "When it was last changed"),
+        ("collection_id", BIG, "Its collection"), ("description", TEXT, "Its description (truncated)"),
+        ("query_kind", TEXT, "native (SQL) | mbql (query builder, metrics and measures by id)"),
+        ("definition", TEXT, "Its SQL, or its MBQL as JSON (truncated)"), ("display", TEXT, "Questions: the chart"),
+        ("database_id", BIG, "The database it reads or writes"),
+        ("dashboard_id", BIG, "A question saved inside a dashboard: that dashboard"),
+        ("target_table", TEXT, "Transforms: the table it writes, schema.table"),
+        ("last_run_status", TEXT, "Transforms: how its last run ended"),
+        ("transform_tests", INT, "Transforms: transform tests the run wrote for it"),
+        ("tabs", INT, "Dashboards: tabs"), ("dashboard_filters", INT, "Dashboards: filters"),
+        ("dashcards", INT, "Dashboards: cards, text included"), ("card_dashcards", INT, "Dashboards: cards of a question"),
+        ("text_dashcards", INT, "Dashboards: text and heading cards"),
+        ("unmapped_dashcards", INT, "Dashboards with filters: question cards wired to none of them"),
+        ("on_dashboards", INT, "Questions: the run's dashboards showing it"),
+        ("uses_metric", BOOL, "Questions: aggregates a metric or measure by id"),
+        ("run_status", TEXT, "Questions, models, metrics: how running it ended (completed | failed)"),
+        ("row_count", BIG, "Rows it returned"), ("run_error", TEXT, "What running it said, when it failed")],
+        ["session_id", "run_id", "host", "kind", "object_id"]),
+    "run_artifact_checks": ("One row per object a skill run made and check on it (instance.CHECKS): does it run, "
+                            "is it described, tested, wired, reused.", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance (run_instances.host)"), ("kind", TEXT, "The object's kind (run_artifacts.kind)"),
+        ("object_id", BIG, "The object (run_artifacts.object_id)"), ("check_id", TEXT, "The check"),
+        ("status", TEXT, "pass | fail"), ("detail", TEXT, "Why it failed")],
+        ["session_id", "run_id", "host", "kind", "object_id", "check_id"]),
+    "run_source_tables": ("One row per source table a skill run built on, profiled from Metabase's metadata: its "
+                          "size and shape, never a value it holds.", [
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("run_id", TEXT, "The run (skill_runs.run_id)"),
+        ("host", TEXT, "The instance (run_instances.host)"), ("table_id", BIG, "The table's id in that instance"),
+        ("db_id", BIG, "Its database"), ("schema_name", TEXT, "Its schema"), ("table_name", TEXT, "Its name"),
+        ("rows", BIG, "Rows (Metabase's estimate, else counted)"), ("columns", INT, "Columns"),
+        ("pk_columns", INT, "Primary-key columns"), ("fk_columns", INT, "Foreign-key columns"),
+        ("numeric_columns", INT, "Number columns"), ("temporal_columns", INT, "Date and time columns"),
+        ("text_columns", INT, "Text columns"), ("boolean_columns", INT, "True/false columns"),
+        ("json_columns", INT, "JSON, array and dictionary columns"),
+        ("text_json_columns", INT, "Text columns that mostly hold JSON"),
+        ("coerced_columns", INT, "Columns Metabase reads as another type (a date kept as text or a number)"),
+        ("empty_columns", INT, "Columns with no value at all"),
+        ("mostly_empty_columns", INT, "Columns empty in half the rows or more"),
+        ("max_null_share", NUM, "The largest share of empty values in one column")],
+        ["session_id", "run_id", "host", "table_id"]),
     "warehouse_load": ("The load that produced these tables: when, and from how many transcripts.", [
-        ("loaded_at", TS, None), ("transcripts", INT, None), ("sessions", INT, None), ("since", TEXT, None),
-        ("generator_version", TEXT, None),
+        ("loaded_at", TS, "When the load ran"), ("transcripts", INT, "Transcripts read"),
+        ("sessions", INT, "Sessions loaded"), ("since", TEXT, "How far back transcripts were read (--since)"),
+        ("generator_version", TEXT, "Version of session-analytics that loaded it"),
         ("skills", TEXT, "Which sessions it holds: those that invoked these skills, or * for every session")],
         ["loaded_at"]),
     "tool_errors": ("One row per failed tool call, with what it said.", [
-        ("session_id", TEXT, None), ("error_no", INT, None), ("at", TS, None), ("turn", INT, None), ("tool", TEXT, None),
-        ("scope", TEXT, None), ("category", TEXT, None), ("input", TEXT, None), ("message", TEXT, None)],
+        ("session_id", TEXT, "The session (sessions.session_id)"), ("error_no", INT, "Error number in the session"),
+        ("at", TS, "When the call was made"), ("turn", INT, "The turn it happened in"), ("tool", TEXT, "Tool name"),
+        ("scope", TEXT, "main, subagent or workflow"),
+        ("category", TEXT, "What kind of error: file_not_found, input_validation, permission, timeout…"),
+        ("input", TEXT, "Input summary (redacted, truncated)"), ("message", TEXT, "What the tool said (truncated)")],
         ["session_id", "error_no"]),
 }
 
@@ -402,6 +602,43 @@ def _version(run):
     return v.get("commit") or v.get("label")
 
 
+# A session whose first prompt opens with `baseline:` is a direct agent given, without the skill, a prompt the skill is
+# compared on: shared with the skill's sessions, keyed by its prompt without the marker.
+BASELINE_RE = re.compile(r"^\s*baseline\s*:\s*", re.I)
+
+
+def _first_prompt(turns):
+    """The prompt that opened the session: its first typed prompt, or `/command args`."""
+    first = next((t for t in turns if t.get("trigger") in ("prompt", "command")), None)
+    if first is None:
+        return None
+    if first.get("trigger") == "command":
+        return f"{first.get('command') or ''} {first.get('command_args') or ''}"
+    return first.get("prompt")
+
+
+def _first_prompt_key(turns):
+    """The key of the prompt that opened the session, as a skill run keys its own (a baseline's marker left out): a
+    session given a run's prompt without the skill is compared with that run."""
+    return skillruns.prompt_key(BASELINE_RE.sub("", _first_prompt(turns) or ""))
+
+
+def is_baseline(turns):
+    return bool(BASELINE_RE.match(_first_prompt(turns) or ""))
+
+
+def baseline_run(a, s):
+    """A baseline session as one run, `<id>:0`, for its instance snapshot: the whole session, every tool call in it, and
+    the prompt that opened it (a direct agent may never name an mb profile: its instance is the one the prompt
+    names). None when the session has no start."""
+    start = util.parse_ts(a["session"].get("start"))
+    if start is None:
+        return None
+    return {"run_id": f"{s.session_id[:8]}:0", "session_id": s.session_id, "baseline": True, "start_ms": start,
+            "end_ms": util.parse_ts(a["session"].get("end")) or start, "prompt": _first_prompt(a["turns"]["rows"]),
+            "steps": list(range(len(a["trace"]["steps"])))}
+
+
 def session_rows(a, s):
     """{table: [row, ...]} for one analyzed session (`a`) and its parsed transcript (`s`)."""
     sid = s.session_id
@@ -432,7 +669,8 @@ def session_rows(a, s):
         "commits": tot.get("commits"), "pull_requests": tot.get("pull_requests"),
         "models": ", ".join(m.get("model") or "" for m in se.get("models") or ()),
         "claude_code_version": _top(se.get("claude_code_versions")), "entrypoint": _top(se.get("entrypoints")),
-        "git_branch": _top(se.get("git_branches")), "cwd": se.get("cwd"), "transcript": se.get("transcript")})
+        "git_branch": _top(se.get("git_branches")), "cwd": se.get("cwd"), "transcript": se.get("transcript"),
+        "prompt_key": _first_prompt_key(a["turns"]["rows"]), "baseline": is_baseline(a["turns"]["rows"])})
     for t in a["turns"]["rows"]:
         rows["turns"].append({
             "session_id": sid, "turn": t["index"], "start_at": t.get("start"), "end_at": t.get("end"),
@@ -506,7 +744,8 @@ def session_rows(a, s):
             "support_scripts": r.get("support_scripts"), "support_script_runs": r.get("support_script_runs"),
             "inline_scripts": r.get("inline_scripts"), "inline_script_lines": r.get("inline_script_lines"),
             "temp_files": r.get("temp_files"), "memory_notes": r.get("memory_notes"),
-            "end_reason": r.get("end_reason"), "prompt": r.get("prompt"), "args": r.get("args")})
+            "end_reason": r.get("end_reason"), "prompt": r.get("prompt"),
+            "prompt_key": r.get("prompt_key"), "args": r.get("args")})
         for ch in r.get("checks") or ():
             rows["skill_run_checks"].append({
                 "run_id": r["run_id"], "session_id": sid, "skill": r["skill"], "version": ver, "check_id": ch.get("id"),
@@ -591,8 +830,10 @@ def _cell(v):
 
 
 def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, pricing=None, now_ms=None, log=None,
-          transcripts=None):
-    """Analyze every transcript in scope — or only `transcripts` (main transcript paths): ({table: rows}, meta)."""
+          transcripts=None, capture=None, instances_root=None, capture_skills=None):
+    """Analyze every transcript in scope — or only `transcripts` (main transcript paths): ({table: rows}, meta). For
+    the sessions in `capture` (ids), first snapshot what their runs of `capture_skills` built in Metabase
+    (instance.py); every session's snapshots on disk load with it."""
     from . import __version__
     now = now_ms if now_ms is not None else time.time() * 1000
     cutoff = parse_since(since, now)
@@ -615,7 +856,19 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
                 read.add(s.session_id)
                 continue
             a = analyze(s, pricing, redactor=R, now_ms=now)
-            for k, rs in session_rows(a, s).items():
+            if capture is not None and s.session_id in capture:
+                base = baseline_run(a, s) if is_baseline(a["turns"]["rows"]) else None
+                runs = dict(a, skill_runs=[*(a.get("skill_runs") or ()), base]) if base else a
+                try:
+                    instance.capture_session(runs, s, now, root=instances_root, log=log,
+                                             wanted=lambda run: run.get("baseline")
+                                             or _captures(run, capture_skills or DEFAULT_SKILLS))
+                except instance.MbError as exc:  # no CLI, or it cannot list its profiles: load what there is
+                    if log:
+                        log(f"  no instance snapshot for {s.session_id[:8]}: {exc}")
+            rows = session_rows(a, s)
+            rows.update(instance.session_rows(s.session_id, R, instances_root))
+            for k, rs in rows.items():
                 pk = TABLES[k][2]
                 for r in rs:
                     key = tuple(r.get(c) for c in pk)
@@ -653,6 +906,11 @@ def _skill_matches(name, skills):
     return any(name == w or (":" not in w and name.rsplit(":", 1)[-1] == w) for w in skills)
 
 
+def _captures(run, skills):
+    """A run whose instance gets a snapshot: one of the skills the warehouse shares (`*`: every skill)."""
+    return "*" in skills or _skill_matches(run.get("skill") or "", skills)
+
+
 def qualifies(invocations, skills):
     """Whether a session's skill invocations put it in scope: one of `skills` ran — the call completed and succeeded.
     A Skill call the user rejected, one that failed, and one still waiting at the permission prompt (no result yet:
@@ -665,11 +923,13 @@ def qualifies(invocations, skills):
 
 
 def sessions_with_skill(tables, skills):
-    """The sessions that ran one of `skills` (invoked by the model, the user or Claude Code); `*`: every session."""
+    """The sessions that ran one of `skills` (invoked by the model, the user or Claude Code), and the baselines they
+    are compared with (a session opened with `baseline:`); `*`: every session."""
     by_session = {}
     for r in tables["skill_invocations"]:
         by_session.setdefault(r["session_id"], []).append(r)
-    return {r["session_id"] for r in tables["sessions"] if qualifies(by_session.get(r["session_id"], ()), skills)}
+    return {r["session_id"] for r in tables["sessions"]
+            if r.get("baseline") or qualifies(by_session.get(r["session_id"], ()), skills)}
 
 
 GLOBAL_TABLES = ("de_topics", "de_layers", "warehouse_load")
@@ -750,12 +1010,14 @@ def load(out_dir, psql):
 
 def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_load=False, start=False,
                   container=CONTAINER, dsn=None, redact=True, pricing=None, log=print, clickhouse_target=None,
-                  clickhouse_identity=None, sessions=None, skills=DEFAULT_SKILLS, rescope=False, write_files=True):
+                  clickhouse_identity=None, sessions=None, skills=DEFAULT_SKILLS, rescope=False, write_files=True,
+                  capture=True):
     """Analyze once; write the files; load Postgres (do_load: every session) and/or sync ClickHouse
     (clickhouse_target, as clickhouse_identity: see clickhouse.sync — sessions that ran one of `skills` are shared,
     and only that source's rows change). `sessions` (main transcript paths: the SessionEnd hook) limits what is read
-    for ClickHouse to those; without, every transcript in scope is read. A target that fails does not stop the
-    other: its error is in `errors`."""
+    for ClickHouse to those; without, every transcript in scope is read. Those sessions' skill runs get a snapshot of
+    what they built in Metabase (capture; once per run, when the instance answers). A target that fails does not stop
+    the other: its error is in `errors`."""
     out = Path(out_dir) if out_dir else default_root() / "_warehouse" / datetime.now().strftime("%Y-%m-%d_%H%M")
     if start:
         log("Starting Postgres (docker compose up -d --wait)…")
@@ -769,7 +1031,9 @@ def run_warehouse(claude_dir=None, project=None, since="all", out_dir=None, do_l
         log("Analyzing transcripts…")
         # Postgres always gets every session; ClickHouse alone, per session, needs only those transcripts read.
         only = sessions if sessions is not None and not do_load else None
-        tables, meta = build(claude_dir, project, since, redact=redact, pricing=pricing, log=log, transcripts=only)
+        snap = {Path(t).stem for t in sessions} if capture and sessions else None
+        tables, meta = build(claude_dir, project, since, redact=redact, pricing=pricing, log=log, transcripts=only,
+                             capture=snap, capture_skills=skills)
         counts = write_bundle(tables, out) if write_files else {k: len(v) for k, v in tables.items()}
         res = {"out_dir": str(out), "counts": counts, "meta": meta, "loaded": False, "clickhouse": None, "errors": {},
                "connection": {"host": "127.0.0.1", "port": PORT, "database": DATABASE, "user": USER,

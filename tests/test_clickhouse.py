@@ -1,5 +1,5 @@
 """The ClickHouse load, offline: the connection string, the DDL, the rows, and the load's order of operations against
-a fake server (a live one: `make clickhouse-dev`, then scripts/metabase_dashboard.py --test --clickhouse)."""
+a fake server (a live one: `make clickhouse-dev-test`)."""
 
 import hashlib
 import json
@@ -101,7 +101,7 @@ class FakeClickHouse:
     Constructing it as a Client counts as a connection (`connections`)."""
 
     def __init__(self, tables=None, databases=("sessions",), short=None, short_copy=None):
-        # name -> {"comment", "columns", "parts": {source: [row, ...]}}
+        # name -> {"comment", "columns", "comments": {column: comment}, "parts": {source: [row, ...]}}
         self.tables = tables or {}
         self.views = {}  # name -> comment
         self.databases, self.short, self.short_copy = databases, short, short_copy
@@ -114,7 +114,8 @@ class FakeClickHouse:
 
     @staticmethod
     def table(comment, columns, parts=None):
-        return {"comment": comment, "columns": set(columns), "parts": {k: list(v) for k, v in (parts or {}).items()}}
+        return {"comment": comment, "columns": set(columns), "comments": {},
+                "parts": {k: list(v) for k, v in (parts or {}).items()}}
 
     def rows_of(self, table, source=None):
         parts = self.tables[table]["parts"]
@@ -140,7 +141,8 @@ class FakeClickHouse:
             return ([{"name": n, "engine": "MergeTree", "comment": t["comment"]} for n, t in self.tables.items()]
                     + [{"name": n, "engine": "View", "comment": c} for n, c in self.views.items()])
         if "system.columns" in sql:
-            return [{"table": n, "name": c} for n, t in self.tables.items() for c in t["columns"]]
+            return [{"table": n, "name": c, "comment": t["comments"].get(c, "")} for n, t in self.tables.items()
+                    for c in t["columns"]]
         src = params.get("src")
         if "UNION ALL" in sql:
             names = re.findall(r"FROM `sessions`\.`(\w+)` WHERE source", sql)
@@ -174,9 +176,12 @@ class FakeClickHouse:
                 if m.group(2):
                     like = self.tables[name(m.group(3))]
                     self.tables[n] = self.table(like["comment"], like["columns"])
+                    self.tables[n]["comments"] = dict(like["comments"])
                 else:
                     self.tables[n] = self.table(comment.group(1) if comment else clickhouse.MARK,
                                                 set(re.findall(r"^  `(\w+)`", sql, re.M)))
+                    self.tables[n]["comments"] = {c: d.replace("\\'", "'") for c, d in re.findall(
+                        r"^  `(\w+)` .*? COMMENT '((?:[^'\\]|\\.)*)',?$", sql, re.M)}
         elif m := re.match(r"CREATE OR REPLACE VIEW (`\S+`)", sql):
             self.views[name(m.group(1))] = comment.group(1)
         elif m := re.match(r"INSERT INTO (`\S+`) SELECT \* FROM (`\S+`) WHERE source", sql):
@@ -198,6 +203,11 @@ class FakeClickHouse:
             self.tables[name(m.group(1))]["parts"].pop(m.group(2), None)
         elif m := re.match(r"ALTER TABLE (`\S+`) ADD COLUMN IF NOT EXISTS `(\w+)`", sql):
             self.tables[name(m.group(1))]["columns"].add(m.group(2))
+            if comment:
+                self.tables[name(m.group(1))]["comments"][m.group(2)] = comment.group(1).replace("\\'", "'")
+        elif m := re.match(r"ALTER TABLE (`\S+`) COMMENT COLUMN", sql):
+            for c, d in re.findall(r"COMMENT COLUMN `(\w+)` '((?:[^'\\]|\\.)*)'", sql):
+                self.tables[name(m.group(1))]["comments"][c] = d.replace("\\'", "'")
         elif m := re.match(r"EXCHANGE TABLES (`\S+`) AND (`\S+`)", sql):
             a, b = name(m.group(1)), name(m.group(2))
             self.tables[a], self.tables[b] = self.tables[b], self.tables[a]
@@ -340,7 +350,26 @@ def test_tables_from_before_per_source_loads(monkeypatch):
     assert not any("unrelated" in x for x in ch.sql)  # never touches what is not its own
     ch.tables["questions"]["columns"].discard("reask_of")  # a newer version's column: added, nothing dropped
     sync(_tables({"a1": 2}), ANA)
-    assert "ALTER TABLE `sessions`.`questions` ADD COLUMN IF NOT EXISTS `reask_of` Nullable(String)" in ch.sql
+    assert any(x.startswith("ALTER TABLE `sessions`.`questions` ADD COLUMN IF NOT EXISTS `reask_of` Nullable(String) "
+                            "COMMENT 'The earlier question it repeats") for x in ch.sql)
+
+
+def test_column_comments_are_brought_in_line(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 1}), ANA)
+    ch.tables["questions"]["comments"] = {}  # what an older version left without descriptions
+    ch.tables["skill_runs"]["comments"]["checks_passed"] = "an older description"
+    before = len(ch.sql)
+    sync(_tables({"a1": 1}), ANA)
+    fixes = [x for x in ch.sql[before:] if " COMMENT COLUMN " in x]
+    assert [x.split("` COMMENT")[0] for x in fixes] == ["ALTER TABLE `sessions`.`skill_runs",
+                                                        "ALTER TABLE `sessions`.`questions"]
+    for name in ("questions", "skill_runs"):
+        assert all(ch.tables[name]["comments"][c] == d for c, _, d in warehouse.TABLES[name][1])
+    before = len(ch.sql)
+    sync(_tables({"a1": 1}), ANA)
+    assert not any(" COMMENT COLUMN " in x for x in ch.sql[before:])  # in line: nothing more to send
 
 
 def test_what_it_did_not_create_a_short_copy_and_a_short_insert_are_refused(monkeypatch):
@@ -729,7 +758,7 @@ def test_the_hook_log_says_this_machine_should_update(tmp_path, monkeypatch, cap
 # What every source shares, by the version that writes it: two checkouts on one version must write the same views and
 # taxonomy, or each load takes away the other's (only a newer version's are left alone). A change to a view, its
 # comment or semantics/questions.json bumps __version__ and adds its fingerprint here; a released one never changes.
-SHARED = {"0.4.0": "841661404a96", "0.5.0": "841661404a96", "0.6.0": "841661404a96"}
+SHARED = {"0.4.0": "841661404a96", "0.5.0": "841661404a96", "0.6.0": "841661404a96", "0.7.0": "662f213158e2"}
 
 
 def test_a_change_to_what_every_source_shares_bumps_the_version():
@@ -759,3 +788,17 @@ def test_forget_a_session_whose_transcript_is_gone_and_share_it_again(tmp_path, 
     assert cli.main(["warehouse", "--clickhouse", "--session", str(transcript), "--skills", "demo", "--env-file", env,
                      "--claude-dir", claude, "--out", str(tmp_path / "out2")]) == 0  # named: shared again
     assert ch.sessions("sessions", source) == {transcript.stem}
+
+
+def test_a_shared_baseline_stays_though_it_ran_no_skill(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    base = _tables({"b1": 1}, skill=None)
+    base["sessions"][0]["baseline"] = True
+    res = sync(_merge(_tables({"a1": 1}), base), ANA, full=True)
+    assert res["written"] == ["a1", "b1"]
+    res = sync(_tables({"a2": 1}), ANA)  # the hook, later: another rde session ends
+    assert res["stale"] == [] and ch.sessions("sessions", "aaaa") == {"a1", "a2", "b1"}
+    unmarked = _tables({"b1": 1}, skill=None)
+    res = sync(unmarked, ANA)  # b1 read again without its marker: no longer in scope
+    assert res["removed"] == ["b1"]

@@ -1,7 +1,7 @@
-# Warehouse, sharing and the Metabase dashboard
+# Warehouse and sharing
 
 Every session as tables and views, for SQL and Metabase: a local Postgres for one machine, a shared ClickHouse for
-the team, share files for testers without its connection string, and a Metabase dashboard on either. What each of
+the team, and share files for testers without its connection string. What each of
 them exposes, and to whom: [export.md](export.md#privacy).
 
 ## A local Postgres
@@ -16,14 +16,15 @@ Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432
 `tool_calls`, `cli_calls` (every program in every shell command, by signature), `skill_invocations`,
 `skill_runs`, `skill_run_checks`, `skill_run_files`, `skill_run_working_files` (every file a run wrote, and
 whether the skill names it), `questions`, `question_options`, `subagents`,
-`files_touched`, `tool_errors`, plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
+`files_touched`, `tool_errors`, `run_instances`, `run_artifacts`, `run_artifact_checks`, `run_source_tables` (what
+each skill run left in its Metabase, below), plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
 that answer the usual questions: `v_skill_versions` (each version of a skill compared), `v_check_rates`,
 `v_question_topics`, `v_question_semantics` (questions by data-engineering topic × layer, per version),
 `v_interview_questions` (one row per question, ready to explore), `v_question_outcomes`, `v_typed_answers`,
 `v_question_flags`, `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`, `v_daily`. Tables and columns
 carry comments, which Metabase shows as descriptions. A Metabase running in Docker reaches it at
 `host.docker.internal:55432`. Each fact belongs to one session (transcripts are read own-only), and every load
-drops and recreates the tables; `warehouse_load` records when, and the dashboard shows it as "Data as of".
+drops and recreates the tables; `warehouse_load` records when.
 `make warehouse` checks every load: each session is recounted straight from its raw JSONL (plain `json`, none of
 the parser's code) and compared with the warehouse — API requests, tokens, tool calls, failures, questions, skill
 calls — so a difference is a bug, not a rounding (`make warehouse-check` runs it alone; sessions written after the
@@ -62,8 +63,12 @@ make clickhouse-forget  # take this machine's sessions out, and keep them out (-
 separated; a plugin's `…:rde` counts, and `agent-skills:rde` means only that plugin's; `*` for every session). Only
 a Skill call that completed counts: rejected, failed, or still waiting at the permission prompt, it did not run the
 skill. Once rde ran in a session, all of that session goes: every turn and prompt preview, tool call, file path and
-error, other skills' runs, subagents — before and after the rde run. Sessions that never ran rde stay on the
-machine: not their rows, not their ids. Once `CLICKHOUSE_URL` is set, the SessionEnd hook shares each qualifying
+error, other skills' runs, subagents — before and after the rde run — and the snapshot of what its rde runs built in
+their Metabase (names, descriptions and SQL; source tables as counts, never a value). A session whose first prompt
+opens with `baseline:` goes too, with its snapshot: a direct agent given, without the skill, a prompt the skill is
+compared on (give a fresh session an rde run's prompt with `baseline:` in front; the marker is left out of its
+`prompt_key`, so the two match). Every other session that never ran rde stays on the machine: not its rows,
+not its id. Once `CLICKHOUSE_URL` is set, the SessionEnd hook shares each qualifying
 session as it ends, automatically; one that never ran rde makes no request either — except the very first pass on a
 machine (or after `~/.config` was wiped), which asks the cluster, with this machine's source hash only, what the
 machine has shared before.
@@ -101,7 +106,7 @@ or from the directory a session ran in, so another project's `CLICKHOUSE_URL` ca
 speaks ClickHouse's HTTP interface with the standard library — no driver to install.
 
 The same tables and rows as the Postgres load, with the views rewritten in ClickHouse SQL (`clickhouse.py`) over
-every source's rows; on the same transcripts every view and every dashboard card returns the same numbers in both.
+every source's rows; on the same transcripts every view returns the same numbers in both.
 The database must already exist — nothing creates one. Everything written carries a `convo-analysis` comment; a
 same-named table without it belongs to someone else and stops the load before anything is written, and nothing
 else in the database is touched. A newer version's columns are added to the tables in place (never dropped), and a
@@ -136,28 +141,32 @@ importer's checkout of the skill (`--source <dir>` when it is not under ~/dev): 
 its git history can't label their runs, but the file carries what the label is resolved from — the fingerprint of
 the SKILL.md that ran, and the skill files each run read.
 
-## A Metabase dashboard on either
+## What a run built: a snapshot of its Metabase
 
-`scripts/metabase_dashboard.py` builds a Metabase dashboard on the warehouse — Overview, Skill versions,
-Interview, Question topics, Skill files & CLI, with Skill, Data-engineering topic and Layer filters — once the
-warehouse is a database in that Metabase:
+The transcript holds what the agent did; the Metabase it worked on holds what it made, and that instance is often a
+local Docker container gone soon after. So when the SessionEnd hook (or `warehouse --session`) syncs a session, it
+first takes a snapshot of the Metabase each rde run used (`src/session_analytics/instance.py`), once per run, into
+`~/claude-session-exports/_instances/<session id>/<run id>.json`; every load, Postgres or ClickHouse, reads the file,
+so a reload never needs the instance again.
 
-```bash
-python3 scripts/metabase_dashboard.py --test [--clickhouse]     # every card's SQL against the warehouse
-python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
-```
-
-`--sync` creates the dashboard in the collection, or updates it in place: everything is found by name, so ids,
-links and bookmarks survive. The SQL dialect follows the Metabase database's engine (Postgres or ClickHouse;
-`--ch-database` names the ClickHouse database, default `sessions`). New cards are created inside the dashboard, so
-the collection lists only the dashboard, the model and the metrics. Every card is then run once through Metabase
-and reported. The cards are native SQL on table and view names, so reloading the warehouse keeps them working.
-
-The Question topics tab sits on a semantic layer: a model, **Interview questions** (`v_interview_questions`:
-one row per question, with its data-engineering topic and layer, what came back, whether the recommended option
-was offered and taken, the wait), and metrics on it — Questions, Questions asked with AskUserQuestion,
-Recommended option taken, Typed-answer rate, Came back empty, Median wait for an answer — so a question asked
-of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic × layer
-matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run by
-layer and version, the layers never asked about, and every question with its topic and layer, with
-Data-engineering topic and Layer filters.
+- **Which instance**: the mb CLI profile the run's commands name (`--profile x`, `-p x`, `MB_PROFILE=x`, `PROFILE=x`),
+  else the profile whose URL the prompt names. Everything goes through `mb` with that profile, so no credential is
+  read here. Only a local instance is captured (localhost, 127.0.0.1, `*.localhost`, host.docker.internal): listing a
+  shared production Metabase's content from a hook would load it for everyone. A remote one is recorded as not
+  captured; one that does not answer is recorded as such and tried again on the next sync.
+- **What the run built** (`run_artifacts`): every transform, transform test, question, model, metric, measure,
+  segment, dashboard and document created or changed between the run's start and its last event, with its definition
+  (SQL, or MBQL), and whether each question runs and how many rows it returns. An object two overlapping runs saw is
+  the later run's. A kind the instance lacks (transform tests without the feature) is skipped and said so; an
+  instance with more than 5,000 questions is not listed whole.
+- **Checks on it** (`run_artifact_checks`, `instance.CHECKS`): it runs; it returns rows (questions on a dashboard);
+  it has a description; the transform's last run succeeded and it has a transform test; the question is on a
+  dashboard and, when it aggregates, does it with a metric or measure by id; the dashboard's filters reach every card
+  and it has a text card; its name is not a probe's or a leftover's. The checks are worked out when the snapshot is
+  loaded, so changing one needs no instance.
+- **The data it built on** (`run_source_tables`): every active table no transform writes in the databases the run's
+  transforms and questions read, as counts: rows, columns by kind, keys and relationships, JSON and coerced columns,
+  empty and mostly-empty columns. Never a value.
+- **A baseline session** (its first prompt opens with `baseline:`) is captured as one run, `<session>:0`, spanning
+  the whole session; a direct agent may never name an mb profile, so its instance is the one its prompt names.
+- `--no-capture` loads without taking snapshots.

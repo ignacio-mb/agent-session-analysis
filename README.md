@@ -32,6 +32,35 @@ cp lab/.env.example lab/.env     # your email and a Metabase license token
 make lab                         # then open http://localhost:4000
 ```
 
+## Already installed? Update to 0.7.0
+
+1. **Update the skill**, then quit and reopen Claude Code (skills and hooks load when a session starts):
+
+   ```bash
+   claude plugin marketplace update agent-session-analysis && claude plugin update session-export@agent-session-analysis
+   git checkout main && git pull            # instead, if you installed from a checkout
+   ```
+
+   `claude plugin list` should show 0.7.0. Keep one install: the plugin, or a checkout with its hook, not both.
+
+2. **Share your sessions again, once**, so the rows you shared before get the new columns (each run's and
+   session's prompt key, column descriptions). In Claude Code: `/session-export update the shared warehouse`, or
+   `make clickhouse` from a checkout. Without the connection string, `/session-export share` makes a new file to
+   send. Sessions you took out stay out.
+
+3. **Keep `mb` logged in to your local Metabase.** When an rde session ends, the hook also records what the run
+   built in its Metabase and the source tables it used (counts only, never values). It reaches the instance through
+   the `mb` CLI profile the run used, or the URL in its prompt, and only a local one (`localhost`, `*.localhost`).
+   A session whose instance is already gone just has no snapshot. For a lab instance, **Copy mb login** gives the
+   command.
+
+4. **To compare rde with a direct agent**, open a fresh session without the skill and give it the rde run's prompt
+   with `baseline:` in front. It is shared like an rde session and matched to that run.
+
+5. **The lab** (if you run it): after pulling, restart it (`make lab`) and **Reset** each instance to get the
+   `analytics` database (Stack Exchange and US flights of 2015). The first create or Reset builds the new Postgres
+   image, which downloads about 500 MB and takes a few minutes. Instances you don't reset keep their old data.
+
 ## Useful commands
 
 In Claude Code (for people with Clickhouse Connect String access):
@@ -68,7 +97,6 @@ make clickhouse                                  # this machine's rde sessions i
 make clickhouse-forget                           # take them out, and keep them out
 session-analytics share                          # the same sessions as a file, no connection string needed
 session-analytics warehouse --import <files>     # load files others shared
-python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
 ```
 
 Update (then quit and reopen Claude Code):
@@ -92,7 +120,7 @@ make render-check                                # render the newest dashboard i
 - [Install and update](docs/install.md)
 - [What an export contains](docs/export.md), with accuracy and privacy
 - [Developing a skill](docs/skill-development.md): runs, versions, files read, the interview, checks
-- [Warehouse, sharing and the Metabase dashboard](docs/warehouse.md)
+- [Warehouse and sharing](docs/warehouse.md)
 - [Every field](docs/metrics.md)
 - [The lab](lab/README.md): the throwaway Metabase instances and their data
 - [Development](docs/development.md)

@@ -31,6 +31,16 @@ def test_session_rows_cover_every_table(claude_dir, skill_dir, checks_file):  # 
             assert all(r.get(k) is not None for k in pk), (name, pk)
 
 
+def test_a_session_is_keyed_by_its_opening_prompt_as_a_run_is():
+    typed = [{"trigger": "task_notification", "prompt": "done"},
+             {"trigger": "prompt", "prompt": "I want to use @/tmp/a.csv Sample database data, https://x.io/y to build"},
+             {"trigger": "prompt", "prompt": "now a dashboard"}]
+    assert warehouse._first_prompt_key(typed) == "i want to use sample database data to"
+    command = [{"trigger": "command", "prompt": None, "command": "/rde", "command_args": "I want to use Sample data"}]
+    assert warehouse._first_prompt_key(command) == "i want to use sample data"
+    assert warehouse._first_prompt_key([{"trigger": "bash", "prompt": "ls"}]) is None
+
+
 def test_bundle_and_sql(claude_dir, skill_dir, checks_file, tmp_path):  # noqa: F811
     interview_session(claude_dir, skill_dir)
     tables, meta = warehouse.build(claude_dir=claude_dir, since="all")
@@ -85,3 +95,31 @@ def test_a_session_is_live_when_any_of_its_files_was_written_after_the_load(clau
     agent.write_text("")
     res = reconcile.check(None, claude_dir)
     assert res["live"] == [sid] and not res["differ"] and res["ok"]
+
+
+def test_a_baseline_is_marked_and_keyed_as_the_prompt_it_was_given():
+    turns = [{"trigger": "prompt", "prompt": "Baseline: I want to use Sample database data to build reports"}]
+    assert warehouse.is_baseline(turns) is True
+    assert warehouse._first_prompt_key(turns) == warehouse._first_prompt_key(
+        [{"trigger": "prompt", "prompt": "I want to use Sample database data to build reports"}])
+    assert warehouse.is_baseline([{"trigger": "prompt", "prompt": "a baseline: not at the start"}]) is False
+
+
+def test_the_baselines_are_shared_with_the_skills_sessions():
+    tables = {k: [] for k in warehouse.TABLES}
+    tables["sessions"] = [{"session_id": "rde1"}, {"session_id": "base1", "baseline": True}, {"session_id": "other"}]
+    tables["skill_invocations"] = [{"session_id": "rde1", "skill": "rde", "success": True, "status": "ok"}]
+    assert warehouse.sessions_with_skill(tables, ("rde",)) == {"rde1", "base1"}
+
+
+def test_a_baseline_session_is_one_run_for_its_snapshot():
+    class S:
+        session_id = "abcd1234-ffff"
+    a = {"session": {"start": "2026-09-28T10:00:00.000Z", "end": "2026-09-28T11:00:00.000Z"},
+         "turns": {"rows": [{"trigger": "prompt", "prompt": "baseline: build on localhost:3200"}]},
+         "trace": {"steps": [{"k": "tool"}, {"k": "text"}, {"k": "tool"}]}}
+    run = warehouse.baseline_run(a, S())
+    assert run == {"run_id": "abcd1234:0", "session_id": "abcd1234-ffff", "baseline": True,
+                   "start_ms": 1790589600000.0, "end_ms": 1790593200000.0,
+                   "prompt": "baseline: build on localhost:3200", "steps": [0, 1, 2]}
+    assert warehouse.baseline_run(dict(a, session={}), S()) is None

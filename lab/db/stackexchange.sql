@@ -1,6 +1,6 @@
 -- dba.stackexchange.com (Database Administrators Stack Exchange), from Stack Exchange's own data dump of 2024-04-06.
--- Runs once, when the image is built, in a single transaction (psql -1) in the stackexchange database. Each XML file of
--- the dump streams out of the archive through xml2csv.py into COPY, so none of it lands on disk.
+-- Runs once, when the image is built, in a single transaction (psql -1) in the analytics database, into its own schema,
+-- dba. Each XML file of the dump streams out of the archive through xml2csv.py into COPY, so none of it lands on disk.
 --
 -- Complete: every row and every value of the dump. The only changes are:
 --   * snake_case names and proper types (all timestamps are UTC, as in the dump);
@@ -11,6 +11,9 @@
 -- them, and joins drop those rows.
 
 \set ON_ERROR_STOP on
+
+CREATE SCHEMA dba;
+SET search_path TO dba;
 
 -- ---- Staging: the dump's files as text ---------------------------------------------------------------------------------
 
@@ -319,7 +322,7 @@ CREATE INDEX ON users (creation_date);
 
 -- ---- Documentation (Metabase shows these as table and column descriptions) -------------------------------------------
 
-COMMENT ON DATABASE stackexchange IS 'dba.stackexchange.com (Database Administrators Stack Exchange), from the Stack Exchange data dump of 2024-04-06: all activity from the site''s launch in January 2011 to 2024-03-31, plus a few hundred posts migrated from Stack Overflow back to 2008. Per-post and per-user state (scores, counts, last activity, last access) is as of 2024-04-06. Timestamps are UTC. Content by Stack Exchange users, licensed CC BY-SA (see content_license).';
+COMMENT ON SCHEMA dba IS 'dba.stackexchange.com (Database Administrators Stack Exchange), from the Stack Exchange data dump of 2024-04-06: all activity from the site''s launch in January 2011 to 2024-03-31, plus a few hundred posts migrated from Stack Overflow back to 2008. Per-post and per-user state (scores, counts, last activity, last access) is as of 2024-04-06. Timestamps are UTC. Content by Stack Exchange users, licensed CC BY-SA (see content_license).';
 
 COMMENT ON TABLE users IS 'Every user account on the site, including the Community user (id -1), a background process that owns tag wikis and bumps old questions.';
 COMMENT ON COLUMN users.id IS 'The user''s id on this site.';

@@ -57,7 +57,7 @@ clickhouse:
 clickhouse-forget:
 	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse-forget
 
-# A throwaway local ClickHouse (docker-compose.yml, profile clickhouse) to try the load and every card's SQL on.
+# A throwaway local ClickHouse (docker-compose.yml, profile clickhouse) to try the load on.
 clickhouse-dev:
 	docker compose --profile clickhouse up -d --wait clickhouse
 
@@ -65,7 +65,6 @@ clickhouse-dev-test: clickhouse-dev
 	@mkdir -p .preview && printf 'CLICKHOUSE_URL=http://convo:convo@127.0.0.1:18123/sessions\n' > .preview/clickhouse-dev.env
 	PYTHONPATH=src python3 -m session_analytics warehouse --clickhouse --env-file .preview/clickhouse-dev.env --check \
 		--out .preview/clickhouse-dev
-	python3 scripts/metabase_dashboard.py --test --clickhouse --env-file .preview/clickhouse-dev.env
 	CONVO_CLICKHOUSE_TEST_URL=http://convo:convo@127.0.0.1:18123 uv run --no-project --with pytest python -m pytest -q \
 		tests/test_clickhouse_live.py
 

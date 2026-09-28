@@ -8,30 +8,36 @@ It is optional: nothing else in this repository needs it, or Docker, or Bun. Wha
 bun server.ts   # or, from the repository: make lab
 ```
 
-Then open http://localhost:4000. There is nothing to install: Bun serves the page, talks to the Docker Engine API over its unix socket, and talks to Postgres with `Bun.SQL`. The first instance takes about 3 extra minutes, to build the Postgres image (see [The Stack Exchange database](#the-stack-exchange-database)).
+Then open http://localhost:4000. There is nothing to install: Bun serves the page, talks to the Docker Engine API over its unix socket, and talks to Postgres with `Bun.SQL`. The first instance takes about 5 extra minutes, more on a slow download, to build the Postgres image (see [The analytics database](#the-analytics-database)).
 
 ## What an instance is
 
 Creating an instance named `foo` gives you:
 
-- **Metabase** at `http://foo.localhost:<port>`, in container `mbo-foo`, published on 127.0.0.1 at the first free port from 3200. Each instance has its own hostname because browsers keep cookies per host, not per port: signing in to one instance never signs you out of another. `*.localhost` resolves to your machine in browsers, curl, Node and Bun. It starts with a fresh H2 application database and no example content (`MB_LOAD_SAMPLE_CONTENT=false`). Names are lowercase letters, digits and `-`, like a hostname.
-- **Postgres** in container `mbo-foo.postgres`, on that port + 10000 (3200 → 13200), holding two databases. The page shows their URLs:
+- **Metabase** at `http://foo.localhost:<port>`, in container `mbo-foo`, published on 127.0.0.1 at the first free port from 3200. Each instance has its own hostname because browsers keep cookies per host, not per port: signing in to one instance never signs you out of another. `*.localhost` resolves to your machine in browsers, curl, Node and Bun. It runs on an application database in the instance's Postgres, below, and starts with no example content (`MB_LOAD_SAMPLE_CONTENT=false`). Names are lowercase letters, digits and `-`, like a hostname.
+- **Postgres** in container `mbo-foo.postgres`, on that port + 10000 (3200 → 13200), holding three databases. The page shows their URLs:
   - `sample`, the Sample Database (from `metabase/qa-databases:postgres-sample-15`, the image `rde init` uses): `postgres://metabase:metasample123@localhost:13200/sample`;
-  - `stackexchange`, real data from dba.stackexchange.com: `postgres://metabase:metasample123@localhost:13200/stackexchange`.
+  - `analytics`, two real datasets, one per schema: `dba` (dba.stackexchange.com) and `flight_delays` (US flights of 2015): `postgres://metabase:metasample123@localhost:13200/analytics`;
+  - `metabase_app`, the application database Metabase runs on: `postgres://metabase:metasample123@localhost:13200/metabase_app`.
 - **Setup already done:**
   - the admin from `.env` (see [Settings](#settings)), in light mode (Metabase's default follows your OS);
-  - both databases connected, as **Sample Database** and **DBA Stack Exchange**, each read through a read-only role (`metabase_readonly`), with a **writable connection** as the owner (`metabase`) for transforms, uploads and actions. Tables the owner creates later stay readable through the main connection, even in new schemas.
+  - both databases connected, as **Sample Database** and **Analytics**, each read through a read-only role (`metabase_readonly`), with a **writable connection** as the owner (`metabase`) for transforms, uploads and actions. Tables the owner creates later stay readable through the main connection, even in new schemas.
+  - the application database connected too, as **Metabase Application Database**, through the read-only role only: no writable connection, since a write there can break Metabase. Its tables (`report_card`, `report_dashboard`, `collection`, `core_user`, `audit_log`, `query_execution`, …) are Metabase's own content and history, queryable like any other data. The All Users group gets the default access to it, as to any new database.
   - an admin API key.
 - **Copy env**, which copies `MB_URL`/`MB_API_KEY` (for `mb`) and `MBA_URL`/`MBA_API_KEY` (for `mba`).
 - **Copy mb login**, which copies a command that saves an `mb` profile named after the instance.
 
-**Reset** wipes the application database and the Postgres, and sets everything up again on the same name and ports. **Delete** removes both containers. **Stop** and **Start** keep them.
+**Reset** wipes the Postgres, application database included, and sets everything up again on the same name and ports. **Delete** removes both containers. **Stop** and **Start** keep them; Start brings Postgres up before Metabase, which exits without its application database. A Metabase container without the `mbo.appdb` label runs on H2, inside the container, until you Reset it.
 
 The image and environment match `rde init`: `metabase/metabase-dev:transform-tests-ee` by default, the staging token store, `MB_WAREHOUSE_ALLOWED_NETWORKS=allow-all`, and `host.docker.internal` pointing at your machine. Any image works: type one or pick a local one. Missing images are pulled.
 
-## The Stack Exchange database
+## The analytics database
 
-`stackexchange` is [dba.stackexchange.com](https://dba.stackexchange.com), the Database Administrators Q&A site, as of Stack Exchange's own [data dump](https://archive.org/details/stackexchange) of 2024-04-06: a tech company's real product data, complete, from the site's launch in January 2011 to March 2024, plus a few hundred posts migrated from Stack Overflow back to 2008. The content is by the site's users, licensed CC BY-SA 2.5, 3.0 or 4.0 depending on when it was written (`content_license` says which). Every table and most columns have a description, which Metabase shows.
+`analytics` holds two real datasets, each complete and in a schema of its own, so one connection sees both and each dataset's tables stay together. Every table and column has a description, which Metabase shows.
+
+### `dba`: Stack Exchange
+
+[dba.stackexchange.com](https://dba.stackexchange.com), the Database Administrators Q&A site, as of Stack Exchange's own [data dump](https://archive.org/details/stackexchange) of 2024-04-06: a tech company's real product data, complete, from the site's launch in January 2011 to March 2024, plus a few hundred posts migrated from Stack Overflow back to 2008. The content is by the site's users, licensed CC BY-SA 2.5, 3.0 or 4.0 depending on when it was written (`content_license` says which).
 
 | Table | Rows | |
 |---|---:|---|
@@ -48,9 +54,22 @@ The image and environment match `rde init`: `metabase/metabase-dev:transform-tes
 
 Every row and value of the dump is there. [`db/stackexchange.sql`](db/stackexchange.sql) says exactly what changed on the way in: names, types, and `post_tags` and the lookups (named from Stack Exchange's [schema documentation](https://meta.stackexchange.com/q/2677)). The dump leaves out deleted posts but keeps rows that point at them, such as 111,161 votes, so those foreign keys are declared `NOT VALID`: Metabase still sees them, and joins drop those rows.
 
-**The image.** Every instance's Postgres runs `mbo-postgres:<hash>`, built from [`db/`](db/) the first time an instance needs it: it downloads the dump from archive.org (319 MB, checked against its SHA-1), streams it into Postgres, and bakes the data into the image, so later instances start with it at once. The tag is a hash of `db/`: change anything there, restart the app, and the next create or Reset builds a new image. Instances keep the image they were created with; ones created before `db/` existed hold only the Sample Database until you Reset them.
+### `flight_delays`: US flights of 2015
 
-**Disk.** The image is 2.6 GB, 1.4 GB of it the data. The build leaves about 1.8 GB of untagged cache, mostly the download and the loaded data, which makes rebuilds fast; `docker image prune` removes it. Each instance's Postgres copies the files of the tables it reads, up to 1.4 GB.
+Every domestic flight of 14 US airlines in 2015, with its delays and their causes, cancellations and diversions: the US Department of Transportation's on-time reports, as Maven Analytics' [Data Playground](https://mavenanalytics.io/data-playground) publishes them ("Airline Flight Delays"). US government data, in the public domain.
+
+| Table | Rows | |
+|---|---:|---|
+| `flights` | 5,819,079 | one row per scheduled flight: times, delays, taxi and air time, distance, and why it was late or cancelled |
+| `airports` | 322 | name, city, state and coordinates |
+| `airlines` | 14 | |
+| `cancellation_codes` | 4 | airline, weather, National Air System, security |
+
+Every row and value of the files is there, as they are: [`db/flight_delays.sql`](db/flight_delays.sql) only lowercases the names, gives the values their types (clock times stay `hhmm` text, local to the airport) and numbers the flights in file order as `id`. Exporting the tables back to CSV gives the files byte for byte. The data has the quirks it came with: October's 486,165 flights name their airports by the DOT's five-digit numeric ids instead of IATA codes, so the airport foreign keys are declared `NOT VALID` and joins drop October; and three airports have no coordinates.
+
+**The image.** Every instance's Postgres runs `mbo-postgres:<hash>`, built from [`db/`](db/) the first time an instance needs it: it downloads both datasets (the dump from archive.org, 319 MB, and the flights from Maven Analytics, 195 MB, each checked against its SHA-1), streams them into Postgres, and bakes the data into the image, so later instances start with it at once. The tag is a hash of `db/`: change anything there, restart the app, and the next create or Reset builds a new image. Instances keep the image they were created with: those created before the analytics database hold Stack Exchange as a database of its own, `stackexchange`, connected as **DBA Stack Exchange**, until you Reset them; those created before `db/` existed hold only the Sample Database.
+
+**Disk.** The image is 4.2 GB, 2.6 GB of it the data. The build leaves about 5 GB of untagged cache, mostly the downloads and the loaded data, which makes rebuilds fast; `docker image prune` removes it. Each instance's Postgres copies the files of the tables it reads, up to 2.6 GB.
 
 ## Settings
 
