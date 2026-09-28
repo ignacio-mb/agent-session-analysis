@@ -34,12 +34,17 @@ make lab                         # then open http://localhost:4000
 
 ## Useful commands
 
-In Claude Code:
+In Claude Code (for people with Clickhouse Connect String access):
 
 ```
 /session-export                     # this session
 /session-export latest              # or an id, an id prefix, a transcript path
 /session-export rollup --since 7d   # every session in this project over the last week
+
+```
+
+### For people running experiments locally
+```
 /session-export share               # your rde sessions as one file, for the team
 ```
 
