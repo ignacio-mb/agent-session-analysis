@@ -101,7 +101,7 @@ class FakeClickHouse:
     Constructing it as a Client counts as a connection (`connections`)."""
 
     def __init__(self, tables=None, databases=("sessions",), short=None, short_copy=None):
-        # name -> {"comment", "columns", "parts": {source: [row, ...]}}
+        # name -> {"comment", "columns", "comments": {column: comment}, "parts": {source: [row, ...]}}
         self.tables = tables or {}
         self.views = {}  # name -> comment
         self.databases, self.short, self.short_copy = databases, short, short_copy
@@ -114,7 +114,8 @@ class FakeClickHouse:
 
     @staticmethod
     def table(comment, columns, parts=None):
-        return {"comment": comment, "columns": set(columns), "parts": {k: list(v) for k, v in (parts or {}).items()}}
+        return {"comment": comment, "columns": set(columns), "comments": {},
+                "parts": {k: list(v) for k, v in (parts or {}).items()}}
 
     def rows_of(self, table, source=None):
         parts = self.tables[table]["parts"]
@@ -140,7 +141,8 @@ class FakeClickHouse:
             return ([{"name": n, "engine": "MergeTree", "comment": t["comment"]} for n, t in self.tables.items()]
                     + [{"name": n, "engine": "View", "comment": c} for n, c in self.views.items()])
         if "system.columns" in sql:
-            return [{"table": n, "name": c} for n, t in self.tables.items() for c in t["columns"]]
+            return [{"table": n, "name": c, "comment": t["comments"].get(c, "")} for n, t in self.tables.items()
+                    for c in t["columns"]]
         src = params.get("src")
         if "UNION ALL" in sql:
             names = re.findall(r"FROM `sessions`\.`(\w+)` WHERE source", sql)
@@ -174,9 +176,12 @@ class FakeClickHouse:
                 if m.group(2):
                     like = self.tables[name(m.group(3))]
                     self.tables[n] = self.table(like["comment"], like["columns"])
+                    self.tables[n]["comments"] = dict(like["comments"])
                 else:
                     self.tables[n] = self.table(comment.group(1) if comment else clickhouse.MARK,
                                                 set(re.findall(r"^  `(\w+)`", sql, re.M)))
+                    self.tables[n]["comments"] = {c: d.replace("\\'", "'") for c, d in re.findall(
+                        r"^  `(\w+)` .*? COMMENT '((?:[^'\\]|\\.)*)',?$", sql, re.M)}
         elif m := re.match(r"CREATE OR REPLACE VIEW (`\S+`)", sql):
             self.views[name(m.group(1))] = comment.group(1)
         elif m := re.match(r"INSERT INTO (`\S+`) SELECT \* FROM (`\S+`) WHERE source", sql):
@@ -198,6 +203,11 @@ class FakeClickHouse:
             self.tables[name(m.group(1))]["parts"].pop(m.group(2), None)
         elif m := re.match(r"ALTER TABLE (`\S+`) ADD COLUMN IF NOT EXISTS `(\w+)`", sql):
             self.tables[name(m.group(1))]["columns"].add(m.group(2))
+            if comment:
+                self.tables[name(m.group(1))]["comments"][m.group(2)] = comment.group(1).replace("\\'", "'")
+        elif m := re.match(r"ALTER TABLE (`\S+`) COMMENT COLUMN", sql):
+            for c, d in re.findall(r"COMMENT COLUMN `(\w+)` '((?:[^'\\]|\\.)*)'", sql):
+                self.tables[name(m.group(1))]["comments"][c] = d.replace("\\'", "'")
         elif m := re.match(r"EXCHANGE TABLES (`\S+`) AND (`\S+`)", sql):
             a, b = name(m.group(1)), name(m.group(2))
             self.tables[a], self.tables[b] = self.tables[b], self.tables[a]
@@ -340,7 +350,26 @@ def test_tables_from_before_per_source_loads(monkeypatch):
     assert not any("unrelated" in x for x in ch.sql)  # never touches what is not its own
     ch.tables["questions"]["columns"].discard("reask_of")  # a newer version's column: added, nothing dropped
     sync(_tables({"a1": 2}), ANA)
-    assert "ALTER TABLE `sessions`.`questions` ADD COLUMN IF NOT EXISTS `reask_of` Nullable(String)" in ch.sql
+    assert any(x.startswith("ALTER TABLE `sessions`.`questions` ADD COLUMN IF NOT EXISTS `reask_of` Nullable(String) "
+                            "COMMENT 'The earlier question it repeats") for x in ch.sql)
+
+
+def test_column_comments_are_brought_in_line(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    sync(_tables({"a1": 1}), ANA)
+    ch.tables["questions"]["comments"] = {}  # what an older version left without descriptions
+    ch.tables["skill_runs"]["comments"]["checks_passed"] = "an older description"
+    before = len(ch.sql)
+    sync(_tables({"a1": 1}), ANA)
+    fixes = [x for x in ch.sql[before:] if " COMMENT COLUMN " in x]
+    assert [x.split("` COMMENT")[0] for x in fixes] == ["ALTER TABLE `sessions`.`skill_runs",
+                                                        "ALTER TABLE `sessions`.`questions"]
+    for name in ("questions", "skill_runs"):
+        assert all(ch.tables[name]["comments"][c] == d for c, _, d in warehouse.TABLES[name][1])
+    before = len(ch.sql)
+    sync(_tables({"a1": 1}), ANA)
+    assert not any(" COMMENT COLUMN " in x for x in ch.sql[before:])  # in line: nothing more to send
 
 
 def test_what_it_did_not_create_a_short_copy_and_a_short_insert_are_refused(monkeypatch):

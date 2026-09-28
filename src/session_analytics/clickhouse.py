@@ -445,7 +445,7 @@ def json_lines(name, rows, extra=None):
 
 # ---------------------------------------------------------------- load
 def preflight(client, db):
-    """The database exists, and nothing this would replace belongs to anyone else. Returns {table: {columns}}."""
+    """The database exists, and nothing this would replace belongs to anyone else. Returns {table: {column: comment}}."""
     if not client.rows("SELECT name FROM system.databases WHERE name = {db:String}", {"db": db}):
         raise ClickHouseError(f"database {db} does not exist on {client.t.host}: create it first "
                               f"(CREATE DATABASE {ident(db)}) — this loader never creates one")
@@ -457,9 +457,9 @@ def preflight(client, db):
         raise ClickHouseError(f"{db} already has {', '.join(foreign)}, not created by {MARK} (no '{MARK}' comment): "
                               f"refusing to replace them — load into a database of its own")
     cols = {}
-    for r in client.rows("SELECT table, name FROM system.columns WHERE database = {db:String}", {"db": db}):
-        cols.setdefault(r["table"], set()).add(r["name"])
-    return {n: cols.get(n, set()) for n in existing if n in TABLES}
+    for r in client.rows("SELECT table, name, comment FROM system.columns WHERE database = {db:String}", {"db": db}):
+        cols.setdefault(r["table"], {})[r["name"]] = r.get("comment") or ""
+    return {n: cols.get(n, {}) for n in existing if n in TABLES}
 
 
 def _insert(client, db, table, name, rows, extra):
@@ -621,10 +621,17 @@ def _array(values):
 
 
 def _add_missing_columns(client, db, name, cols):
-    for c, t, d in columns(name):  # a newer version's columns: added, never dropped
+    """A newer version's columns added (never dropped), and every column's comment brought in line with this
+    version's: Metabase shows them as field descriptions."""
+    stale = []
+    for c, t, d in columns(name):
         if c not in cols:
             client.run(f"ALTER TABLE {qualified(db, name)} ADD COLUMN IF NOT EXISTS {ident(c)} {t}"
                        + (f" COMMENT {lit(d)}" if d else ""))
+        elif d and cols[c] != d:
+            stale.append(f"COMMENT COLUMN {ident(c)} {lit(d)}")
+    if stale:
+        client.run(f"ALTER TABLE {qualified(db, name)} " + ", ".join(stale))
 
 
 def _count(client, db, table, where="", params=None):
