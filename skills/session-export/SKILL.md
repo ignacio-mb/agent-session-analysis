@@ -27,7 +27,8 @@ Arguments the user gave: `$ARGUMENTS`
 | the shared ClickHouse warehouse ("load / export / push my sessions into ClickHouse", "update the shared warehouse", "refresh the team dashboard") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse --check` — see **The shared warehouse** below. Report the rows loaded, whose they were, and whether the check matched |
 | to take their sessions out of the shared warehouse | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse-forget` (removes this machine's rows only) |
 | to share their sessions with the team without the ClickHouse connection string ("share my rde sessions", "send my sessions to <someone>", "make a file of my sessions for the team") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" share` — see **Sharing a file** below |
-| to load the share files others sent them (they hold the ClickHouse connection) | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --import <file or folder>` — report, per file, whose it was, the sessions loaded or taken out, and the runs labelled with a commit |
+| to load the share files others sent them (they hold the ClickHouse connection) | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --import <file or folder>` — report, per file, whose it was, the sessions loaded or taken out, the runs labelled with a commit, and the sessions by dataset |
+| to label what the shared warehouse already holds with the dataset each session and run was on ("which dataset was each session on", after a change to `semantics/datasets.json`; they hold the ClickHouse connection) | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" warehouse --clickhouse-datasets --dry-run` first — report, per source, the sessions and runs by dataset and how many rows would change — then the same without `--dry-run` if the user wants it (it rewrites only those two columns, for everyone's sessions) |
 | two runs of a skill side by side ("compare run X with run Y") | `python3 "${CLAUDE_SKILL_DIR}/scripts/session_export.py" compare <session>:<n> <session>:<n>` (run ids come from the reports) |
 
 ### The shared warehouse
@@ -72,7 +73,8 @@ masked, and who and which machine they come from. It sends nothing anywhere.
   the warehouse; `share --include <id>` puts it back. `--gzip` makes the file about a tenth of the size.
 - `warehouse --import` loads each file under its sender's name: a newer file from the same machine updates their
   sessions, an older one is skipped, and no one else's rows change. It labels each run with the commit that ran,
-  against the importer's checkout of the skill (`--source <dir>` when it is not under ~/dev).
+  against the importer's checkout of the skill (`--source <dir>` when it is not under ~/dev), and each session and
+  run with the dataset it was on (Stripe, Toy Store…), from the file's rows.
 
 Pass through any flags the user asked for:
 

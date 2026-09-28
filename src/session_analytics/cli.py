@@ -134,6 +134,11 @@ def build_parser():
     wh.add_argument("--source", action="append", default=[], metavar="DIR",
                     help="--import: the skill's git checkout, to label runs with the commit that ran (default: found "
                          "under ~/dev and friends)")
+    wh.add_argument("--clickhouse-datasets", action="store_true",
+                    help="place every source's sessions and skill runs already in the shared ClickHouse on their "
+                         "dataset again (semantics/datasets.json), from their rows; only those columns change")
+    wh.add_argument("--dry-run", action="store_true",
+                    help="--clickhouse-datasets: print what it would set, and write nothing")
     wh.add_argument("--init-env", action="store_true",
                     help="create ~/.config/convo-analysis/.env from .env.example, to fill in CLICKHOUSE_URL")
     wh.add_argument("--env-file", help="read CLICKHOUSE_URL from this file instead of ~/.config/convo-analysis/.env")
@@ -417,12 +422,25 @@ def cmd_warehouse(args):
     from . import clickhouse, reconcile, warehouse
     log = (lambda *_: None) if args.json else (lambda m: print(m, file=sys.stderr))
     started_ms = time.time() * 1000
+    # --dry-run promises nothing is written: any other mode would ignore it and write, so it is refused there
+    if args.dry_run and not args.clickhouse_datasets:
+        print("session-analytics: warehouse: --dry-run only goes with --clickhouse-datasets", file=sys.stderr)
+        return 2
+    others = [f for f, on in (("--import", args.import_files), ("--clickhouse", args.clickhouse),
+                              ("--clickhouse-forget", args.clickhouse_forget), ("--load", args.load),
+                              ("--check", args.check), ("--up", args.up), ("--init-env", args.init_env)) if on]
+    if args.clickhouse_datasets and others:
+        print(f"session-analytics: warehouse: --clickhouse-datasets goes alone, not with {', '.join(others)}",
+              file=sys.stderr)
+        return 2
     if args.init_env:
         path, created = clickhouse.init_env()
         print(f"{'Created' if created else 'Already there:'} {path} — fill in CLICKHOUSE_URL (its comments say how).")
         return 0
     if args.import_files:
         return _import_shares(args, log)
+    if args.clickhouse_datasets:
+        return _fill_datasets(args, log)
     default_cdir = Path(locate.claude_dir(args.claude_dir))
     target, unusable = None, None
     if args.clickhouse or args.clickhouse_forget:
@@ -679,7 +697,8 @@ def _import_shares(args, log):
             continue
         what = []
         if res["written"]:
-            what.append(f"shared {len(res['written'])} session(s) that ran {','.join(skills)}")
+            what.append(f"shared {len(res['written'])} session(s) that ran {','.join(skills)}"
+                        + (f", by dataset: {_by_dataset(res['datasets'])}" if res["datasets"] else ""))
         if res["removed"]:
             what.append(f"took out {len(res['removed'])} (left out by them, or no longer running {','.join(skills)})")
         if res["relabelled"]:
@@ -696,6 +715,41 @@ def _import_shares(args, log):
     if args.json:
         print(json.dumps(results, indent=1, default=str))
     return 0 if ok else 1
+
+
+def _by_dataset(counts):
+    """{dataset: n} as `Stripe 3, Toy Store 1, none 2`, the most first."""
+    return ", ".join(f"{k or 'none'} {n}" for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0] is None,
+                                                                                            kv[0] or "")))
+
+
+def _fill_datasets(args, log):
+    """warehouse --clickhouse-datasets: what every source already shared, placed on its dataset again (see
+    clickhouse.fill_datasets); --dry-run only reads."""
+    from . import clickhouse
+    try:
+        target = clickhouse.target_from_settings(args.env_file)
+        log(f"Reading every source's sessions in {target!r}{' (read only)' if args.dry_run else ''}…")
+        res = clickhouse.fill_datasets(target, dry_run=args.dry_run, log=log)
+    except clickhouse.ClickHouseError as exc:
+        print(f"session-analytics: warehouse --clickhouse-datasets: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"dry_run": args.dry_run, "sources": res}, indent=1, default=str))
+        return 0
+    head = "Would set (nothing written)" if args.dry_run else "Set"
+    print(f"{head}: the dataset of every session and skill run in {target!r}, from their rows.")
+    for r in res:
+        changed = r["changed"]
+        verb = "would change" if args.dry_run else "changed"
+        print(f"  {r['person']} (source {r['source'][:8]}): {sum(r['sessions'].values())} session(s) — "
+              f"{_by_dataset(r['sessions'])}; {sum(r['skill_runs'].values())} skill run(s) — "
+              f"{_by_dataset(r['skill_runs']) or 'none'}; {verb} {changed['sessions']} session row(s) and "
+              f"{changed['skill_runs']} skill run row(s)")
+    if not args.dry_run:
+        print("Only dataset and dataset_by changed; every other column of every row is as it was."
+              if any(sum(r["changed"].values()) for r in res) else "Nothing to change: every label was already so.")
+    return 0
 
 
 def cmd_schema(args):

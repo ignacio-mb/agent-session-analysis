@@ -52,7 +52,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import __version__, util
+from . import __version__, datasets, util
 from .warehouse import (
     BIG,
     BOOL,
@@ -881,6 +881,127 @@ def forget(target, ident_, session_ids=None):
         write_cache(target, ident_.source, ids=now_held,
                     withdrawn=sorted(set(cache.get("withdrawn") or ()) | wanted))
     return sorted(gone), sorted(wanted - gone)
+
+
+# ---------------------------------------------------------------- the datasets of what is already shared
+# The tables that carry a dataset, and the key of a row, as SQL (as _dataset_key in Python)
+DATASET_KEYS = {"sessions": "session_id", "skill_runs": "concat(ifNull(session_id, ''), ' ', run_id)"}
+
+
+class ReadOnly:
+    """A client that only reads: a statement that is not a read is refused before it is sent, and every read goes with
+    readonly=2, so the server refuses a write too."""
+
+    def __init__(self, client):
+        self.client, self.t = client, client.t
+
+    def rows(self, sql, params=None, settings=None):
+        return self.client.rows(sql, params, {**(settings or {}), "readonly": "2"})
+
+    def run(self, sql, data=None, params=None, settings=None, compress=False):
+        first = sql.strip().split("\n")[0][:80]
+        raise ClickHouseError(f"read-only: refused {first}")
+
+
+def _dataset_key(name, row):
+    return row.get("session_id") if name == "sessions" else f"{row.get('session_id') or ''} {row.get('run_id')}"
+
+
+def dataset_rows(client, db, existing, source):
+    """One source's rows as datasets.fill reads them ({table: rows}): the columns it needs that the tables have (a
+    table or column an older version never wrote is left out), and the dataset each sessions and skill_runs row holds
+    now."""
+    out = {}
+    for name, cols in datasets.READS.items():
+        have = existing.get(name) or {}
+        want = [c for c in cols + (("dataset", "dataset_by") if name in DATASET_KEYS else ()) if c in have]
+        out[name] = client.rows(f"SELECT {', '.join(ident(c) for c in want)} FROM {qualified(db, name)} "
+                                f"WHERE source = {{src:String}}", {"src": source}, CONSISTENT) \
+            if "source" in have and want else []
+    return out
+
+
+def _set_datasets(client, db, name, source, values):
+    """One source's partition of `name` again with `dataset` and `dataset_by` set anew on the rows in `values` ({key:
+    (dataset, by)}, the rows whose label changes; every other row keeps its own): copied into a staging table with
+    SELECT * REPLACE, so every other column is the live one as it is, counted, and swapped in with REPLACE PARTITION, as
+    a sync swaps it. The labels go in the statement once, and it may be as long as they make it (max_query_size).
+
+    Another machine syncs its own partition without this machine's lock: a sync that lands between the copy and the
+    count stops it, and one that lands after the swap is caught when the partition is read back; neither is retried
+    from a copy that has gone stale (run it again). One that lands in the instant between the count and the swap is
+    undone (docs/warehouse.md)."""
+    keys = sorted(values)
+    key = DATASET_KEYS[name]
+    at = f"indexOf(keys_, {key})"
+    stage = f"{name}__datasets_{source}"
+    src = {"src": source}
+    mine = "WHERE source = {src:String}"
+    sql = (f"INSERT INTO {qualified(db, stage)}\nWITH {_array(keys)} AS keys_, "
+           f"{_array([values[k][0] or '' for k in keys])} AS datasets_, {_array([values[k][1] or '' for k in keys])} "
+           f"AS by_\nSELECT * REPLACE (\n  if({at} = 0, dataset, nullIf(datasets_[{at}], '')) AS dataset,\n  "
+           f"if({at} = 0, dataset_by, nullIf(by_[{at}], '')) AS dataset_by)\nFROM {qualified(db, name)} {mine}")
+    client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    client.run(f"CREATE TABLE {qualified(db, stage)} AS {qualified(db, name)}")
+    try:
+        client.run(sql, params=src, settings={**CONSISTENT, "max_query_size": str(len(sql.encode("utf-8")) + 65536)})
+        got, live = _count(client, db, stage), _count(client, db, name, mine, src)
+        if got != live:  # never swap a short partition in
+            raise ClickHouseError(f"{db}.{stage}: copied {got} rows of {live}; the live table is untouched")
+        client.run(f"ALTER TABLE {qualified(db, name)} REPLACE PARTITION {lit(source)} FROM {qualified(db, stage)}")
+    finally:
+        client.run(f"DROP TABLE IF EXISTS {qualified(db, stage)} SYNC")
+    cols = ", ".join(ident(c) for c in datasets.READS[name] if c in ("session_id", "run_id"))
+    held = client.rows(f"SELECT {cols}, dataset, dataset_by FROM {qualified(db, name)} {mine}", src, CONSISTENT)
+    now = {_dataset_key(name, r): (r.get("dataset"), r.get("dataset_by")) for r in held}
+    if len(held) != got or any(now.get(k) != v for k, v in values.items()):
+        raise ClickHouseError(f"{db}.{name}: this source's partition changed while it was being labelled (a sync from "
+                              f"its machine?): run it again")
+    return got
+
+
+def fill_datasets(target, dry_run=False, log=print):
+    """Every source's sessions and skill runs placed on their dataset again (datasets.fill, on their rows read back):
+    for rows shared before the dataset columns, and after a change to semantics/datasets.json. Only `dataset` and
+    `dataset_by` of sessions and skill_runs change, one source's partition at a time (_set_datasets); a source whose
+    labels are already these is not written. `dry_run`: read only (ReadOnly), write nothing. Returns one entry per
+    source: {source, person, sessions, skill_runs ({dataset: rows}), changed ({table: rows whose label changes})}."""
+    client = Client(target)
+    client = ReadOnly(client) if dry_run else client
+    db = target.database
+    out = []
+    with machine_lock():
+        existing = preflight(client, db)
+        legacy = sorted(n for n in DATASET_KEYS if n in existing and "source" not in existing[n])
+        if legacy:
+            raise ClickHouseError(f"{', '.join(legacy)} predate per-source loads: run a full load first (make clickhouse)")
+        if "sessions" not in existing:
+            return out
+        if not dry_run:
+            for name in DATASET_KEYS:
+                if name in existing:
+                    _add_missing_columns(client, db, name, existing[name])
+            existing = preflight(client, db)
+        people = {}
+        for r in client.rows(f"SELECT source, person FROM {qualified(db, 'sessions')}", settings=CONSISTENT):
+            people.setdefault(r["source"], r.get("person"))
+        for source in sorted(people):
+            tables = dataset_rows(client, db, existing, source)
+            before = {name: {_dataset_key(name, r): (r.get("dataset"), r.get("dataset_by")) for r in tables[name]}
+                      for name in DATASET_KEYS}
+            counts = datasets.fill(tables)
+            entry = {"source": source, "person": people[source], "changed": {}, **counts}
+            for name in DATASET_KEYS:
+                changed = {k: v for k, v in ((_dataset_key(name, r), (r.get("dataset"), r.get("dataset_by")))
+                                             for r in tables[name]) if before[name].get(k) != v}
+                entry["changed"][name] = len(changed)
+                if changed and not dry_run:
+                    _set_datasets(client, db, name, source, changed)
+            if log:
+                log(f"  {people[source]} (source {source[:8]}): {len(tables['sessions'])} session(s), "
+                    f"{len(tables['skill_runs'])} skill run(s)")
+            out.append(entry)
+    return out
 
 
 # ---------------------------------------------------------------- the views, in ClickHouse SQL

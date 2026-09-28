@@ -1,7 +1,9 @@
 """The Postgres warehouse: rows per table, the bundle on disk, and the SQL (loading itself needs Docker)."""
 
 import csv
+from datetime import datetime, timezone
 
+from conftest import Transcript, U, text, tool_use
 from test_questions import checks_file, interview_session, skill_dir  # noqa: F401 - shared fixtures
 
 from session_analytics import warehouse
@@ -123,3 +125,22 @@ def test_a_baseline_session_is_one_run_for_its_snapshot():
                    "start_ms": 1790589600000.0, "end_ms": 1790593200000.0,
                    "prompt": "baseline: build on localhost:3200", "steps": [0, 1, 2]}
     assert warehouse.baseline_run(dict(a, session={}), S()) is None
+
+
+def test_a_build_places_each_session_on_its_dataset(claude_dir, skill_dir, checks_file):  # noqa: F811
+    interview_session(claude_dir, skill_dir)  # "build revenue reporting": no dataset
+    base = Transcript(claude_dir, session_id="bbbbbbbb-0000-0000-0000-000000000001",
+                      start=datetime(2026, 9, 5, 9, 0, tzinfo=timezone.utc))
+    base.prompt("baseline: using http://airline-flight-delays.localhost:3203/browse/databases/Database/schema/"
+                "flight_delays, create meaningful tables and reports", "p1")
+    base.assistant("m1", [tool_use("t1", "Bash", command="mb table list --schema flight_delays --json")], U())
+    base.tool_result("t1", "[]", "p1")
+    base.assistant("m2", [text("Done.")], U(), stop="end_turn")
+    base.write()
+    tables, _ = warehouse.build(claude_dir=claude_dir, since="all")
+    got = {r["session_id"][:8]: (r["dataset"], r["dataset_by"]) for r in tables["sessions"]}
+    assert got == {"eeeeeeee": (None, None), "bbbbbbbb": ("Airline Flight Delays", "runs")}  # the baseline's <id>:0
+    assert [(r["dataset"], r["dataset_by"]) for r in tables["skill_runs"]] == [(None, None)]
+    counts = warehouse.write_bundle(tables, claude_dir.parent / "wh")
+    with open(claude_dir.parent / "wh" / "sessions.csv", encoding="utf-8") as fh:
+        assert {r["dataset"] for r in csv.DictReader(fh)} == {"", "Airline Flight Delays"} and counts["sessions"] == 2
