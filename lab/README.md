@@ -2,8 +2,10 @@
 
 A tiny local web app for spinning up named, throwaway Metabase instances in Docker, for testing the robot data engineer (`~/dev/mba`: `mb`, `mba`, the rde skill).
 
+It is optional: nothing else in this repository needs it, or Docker, or Bun. What it gives is the same starting point for every test of the rde skill: a fresh Metabase on the same Postgres data, which comparing skill versions prompt by prompt assumes.
+
 ```bash
-bun server.ts
+bun server.ts   # or, from the repository: make lab
 ```
 
 Then open http://localhost:4000. There is nothing to install: Bun serves the page, talks to the Docker Engine API over its unix socket, and talks to Postgres with `Bun.SQL`. The first instance takes about 3 extra minutes, to build the Postgres image (see [The Stack Exchange database](#the-stack-exchange-database)).
