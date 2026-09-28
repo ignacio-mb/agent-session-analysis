@@ -1,0 +1,163 @@
+# Warehouse, sharing and the Metabase dashboard
+
+Every session as tables and views, for SQL and Metabase: a local Postgres for one machine, a shared ClickHouse for
+the team, share files for testers without its connection string, and a Metabase dashboard on either. What each of
+them exposes, and to whom: [export.md](export.md#privacy).
+
+## A local Postgres
+
+```bash
+make warehouse                                   # start Postgres (docker compose) and load every session
+session-analytics warehouse --up --load --since 90d
+```
+
+Every session goes into a local Postgres (`docker-compose.yml`, `127.0.0.1:55432`, database
+`claude_sessions`, user `convo`, no password) as plain tables — `sessions`, `turns`, `api_requests`,
+`tool_calls`, `cli_calls` (every program in every shell command, by signature), `skill_invocations`,
+`skill_runs`, `skill_run_checks`, `skill_run_files`, `skill_run_working_files` (every file a run wrote, and
+whether the skill names it), `questions`, `question_options`, `subagents`,
+`files_touched`, `tool_errors`, plus `de_topics` and `de_layers` (the data-engineering taxonomy) — and views
+that answer the usual questions: `v_skill_versions` (each version of a skill compared), `v_check_rates`,
+`v_question_topics`, `v_question_semantics` (questions by data-engineering topic × layer, per version),
+`v_interview_questions` (one row per question, ready to explore), `v_question_outcomes`, `v_typed_answers`,
+`v_question_flags`, `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`, `v_daily`. Tables and columns
+carry comments, which Metabase shows as descriptions. A Metabase running in Docker reaches it at
+`host.docker.internal:55432`. Each fact belongs to one session (transcripts are read own-only), and every load
+drops and recreates the tables; `warehouse_load` records when, and the dashboard shows it as "Data as of".
+`make warehouse` checks every load: each session is recounted straight from its raw JSONL (plain `json`, none of
+the parser's code) and compared with the warehouse — API requests, tokens, tool calls, failures, questions, skill
+calls — so a difference is a bug, not a rounding (`make warehouse-check` runs it alone; sessions written after the
+load — the main transcript or any of its subagent and workflow transcripts — are reported apart).
+`make warehouse-psql` opens a shell.
+
+## Keeping it fresh
+
+Nothing refreshes it on its own: Claude Code only appends to its transcripts, and the warehouse (and every
+dashboard on it) holds what the last load read. `scripts/warehouse_hook.sh` is a SessionEnd hook that updates
+whatever is set up — the local Postgres, every session, when its container is running (`--load=auto`); the shared
+ClickHouse (below), only the session that ended and only if it invoked rde, when `CLICKHOUSE_URL` is set
+(`--clickhouse=auto --session-queue`) — and, with neither, exits before reading a transcript.
+It runs in the background (closing a session is never held up), one load at a time (a session that ends mid-load
+gets one more pass after it), logs to `~/claude-session-exports/_warehouse/hook.log` and overwrites
+`_warehouse/latest` instead of adding a folder per load. The plugin installs it (`hooks/hooks.json`); from a
+checkout, add it to `~/.claude/settings.json` instead — not both, or every session end loads twice:
+
+```json
+{"hooks": {"SessionEnd": [{"hooks": [{"type": "command",
+                                      "command": "/path/to/convo-analysis/scripts/warehouse_hook.sh"}]}]}}
+```
+
+## A shared warehouse in ClickHouse
+
+```bash
+make env                # creates ~/.config/convo-analysis/.env from .env.example: fill in CLICKHOUSE_URL
+make clickhouse         # every rde session on this machine into it (its own rows only), then the check
+make clickhouse-forget  # take this machine's sessions out, and keep them out (--session <id> for one)
+```
+
+(Without a checkout, through the plugin: `session_export.py warehouse --init-env`, `--clickhouse --check`,
+`--clickhouse-forget`.)
+
+**What is shared: the sessions that ran the rde skill, whole.** `CLICKHOUSE_SKILLS` (default `rde`; comma
+separated; a plugin's `…:rde` counts, and `agent-skills:rde` means only that plugin's; `*` for every session). Only
+a Skill call that completed counts: rejected, failed, or still waiting at the permission prompt, it did not run the
+skill. Once rde ran in a session, all of that session goes: every turn and prompt preview, tool call, file path and
+error, other skills' runs, subagents — before and after the rde run. Sessions that never ran rde stay on the
+machine: not their rows, not their ids. Once `CLICKHOUSE_URL` is set, the SessionEnd hook shares each qualifying
+session as it ends, automatically; one that never ran rde makes no request either — except the very first pass on a
+machine (or after `~/.config` was wiped), which asks the cluster, with this machine's source hash only, what the
+machine has shared before.
+
+**How it stays right.** Every change goes through one sync. For the sessions it just read, it writes those that
+qualify and takes out those that no longer do; it also takes out any shared session whose own rows in the warehouse
+show it never ran rde (what an earlier version shared, rows a sync interrupted part-way left behind). Every other
+session stays: one whose transcript Claude Code has since deleted (it prunes old ones), or that was outside
+`--since`. The hook reads only the session that ended, plus any transcript that changed since its last pass and has
+been quiet for five minutes (a session whose end it missed; one already synced at its current state is not read
+again); `make clickhouse` reads them all. Syncs on one machine hold a lock from reading to the last write.
+`--clickhouse-forget` takes sessions out and remembers them as withdrawn, so no later sync — the hook, its catch-up,
+`make clickhouse` — shares them again; `--clickhouse --session <id>` shares one again. A session whose transcript is
+gone can still be forgotten by its id. When `CLICKHOUSE_SKILLS` changes, the sessions the new scope no longer
+covers are only reported until `--rescope` (a typo there would otherwise delete history that cannot come back).
+
+**Nobody's sync touches anyone else's rows.** Many people sync into one database, each from their own machines.
+Every row carries `source` — this machine and Claude config directory, as a hash: derived from the hardware id, so
+it survives a wiped config, and never the id itself — and `person` (`CLICKHOUSE_PERSON`, else the git email). The
+tables are partitioned by `source`: per table, a sync rebuilds its own partition in a staging table (its rows minus
+the touched sessions', plus their new rows), checks the counts, and swaps it in with `ALTER TABLE … REPLACE
+PARTITION`, atomically, so a dashboard reading meanwhile sees the old partition or the new one. The taxonomy tables
+(`de_topics`, `de_layers`) and the views are the only shared objects: the same for everyone, each rewritten when a
+sync's version of it differs, never over what a newer version wrote. The comment on each records the version that
+wrote it and a hash of its content; a machine on an older version leaves them as they are and says to update, and
+its own rows still load. A second machine, or a second Claude config directory, is a second source; a session copied
+between machines is counted once per machine that syncs it. To stop sharing altogether, empty `CLICKHOUSE_URL`.
+
+`CLICKHOUSE_URL` is the cluster's HTTPS endpoint with a user and password and the database at the end
+(`https://<user>:<password>@<host>:8443/sessions`) — or the JDBC string the ClickHouse Cloud console gives,
+as it is; `CLICKHOUSE_PASSWORD` takes a password a URL would need escaped. It lives in
+`~/.config/convo-analysis/.env` (owner-only), outside any checkout or plugin directory, so an update never takes
+it; a checkout's `.env` from before is still read, with a note to move it. Nothing reads it from the environment
+or from the directory a session ran in, so another project's `CLICKHOUSE_URL` can't redirect the load. The loader
+speaks ClickHouse's HTTP interface with the standard library — no driver to install.
+
+The same tables and rows as the Postgres load, with the views rewritten in ClickHouse SQL (`clickhouse.py`) over
+every source's rows; on the same transcripts every view and every dashboard card returns the same numbers in both.
+The database must already exist — nothing creates one. Everything written carries a `convo-analysis` comment; a
+same-named table without it belongs to someone else and stops the load before anything is written, and nothing
+else in the database is touched. A newer version's columns are added to the tables in place (never dropped), and a
+table from before per-source loads is rebuilt once. `make clickhouse-dev-test` tries the whole path on a throwaway
+local ClickHouse (docker compose, profile `clickhouse`; `make clickhouse-dev-down` removes it).
+
+## Sharing a file instead of the connection string
+
+The connection string above can create and drop tables, so it stays with whoever runs the warehouse. Everyone else
+shares a file, and that person imports it:
+
+```bash
+session-analytics share                        # this machine's sessions that ran rde, as one file
+session-analytics share --exclude <id>         # leave a session out, of this file and every later one
+session-analytics warehouse --import <files>   # whoever holds the connection: load them (a folder works too)
+```
+
+(Through the plugin: ask Claude Code to "share my rde sessions", or run `session_export.py share`.)
+
+`share` writes `~/claude-session-exports/_share/sessions-<name>-<time>.json`: the rows a sync would write for the
+sessions in which rde ran (`--skills`, as `CLICKHOUSE_SKILLS`), with secret-looking strings masked and the person and
+source they come from. It is JSON with one row per line, so the sender can read exactly what they send; `--gzip`
+makes it about a tenth of the size. A session that never ran rde leaves neither its rows nor its id, and only the
+transcripts that invoke the skill are parsed. Nothing is sent anywhere: the sender passes the file on themselves,
+somewhere only the importer reads it.
+
+`warehouse --import` loads each file, oldest first, with the same sync as a direct load, under the sender's source: a
+newer file from the same machine updates their sessions, an older one is skipped so nothing rolls back, and no one
+else's rows change. A session the sender left out is taken out, and stays out until a later file includes it. The
+taxonomy is the importer's, as in a direct load. Each run is labelled again with the git commit that ran, against the
+importer's checkout of the skill (`--source <dir>` when it is not under ~/dev): a tester who installed rde without
+its git history can't label their runs, but the file carries what the label is resolved from — the fingerprint of
+the SKILL.md that ran, and the skill files each run read.
+
+## A Metabase dashboard on either
+
+`scripts/metabase_dashboard.py` builds a Metabase dashboard on the warehouse — Overview, Skill versions,
+Interview, Question topics, Skill files & CLI, with Skill, Data-engineering topic and Layer filters — once the
+warehouse is a database in that Metabase:
+
+```bash
+python3 scripts/metabase_dashboard.py --test [--clickhouse]     # every card's SQL against the warehouse
+python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
+```
+
+`--sync` creates the dashboard in the collection, or updates it in place: everything is found by name, so ids,
+links and bookmarks survive. The SQL dialect follows the Metabase database's engine (Postgres or ClickHouse;
+`--ch-database` names the ClickHouse database, default `sessions`). New cards are created inside the dashboard, so
+the collection lists only the dashboard, the model and the metrics. Every card is then run once through Metabase
+and reported. The cards are native SQL on table and view names, so reloading the warehouse keeps them working.
+
+The Question topics tab sits on a semantic layer: a model, **Interview questions** (`v_interview_questions`:
+one row per question, with its data-engineering topic and layer, what came back, whether the recommended option
+was offered and taken, the wait), and metrics on it — Questions, Questions asked with AskUserQuestion,
+Recommended option taken, Typed-answer rate, Came back empty, Median wait for an answer — so a question asked
+of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic × layer
+matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run by
+layer and version, the layers never asked about, and every question with its topic and layer, with
+Data-engineering topic and Layer filters.
