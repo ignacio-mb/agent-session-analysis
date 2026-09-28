@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -77,7 +78,9 @@ TABLES = {
         ("git_branch", TEXT, "git branch (the most used, if several)"), ("cwd", TEXT, "Working directory"),
         ("transcript", TEXT, "Path of the transcript file"),
         ("prompt_key", TEXT, "The first prompt's opening words, lowercased, as skill_runs.prompt_key: a session "
-                             "and a skill run given the same prompt share it")], ["session_id"]),
+                             "and a skill run given the same prompt share it"),
+        ("baseline", BOOL, "The first prompt opened with `baseline:`: a direct agent given, without the skill, a "
+                           "prompt the skill is compared on; shared with the skill's sessions")], ["session_id"]),
     "turns": ("One row per turn: a prompt and everything Claude did before handing back.", [
         ("session_id", TEXT, "The session (sessions.session_id)"),
         ("turn", INT, "Turn number within the session, from 0"), ("start_at", TS, "When the turn started"),
@@ -599,15 +602,41 @@ def _version(run):
     return v.get("commit") or v.get("label")
 
 
-def _first_prompt_key(turns):
-    """The key of the prompt that opened the session (its first typed prompt or /slash command), as a skill run keys
-    its own: a session given a run's prompt without the skill is compared with that run."""
+# A session whose first prompt opens with `baseline:` is a direct agent given, without the skill, a prompt the skill is
+# compared on: shared with the skill's sessions, keyed by its prompt without the marker.
+BASELINE_RE = re.compile(r"^\s*baseline\s*:\s*", re.I)
+
+
+def _first_prompt(turns):
+    """The prompt that opened the session: its first typed prompt, or `/command args`."""
     first = next((t for t in turns if t.get("trigger") in ("prompt", "command")), None)
     if first is None:
         return None
     if first.get("trigger") == "command":
-        return skillruns.prompt_key(f"{first.get('command') or ''} {first.get('command_args') or ''}")
-    return skillruns.prompt_key(first.get("prompt"))
+        return f"{first.get('command') or ''} {first.get('command_args') or ''}"
+    return first.get("prompt")
+
+
+def _first_prompt_key(turns):
+    """The key of the prompt that opened the session, as a skill run keys its own (a baseline's marker left out): a
+    session given a run's prompt without the skill is compared with that run."""
+    return skillruns.prompt_key(BASELINE_RE.sub("", _first_prompt(turns) or ""))
+
+
+def is_baseline(turns):
+    return bool(BASELINE_RE.match(_first_prompt(turns) or ""))
+
+
+def baseline_run(a, s):
+    """A baseline session as one run, `<id>:0`, for its instance snapshot: the whole session, every tool call in it, and
+    the prompt that opened it (a direct agent may never name an mb profile: its instance is the one the prompt
+    names). None when the session has no start."""
+    start = util.parse_ts(a["session"].get("start"))
+    if start is None:
+        return None
+    return {"run_id": f"{s.session_id[:8]}:0", "session_id": s.session_id, "baseline": True, "start_ms": start,
+            "end_ms": util.parse_ts(a["session"].get("end")) or start, "prompt": _first_prompt(a["turns"]["rows"]),
+            "steps": list(range(len(a["trace"]["steps"])))}
 
 
 def session_rows(a, s):
@@ -641,7 +670,7 @@ def session_rows(a, s):
         "models": ", ".join(m.get("model") or "" for m in se.get("models") or ()),
         "claude_code_version": _top(se.get("claude_code_versions")), "entrypoint": _top(se.get("entrypoints")),
         "git_branch": _top(se.get("git_branches")), "cwd": se.get("cwd"), "transcript": se.get("transcript"),
-        "prompt_key": _first_prompt_key(a["turns"]["rows"])})
+        "prompt_key": _first_prompt_key(a["turns"]["rows"]), "baseline": is_baseline(a["turns"]["rows"])})
     for t in a["turns"]["rows"]:
         rows["turns"].append({
             "session_id": sid, "turn": t["index"], "start_at": t.get("start"), "end_at": t.get("end"),
@@ -828,9 +857,12 @@ def build(claude_dir=None, project=None, since="all", limit=5000, redact=True, p
                 continue
             a = analyze(s, pricing, redactor=R, now_ms=now)
             if capture is not None and s.session_id in capture:
+                base = baseline_run(a, s) if is_baseline(a["turns"]["rows"]) else None
+                runs = dict(a, skill_runs=[*(a.get("skill_runs") or ()), base]) if base else a
                 try:
-                    instance.capture_session(a, s, now, root=instances_root, log=log,
-                                             wanted=lambda run: _captures(run, capture_skills or DEFAULT_SKILLS))
+                    instance.capture_session(runs, s, now, root=instances_root, log=log,
+                                             wanted=lambda run: run.get("baseline")
+                                             or _captures(run, capture_skills or DEFAULT_SKILLS))
                 except instance.MbError as exc:  # no CLI, or it cannot list its profiles: load what there is
                     if log:
                         log(f"  no instance snapshot for {s.session_id[:8]}: {exc}")
@@ -891,11 +923,13 @@ def qualifies(invocations, skills):
 
 
 def sessions_with_skill(tables, skills):
-    """The sessions that ran one of `skills` (invoked by the model, the user or Claude Code); `*`: every session."""
+    """The sessions that ran one of `skills` (invoked by the model, the user or Claude Code), and the baselines they
+    are compared with (a session opened with `baseline:`); `*`: every session."""
     by_session = {}
     for r in tables["skill_invocations"]:
         by_session.setdefault(r["session_id"], []).append(r)
-    return {r["session_id"] for r in tables["sessions"] if qualifies(by_session.get(r["session_id"], ()), skills)}
+    return {r["session_id"] for r in tables["sessions"]
+            if r.get("baseline") or qualifies(by_session.get(r["session_id"], ()), skills)}
 
 
 GLOBAL_TABLES = ("de_topics", "de_layers", "warehouse_load")

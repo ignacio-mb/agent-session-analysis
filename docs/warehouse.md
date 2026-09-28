@@ -64,8 +64,11 @@ separated; a plugin's `…:rde` counts, and `agent-skills:rde` means only that p
 a Skill call that completed counts: rejected, failed, or still waiting at the permission prompt, it did not run the
 skill. Once rde ran in a session, all of that session goes: every turn and prompt preview, tool call, file path and
 error, other skills' runs, subagents — before and after the rde run — and the snapshot of what its rde runs built in
-their Metabase (names, descriptions and SQL; source tables as counts, never a value). Sessions that never ran rde stay on the
-machine: not their rows, not their ids. Once `CLICKHOUSE_URL` is set, the SessionEnd hook shares each qualifying
+their Metabase (names, descriptions and SQL; source tables as counts, never a value). A session whose first prompt
+opens with `baseline:` goes too, with its snapshot: a direct agent given, without the skill, a prompt the skill is
+compared on (give a fresh session an rde run's prompt with `baseline:` in front; the marker is left out of its
+`prompt_key`, so the two match). Every other session that never ran rde stays on the machine: not its rows,
+not its id. Once `CLICKHOUSE_URL` is set, the SessionEnd hook shares each qualifying
 session as it ends, automatically; one that never ran rde makes no request either — except the very first pass on a
 machine (or after `~/.config` was wiped), which asks the cluster, with this machine's source hash only, what the
 machine has shared before.
@@ -164,4 +167,6 @@ so a reload never needs the instance again.
 - **The data it built on** (`run_source_tables`): every active table no transform writes in the databases the run's
   transforms and questions read, as counts: rows, columns by kind, keys and relationships, JSON and coerced columns,
   empty and mostly-empty columns. Never a value.
+- **A baseline session** (its first prompt opens with `baseline:`) is captured as one run, `<session>:0`, spanning
+  the whole session; a direct agent may never name an mb profile, so its instance is the one its prompt names.
 - `--no-capture` loads without taking snapshots.

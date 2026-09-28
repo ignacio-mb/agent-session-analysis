@@ -788,3 +788,17 @@ def test_forget_a_session_whose_transcript_is_gone_and_share_it_again(tmp_path, 
     assert cli.main(["warehouse", "--clickhouse", "--session", str(transcript), "--skills", "demo", "--env-file", env,
                      "--claude-dir", claude, "--out", str(tmp_path / "out2")]) == 0  # named: shared again
     assert ch.sessions("sessions", source) == {transcript.stem}
+
+
+def test_a_shared_baseline_stays_though_it_ran_no_skill(monkeypatch):
+    ch = FakeClickHouse()
+    monkeypatch.setattr(clickhouse, "Client", ch)
+    base = _tables({"b1": 1}, skill=None)
+    base["sessions"][0]["baseline"] = True
+    res = sync(_merge(_tables({"a1": 1}), base), ANA, full=True)
+    assert res["written"] == ["a1", "b1"]
+    res = sync(_tables({"a2": 1}), ANA)  # the hook, later: another rde session ends
+    assert res["stale"] == [] and ch.sessions("sessions", "aaaa") == {"a1", "a2", "b1"}
+    unmarked = _tables({"b1": 1}, skill=None)
+    res = sync(unmarked, ANA)  # b1 read again without its marker: no longer in scope
+    assert res["removed"] == ["b1"]

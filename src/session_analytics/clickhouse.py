@@ -712,6 +712,15 @@ def _shared(client, db, existing, source):
     return held, scope
 
 
+def _baselines(client, db, existing, source):
+    """The sessions this source shared as baselines (sessions.baseline): in scope whatever skills they ran."""
+    if "baseline" not in existing.get("sessions", ()):
+        return set()
+    return {r["session_id"] for r in client.rows(f"SELECT session_id, baseline FROM {qualified(db, 'sessions')} "
+                                                 f"WHERE source = {{src:String}}", {"src": source}, CONSISTENT)
+            if r.get("baseline") in (True, 1, "true")}
+
+
 def _write_load_row(client, db, ident_, row, held, scope, since, generator=None):
     """warehouse_load: one row per source saying what it holds; none once it holds nothing (no trace of who loaded).
     `generator`: the version that built the rows, when not this one (a share file made elsewhere)."""
@@ -797,8 +806,10 @@ def sync(tables, target, ident_, read_ids, skills, since="all", full=False, resc
             load(rebuilt, target, ident_, log=log)
             existing = preflight(client, db)
         held, recorded = _shared(client, db, existing, ident_.source)
+        baselines = _baselines(client, db, existing, ident_.source)
         write = (_qualifying(tables, skills) & read_ids) - withdrawn
-        out_of_scope = {sid for sid, invs in held.items() if sid not in read_ids and not qualifies(invs, skills)}
+        out_of_scope = {sid for sid, invs in held.items()
+                        if sid not in read_ids and sid not in baselines and not qualifies(invs, skills)}
         no_longer = (read_ids - write) & set(held)
         scope_changed = recorded is not None and recorded != scope
         pending = None
