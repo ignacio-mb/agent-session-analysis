@@ -23,6 +23,17 @@ def test_header_first_then_question_then_fallback():
     assert c(None, "Hmm?", "sign-off") == ("ownership", "semantic", "fallback/fallback")
 
 
+def test_transform_tests_are_their_own_layer():
+    assert c("Tests", "Which rules should the Orders tests pin?")[:2] == ("quality", "tests")
+    assert c(None, "Want me to write transform tests for the Invoices model before the first run?", "offer")[:2] \
+        == ("quality", "tests")
+    assert c(None, "Hmm?", "tests") == ("quality", "tests", "fallback/fallback")
+    # a working-files header still decides, and a test email is not a transform test
+    assert c("Files", "Keep a copy of the working files: the SQL behind every Model, the rule tests?")[:2] \
+        == ("workflow", "cross-cutting")
+    assert c(None, "Want me to send you a test email?", "offer")[1] != "tests"
+
+
 def test_dimensions_keep_the_file_order():
     topics, layers = semantics.load().dimensions()
     assert topics[0]["id"] == "privacy" and topics[-1]["id"] == "other"

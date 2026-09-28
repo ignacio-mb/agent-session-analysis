@@ -22,8 +22,8 @@
     {
       "id": "quality",
       "label": "Data quality & validation",
-      "description": "Matching a reference, reconciliation, parity with a previous system, gaps, anomalies, tests, safeguards.",
-      "match": "reference|\\bmatch(es)?\\b|reconcil|parity|discrepan|comparison|compare|validat|\\bgap\\b|missing|anomal|safeguard|assumption|faithful|fidelity|quality|blank for|before their recorded"
+      "description": "Matching a reference, reconciliation, parity with a previous system, gaps, anomalies, transform tests, safeguards.",
+      "match": "^(transform )?tests?$|transform.?tests?|rule tests?|fixtures?|\\btests?\\b[^.?!]*\\b(transforms?|models?|tables?|rules?|expectations?)\\b|\\b(transforms?|models?|tables?|rules?)\\b[^.?!]*\\btests?\\b|reference|\\bmatch(es)?\\b|reconcil|parity|discrepan|comparison|compare|validat|\\bgap\\b|missing|anomal|safeguard|assumption|faithful|fidelity|quality|blank for|before their recorded"
     },
     {
       "id": "delivery",
@@ -86,6 +86,12 @@
       "label": "Semantic layer",
       "description": "Metrics, definitions, segments, trust labels, the Library: what the numbers mean.",
       "match": "metric|\\bdefin|\\bdef\\b|count(s|ed)? as|what counts|count toward|should .* count|revenue|\\bmrr\\b|churn|engage|\\bactive\\b|positive|rating|split by|which plan|trust label|library|official|verified|segment|measure|what a number means|sign.?off|decides what|which number|kpi"
+    },
+    {
+      "id": "tests",
+      "label": "Tests",
+      "description": "Transform tests: the fixtures and expectations that pin a transform's rules before it runs.",
+      "match": "^(transform )?tests?$|transform.?tests?|rule tests?|fixtures?|\\btests?\\b[^.?!]*\\b(transforms?|models?|tables?|rules?|expectations?)\\b|\\b(transforms?|models?|tables?|rules?)\\b[^.?!]*\\btests?\\b"
     },
     {
       "id": "modeling",
@@ -194,6 +200,10 @@
     "preference": [
       "requirements",
       "cross-cutting"
+    ],
+    "tests": [
+      "quality",
+      "tests"
     ],
     "other": [
       "other",

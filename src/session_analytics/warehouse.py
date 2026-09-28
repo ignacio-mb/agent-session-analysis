@@ -119,7 +119,9 @@ TABLES = {
         ("inline_script_lines", INT, None),
         ("temp_files", INT, "Files the run created in a system temp directory"),
         ("memory_notes", INT, "Claude Code memory files the run wrote"),
-        ("end_reason", TEXT, None), ("prompt", TEXT, None), ("args", TEXT, None)], ["run_id"]),
+        ("end_reason", TEXT, None), ("prompt", TEXT, None),
+        ("prompt_key", TEXT, "The prompt's opening words, lowercased: runs of one prompt share it"),
+        ("args", TEXT, None)], ["run_id"]),
     "skill_run_checks": ("One row per run and declared check (checks/<skill>.json).", [
         ("run_id", TEXT, None), ("session_id", TEXT, None), ("skill", TEXT, None), ("version", TEXT, None), ("check_id", TEXT, None),
         ("description", TEXT, None), ("status", TEXT, "pass | fail | n/a | error"), ("detail", TEXT, None)],
@@ -506,7 +508,8 @@ def session_rows(a, s):
             "support_scripts": r.get("support_scripts"), "support_script_runs": r.get("support_script_runs"),
             "inline_scripts": r.get("inline_scripts"), "inline_script_lines": r.get("inline_script_lines"),
             "temp_files": r.get("temp_files"), "memory_notes": r.get("memory_notes"),
-            "end_reason": r.get("end_reason"), "prompt": r.get("prompt"), "args": r.get("args")})
+            "end_reason": r.get("end_reason"), "prompt": r.get("prompt"),
+            "prompt_key": r.get("prompt_key"), "args": r.get("args")})
         for ch in r.get("checks") or ():
             rows["skill_run_checks"].append({
                 "run_id": r["run_id"], "session_id": sid, "skill": r["skill"], "version": ver, "check_id": ch.get("id"),
