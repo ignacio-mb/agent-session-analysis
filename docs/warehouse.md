@@ -1,7 +1,7 @@
-# Warehouse, sharing and the Metabase dashboard
+# Warehouse and sharing
 
 Every session as tables and views, for SQL and Metabase: a local Postgres for one machine, a shared ClickHouse for
-the team, share files for testers without its connection string, and a Metabase dashboard on either. What each of
+the team, and share files for testers without its connection string. What each of
 them exposes, and to whom: [export.md](export.md#privacy).
 
 ## A local Postgres
@@ -23,7 +23,7 @@ that answer the usual questions: `v_skill_versions` (each version of a skill com
 `v_question_flags`, `v_skill_files`, `v_cli_signatures`, `v_tools`, `v_models`, `v_daily`. Tables and columns
 carry comments, which Metabase shows as descriptions. A Metabase running in Docker reaches it at
 `host.docker.internal:55432`. Each fact belongs to one session (transcripts are read own-only), and every load
-drops and recreates the tables; `warehouse_load` records when, and the dashboard shows it as "Data as of".
+drops and recreates the tables; `warehouse_load` records when.
 `make warehouse` checks every load: each session is recounted straight from its raw JSONL (plain `json`, none of
 the parser's code) and compared with the warehouse — API requests, tokens, tool calls, failures, questions, skill
 calls — so a difference is a bug, not a rounding (`make warehouse-check` runs it alone; sessions written after the
@@ -101,7 +101,7 @@ or from the directory a session ran in, so another project's `CLICKHOUSE_URL` ca
 speaks ClickHouse's HTTP interface with the standard library — no driver to install.
 
 The same tables and rows as the Postgres load, with the views rewritten in ClickHouse SQL (`clickhouse.py`) over
-every source's rows; on the same transcripts every view and every dashboard card returns the same numbers in both.
+every source's rows; on the same transcripts every view returns the same numbers in both.
 The database must already exist — nothing creates one. Everything written carries a `convo-analysis` comment; a
 same-named table without it belongs to someone else and stops the load before anything is written, and nothing
 else in the database is touched. A newer version's columns are added to the tables in place (never dropped), and a
@@ -135,29 +135,3 @@ taxonomy is the importer's, as in a direct load. Each run is labelled again with
 importer's checkout of the skill (`--source <dir>` when it is not under ~/dev): a tester who installed rde without
 its git history can't label their runs, but the file carries what the label is resolved from — the fingerprint of
 the SKILL.md that ran, and the skill files each run read.
-
-## A Metabase dashboard on either
-
-`scripts/metabase_dashboard.py` builds a Metabase dashboard on the warehouse — Overview, Skill versions,
-Interview, Question topics, Skill files & CLI, with Skill, Data-engineering topic and Layer filters — once the
-warehouse is a database in that Metabase:
-
-```bash
-python3 scripts/metabase_dashboard.py --test [--clickhouse]     # every card's SQL against the warehouse
-python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
-```
-
-`--sync` creates the dashboard in the collection, or updates it in place: everything is found by name, so ids,
-links and bookmarks survive. The SQL dialect follows the Metabase database's engine (Postgres or ClickHouse;
-`--ch-database` names the ClickHouse database, default `sessions`). New cards are created inside the dashboard, so
-the collection lists only the dashboard, the model and the metrics. Every card is then run once through Metabase
-and reported. The cards are native SQL on table and view names, so reloading the warehouse keeps them working.
-
-The Question topics tab sits on a semantic layer: a model, **Interview questions** (`v_interview_questions`:
-one row per question, with its data-engineering topic and layer, what came back, whether the recommended option
-was offered and taken, the wait), and metrics on it — Questions, Questions asked with AskUserQuestion,
-Recommended option taken, Typed-answer rate, Came back empty, Median wait for an answer — so a question asked
-of the model in Metabase's query builder counts the same way the dashboard does. The tab: a topic × layer
-matrix (click a topic to filter the tab), what came back per topic, a scorecard per topic, questions per run by
-layer and version, the layers never asked about, and every question with its topic and layer, with
-Data-engineering topic and Layer filters.

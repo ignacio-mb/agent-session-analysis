@@ -95,6 +95,6 @@ permission prompt.
 Exports contain your prompts, commands and file paths. Secret-looking strings (API keys, tokens, private keys,
 passwords, credentials in URLs) are masked by default; `--no-redact` turns that off. Previews are truncated
 unless you pass `--full`. Nothing is sent anywhere unless you load a warehouse: the files stay where they are
-written. A ClickHouse load (and a Metabase dashboard on it) puts prompt previews, questions and answers, command
+written. A ClickHouse load (and anything that reads it) puts prompt previews, questions and answers, command
 summaries, error messages and file paths, with your name on them, wherever that cluster and that collection are
 readable; `--clickhouse-forget` takes them out. A share file holds the same, and goes wherever you send it.

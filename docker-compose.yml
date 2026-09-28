@@ -19,7 +19,7 @@ services:
       timeout: 3s
       retries: 30
 
-  # A throwaway ClickHouse to try the ClickHouse load and every card's ClickHouse SQL offline
+  # A throwaway ClickHouse to try the ClickHouse load and its views offline
   # (make clickhouse-dev-test). Not started by `make warehouse`: it has its own profile. Local only, no volume.
   clickhouse:
     image: clickhouse/clickhouse-server:26.8-alpine

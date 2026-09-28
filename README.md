@@ -68,7 +68,6 @@ make clickhouse                                  # this machine's rde sessions i
 make clickhouse-forget                           # take them out, and keep them out
 session-analytics share                          # the same sessions as a file, no connection string needed
 session-analytics warehouse --import <files>     # load files others shared
-python3 scripts/metabase_dashboard.py --sync --profile <mb profile> --database <id> --collection <id>
 ```
 
 Update (then quit and reopen Claude Code):
@@ -92,7 +91,7 @@ make render-check                                # render the newest dashboard i
 - [Install and update](docs/install.md)
 - [What an export contains](docs/export.md), with accuracy and privacy
 - [Developing a skill](docs/skill-development.md): runs, versions, files read, the interview, checks
-- [Warehouse, sharing and the Metabase dashboard](docs/warehouse.md)
+- [Warehouse and sharing](docs/warehouse.md)
 - [Every field](docs/metrics.md)
 - [The lab](lab/README.md): the throwaway Metabase instances and their data
 - [Development](docs/development.md)

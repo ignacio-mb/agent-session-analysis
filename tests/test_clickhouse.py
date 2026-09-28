@@ -1,5 +1,5 @@
 """The ClickHouse load, offline: the connection string, the DDL, the rows, and the load's order of operations against
-a fake server (a live one: `make clickhouse-dev`, then scripts/metabase_dashboard.py --test --clickhouse)."""
+a fake server (a live one: `make clickhouse-dev-test`)."""
 
 import hashlib
 import json
