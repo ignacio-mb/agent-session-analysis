@@ -17,7 +17,7 @@ Creating an instance named `foo` gives you:
 - **Metabase** at `http://foo.localhost:<port>`, in container `mbo-foo`, published on 127.0.0.1 at the first free port from 3200. Each instance has its own hostname because browsers keep cookies per host, not per port: signing in to one instance never signs you out of another. `*.localhost` resolves to your machine in browsers, curl, Node and Bun. It runs on an application database in the instance's Postgres, below, and starts with no example content (`MB_LOAD_SAMPLE_CONTENT=false`). Names are lowercase letters, digits and `-`, like a hostname.
 - **Postgres** in container `mbo-foo.postgres`, on that port + 10000 (3200 → 13200), holding three databases. The page shows their URLs:
   - `sample`, the Sample Database (from `metabase/qa-databases:postgres-sample-15`, the image `rde init` uses): `postgres://metabase:metasample123@localhost:13200/sample`;
-  - `analytics`, two real datasets, one per schema: `dba` (dba.stackexchange.com) and `flight_delays` (US flights of 2015): `postgres://metabase:metasample123@localhost:13200/analytics`;
+  - `analytics`, three datasets, one per schema: `dba` (dba.stackexchange.com) and `flight_delays` (US flights of 2015), both real, and `gatr` (a synthetic food manufacturer, messy on purpose): `postgres://metabase:metasample123@localhost:13200/analytics`;
   - `metabase_app`, the application database Metabase runs on: `postgres://metabase:metasample123@localhost:13200/metabase_app`.
 - **Setup already done:**
   - the admin from `.env` (see [Settings](#settings)), in light mode (Metabase's default follows your OS);
@@ -33,7 +33,7 @@ The image and environment match `rde init`: `metabase/metabase-dev:transform-tes
 
 ## The analytics database
 
-`analytics` holds two real datasets, each complete and in a schema of its own, so one connection sees both and each dataset's tables stay together. Every table and column has a description, which Metabase shows.
+`analytics` holds three datasets, each in a schema of its own, so one connection sees them all and each dataset's tables stay together: two real ones, complete, where every table and column has a description, which Metabase shows; and a synthetic one, `gatr`, built to be hard to analyze correctly.
 
 ### `dba`: Stack Exchange
 
@@ -67,9 +67,17 @@ Every domestic flight of 14 US airlines in 2015, with its delays and their cause
 
 Every row and value of the files is there, as they are: [`db/flight_delays.sql`](db/flight_delays.sql) only lowercases the names, gives the values their types (clock times stay `hhmm` text, local to the airport) and numbers the flights in file order as `id`. Exporting the tables back to CSV gives the files byte for byte. The data has the quirks it came with: October's 486,165 flights name their airports by the DOT's five-digit numeric ids instead of IATA codes, so the airport foreign keys are declared `NOT VALID` and joins drop October; and three airports have no coordinates.
 
-**The image.** Every instance's Postgres runs `mbo-postgres:<hash>`, built from [`db/`](db/) the first time an instance needs it: it downloads both datasets (the dump from archive.org, 319 MB, and the flights from Maven Analytics, 195 MB, each checked against its SHA-1), streams them into Postgres, and bakes the data into the image, so later instances start with it at once. The tag is a hash of `db/`: change anything there, restart the app, and the next create or Reset builds a new image. Instances keep the image they were created with: those created before the analytics database hold Stack Exchange as a database of its own, `stackexchange`, connected as **DBA Stack Exchange**, until you Reset them; those created before `db/` existed hold only the Sample Database.
+### `gatr`: Grupo Alimentario Tres Ríos (synthetic)
 
-**Disk.** The image is 4.2 GB, 2.6 GB of it the data. The build leaves about 5 GB of untagged cache, mostly the downloads and the loaded data, which makes rebuilds fast; `docker image prune` removes it. Each instance's Postgres copies the files of the tables it reads, up to 2.6 GB.
+A fictional mid-size food manufacturer in Argentina (snacks, sauces, frozen meals, bread; three plants, one of them acquired), from January 2022 to September 2026, as its source systems export it: ERP, MES, LIMS, CMMS, WMS, CRM, time clock, IoT sensors, energy meters, and the acquired plant's legacy system. 44 tables, 7.6 million rows: 3.4 million sensor readings, 760,000 batch consumption rows, 690,000 shipment lines, 630,000 sales order lines, 91,000 batches. It is realistic and messy on purpose: mixed date formats and time zones, decimal commas, units that change by plant, duplicates, test records, soft deletes, codes that change meaning, and 15 stories planted in it that only a careful, multi-table analysis finds. It is for stress-testing data engineers and agents: an agent that answers "what is our OEE" or "who is our top customer" from it naively gets a confident, wrong answer.
+
+The tables are what the systems recorded, loaded as text where a generic loader would leave them text; table and column descriptions are GATR's own data dictionary, as incomplete and out of date as a new hire would get it ([`gatr/docs/data_dictionary.md`](gatr/docs/data_dictionary.md)). How it was generated, and how to regenerate it: [`gatr/README.md`](gatr/README.md). **What's planted and the true numbers are in [`gatr/answer_key/`](gatr/answer_key/)**: keep agents under test away from this repository (run them in another directory, against the Metabase instance only), or they can read the answers.
+
+To add GATR to an instance that already exists without resetting it (Reset wipes its Metabase content), load it into its Postgres: `make gatr-load INSTANCE=<name>` (Docker must see the instance's containers). With `MB_URL` and `MB_API_KEY` set (**Copy env**), it also has Metabase sync the Analytics database; otherwise sync it from Admin > Databases.
+
+**The image.** Every instance's Postgres runs `mbo-postgres:<hash>`, built from [`db/`](db/) the first time an instance needs it: it loads GATR from `db/gatr/` and `db/gatr.sql`, downloads both real datasets (the dump from archive.org, 319 MB, and the flights from Maven Analytics, 195 MB, each checked against its SHA-1), streams them into Postgres, and bakes the data into the image, so later instances start with it at once. The tag is a hash of `db/`, subdirectories included: change anything there, restart the app, and the next create or Reset builds a new image. Instances keep the image they were created with: those created before the analytics database hold Stack Exchange as a database of its own, `stackexchange`, connected as **DBA Stack Exchange**, until you Reset them; those created before `db/` existed hold only the Sample Database.
+
+**Disk.** The image is about 4.8 GB, 3.2 GB of it the data (GATR is about 0.6 GB of that). The build leaves about 5 GB of untagged cache, mostly the downloads and the loaded data, which makes rebuilds fast; `docker image prune` removes it. Each instance's Postgres copies the files of the tables it reads, up to 3.2 GB.
 
 ## Settings
 

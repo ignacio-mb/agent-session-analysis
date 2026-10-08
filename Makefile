@@ -1,7 +1,8 @@
 PY39 := /usr/bin/python3
 
 .PHONY: test test39 lint smoke render-check install uninstall warehouse warehouse-check warehouse-up warehouse-down warehouse-psql \
-	env clickhouse clickhouse-forget clickhouse-datasets clickhouse-dev clickhouse-dev-test clickhouse-dev-down lab
+	env clickhouse clickhouse-forget clickhouse-datasets clickhouse-dev clickhouse-dev-test clickhouse-dev-down lab gatr gatr-verify \
+	gatr-load
 
 test: test39
 	uv run --no-project --with pytest python -m pytest -q
@@ -82,3 +83,19 @@ clickhouse-dev-down:
 # and API keys (state.json).
 lab:
 	cd lab && bun server.ts
+
+# GATR, the lab's synthetic food manufacturer (lab/gatr/README.md). Regenerating rewrites lab/db/gatr/ (so the next
+# create or Reset builds a new Postgres image) and the answer key; it takes about 15 minutes.
+gatr:
+	uv run --no-project --python 3.13 --with numpy==2.5.3 --with pandas==3.0.5 python lab/gatr/generator/generate.py
+
+# Load gatr.sql into a throwaway Postgres (Docker), check every story and metric from the recorded tables alone, and
+# rewrite answer_key/verification.md and ground_truth_metrics.csv.
+gatr-verify:
+	uv run --no-project --python 3.13 --with numpy==2.5.3 --with pandas==3.0.5 --with "psycopg[binary]==3.2.10" \
+		python lab/gatr/generator/verify.py
+
+# GATR into a lab instance that is already running, keeping its Metabase: make gatr-load INSTANCE=<name>
+# (REPLACE=1 drops a gatr schema it already has).
+gatr-load:
+	lab/gatr/load.sh $(INSTANCE) $(if $(REPLACE),--replace)

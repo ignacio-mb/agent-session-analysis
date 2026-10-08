@@ -1,5 +1,5 @@
 """Which of the standard datasets an rde test session was run on, and each skill run in it: Stripe, Airline Flight
-Delays, Toy Store, DBA Stack Exchange, Contrast, Metabase's Sample Database — or none.
+Delays, Toy Store, DBA Stack Exchange, Tres Ríos (GATR), Contrast, Metabase's Sample Database — or none.
 
 The rules live in semantics/datasets.json: per dataset, regular expressions for its name and its distinctive schemas,
 tables, columns and transform prefixes (`match`), and for the mb profiles and instance hosts named after it

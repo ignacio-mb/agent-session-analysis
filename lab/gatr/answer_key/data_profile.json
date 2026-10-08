@@ -1,0 +1,2972 @@
+[
+ {
+  "table": "audit_log",
+  "rows": 5085,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "log_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "table_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "record_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "action",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "changed_by",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "changed_at",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "payload",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "batch_consumption",
+  "rows": 762069,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "batch_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "material_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "lot",
+    "type": "text",
+    "nullish": 85586,
+    "pct": 11.2
+   },
+   {
+    "column": "qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "cold_storage_sensor_readings",
+  "rows": 3413645,
+  "dup_rows": 10212,
+  "near_dup_rows": 10212,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "sensor_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reading_time",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "value",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unit",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "cold_storage_sensors",
+  "rows": 8,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "sensor_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unit_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "vendor",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "setpoint_c",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "alarm_high_c",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "installed_on",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "customer_complaints",
+  "rows": 2667,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "complaint_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "received_at",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "customer_id",
+    "type": "text",
+    "nullish": 90,
+    "pct": 3.4
+   },
+   {
+    "column": "customer_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "product",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "lot_code_reported",
+    "type": "text",
+    "nullish": 200,
+    "pct": 7.5
+   },
+   {
+    "column": "category",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "description",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "channel",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "closed_at",
+    "type": "text",
+    "nullish": 27,
+    "pct": 1.0
+   },
+   {
+    "column": "created_at",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "customer_hierarchy",
+  "rows": 1108,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "child_customer_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "parent_customer_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "relation_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "valid_from",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "valid_to",
+    "type": "date",
+    "nullish": 818,
+    "pct": 73.8
+   },
+   {
+    "column": "updated_by",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "customers",
+  "rows": 2223,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "customer_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "customer_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "segment",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "channel",
+    "type": "text",
+    "nullish": 3,
+    "pct": 0.1
+   },
+   {
+    "column": "currency",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "tax_id",
+    "type": "text",
+    "nullish": 969,
+    "pct": 43.6
+   },
+   {
+    "column": "province",
+    "type": "text",
+    "nullish": 46,
+    "pct": 2.1
+   },
+   {
+    "column": "city",
+    "type": "text",
+    "nullish": 7,
+    "pct": 0.3
+   },
+   {
+    "column": "country",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sales_rep_id",
+    "type": "integer",
+    "nullish": 3,
+    "pct": 0.1
+   },
+   {
+    "column": "created_on",
+    "type": "date",
+    "nullish": 478,
+    "pct": 21.5
+   },
+   {
+    "column": "closed_on",
+    "type": "date",
+    "nullish": 1896,
+    "pct": 85.3
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "is_deleted",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "cycle_counts",
+  "rows": 11976,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "count_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "location",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "material_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "lot",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "system_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "counted_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "difference",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "counted_by",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reason_code",
+    "type": "text",
+    "nullish": 1008,
+    "pct": 8.4
+   }
+  ]
+ },
+ {
+  "table": "downtime_events",
+  "rows": 86969,
+  "dup_rows": 0,
+  "near_dup_rows": 441,
+  "near_dup_ignoring": [
+   "event_id"
+  ],
+  "columns": [
+   {
+    "column": "event_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "start_time",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "duration_min",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reason",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "comment",
+    "type": "text",
+    "nullish": 60964,
+    "pct": 70.1
+   },
+   {
+    "column": "logged_by",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "logged_at",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "employees",
+  "rows": 1587,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "employee_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "legajo",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "full_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "role",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "department",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 293,
+    "pct": 18.5
+   },
+   {
+    "column": "crew",
+    "type": "text",
+    "nullish": 92,
+    "pct": 5.8
+   },
+   {
+    "column": "hire_date",
+    "type": "date",
+    "nullish": 191,
+    "pct": 12.0
+   },
+   {
+    "column": "termination_date",
+    "type": "date",
+    "nullish": 674,
+    "pct": 42.5
+   },
+   {
+    "column": "supervisor_id",
+    "type": "integer",
+    "nullish": 67,
+    "pct": 4.2
+   },
+   {
+    "column": "employment_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "energy_meter_readings",
+  "rows": 100945,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "meter_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reading_ts",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "value",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unit",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reading_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "equipment",
+  "rows": 105,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "asset_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 8,
+    "pct": 7.6
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "asset_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "manufacturer",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "model",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "serial_number",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "install_date",
+    "type": "date",
+    "nullish": 36,
+    "pct": 34.3
+   },
+   {
+    "column": "decommission_date",
+    "type": "date",
+    "nullish": 93,
+    "pct": 88.6
+   },
+   {
+    "column": "replaced_by_asset_id",
+    "type": "text",
+    "nullish": 93,
+    "pct": 88.6
+   },
+   {
+    "column": "criticality",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "fx_rates",
+  "rows": 1191,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "rate_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "currency_from",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "currency_to",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "rate",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "source",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "goods_receipts",
+  "rows": 17244,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "receipt_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "po_number",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "po_line",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "material_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "supplier_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "receipt_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "qty_received",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "supplier_lot",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "internal_lot",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "received_by",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "qc_status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "inventory_snapshots",
+  "rows": 322234,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "snapshot_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "warehouse",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "location",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "item_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "item_code",
+    "type": "text",
+    "nullish": 1619,
+    "pct": 0.5
+   },
+   {
+    "column": "lot",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "maintenance_work_orders",
+  "rows": 23066,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "wo_number",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "wo_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "asset_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reported_at",
+    "type": "bigint",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "started_at",
+    "type": "bigint",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "completed_at",
+    "type": "bigint",
+    "nullish": 28,
+    "pct": 0.1
+   },
+   {
+    "column": "downtime_minutes",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "description",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "technician_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "priority",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "mes_oee_daily",
+  "rows": 23375,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "prod_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "shift",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "planned_minutes",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "downtime_minutes",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "run_minutes",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "good_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reject_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "availability_pct",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "performance_pct",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "quality_pct",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "oee_pct",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "p3_articulos",
+  "rows": 38,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "cod_articulo",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "descripcion",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "familia",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unidad_medida",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "peso_neto",
+    "type": "text",
+    "nullish": 5,
+    "pct": 13.2
+   },
+   {
+    "column": "activo",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "cod_erp",
+    "type": "text",
+    "nullish": 27,
+    "pct": 71.1
+   }
+  ]
+ },
+ {
+  "table": "p3_clientes",
+  "rows": 400,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "cod_cliente",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "razon_social",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "cuit",
+    "type": "bigint",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "localidad",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "provincia",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "canal",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "fecha_alta",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "activo",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "p3_produccion_diaria",
+  "rows": 9447,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "fecha",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "linea",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "turno",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "cod_articulo",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "cantidad",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unidad",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "lote",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "observaciones",
+    "type": "text",
+    "nullish": 7890,
+    "pct": 83.5
+   }
+  ]
+ },
+ {
+  "table": "p3_ventas",
+  "rows": 35045,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "nro_comprobante",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "tipo_comprobante",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "fecha",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "cod_cliente",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "cod_articulo",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "cantidad",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unidad",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "precio_unitario",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "importe",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "moneda",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "plants",
+  "rows": 3,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "city",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "province",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "opened_on",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "erp_go_live",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "acquired_on",
+    "type": "date",
+    "nullish": 2,
+    "pct": 66.7
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "price_lists",
+  "rows": 57218,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "price_list_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "segment",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "currency",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sku_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unit_price",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "effective_from",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "effective_to",
+    "type": "integer",
+    "nullish": 23082,
+    "pct": 40.3
+   },
+   {
+    "column": "created_by",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "product_uom_conversions",
+  "rows": 459,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "sku_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "from_uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "to_uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "factor",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "valid_from",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "valid_to",
+    "type": "date",
+    "nullish": 453,
+    "pct": 98.7
+   }
+  ]
+ },
+ {
+  "table": "production_batches",
+  "rows": 90861,
+  "dup_rows": 0,
+  "near_dup_rows": 326,
+  "near_dup_ignoring": [
+   "batch_id",
+   "created_at",
+   "deleted_at"
+  ],
+  "columns": [
+   {
+    "column": "batch_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "order_no",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "item_code",
+    "type": "text",
+    "nullish": 890,
+    "pct": 1.0
+   },
+   {
+    "column": "lot_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "shift",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "start_time",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "end_time",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "planned_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "good_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reject_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "deleted_at",
+    "type": "timestamp without time zone",
+    "nullish": 90535,
+    "pct": 99.6
+   }
+  ]
+ },
+ {
+  "table": "production_lines",
+  "rows": 13,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "product_family",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "rated_capacity",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "capacity_uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "shifts_per_day",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "shift_hours",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "commissioned_on",
+    "type": "date",
+    "nullish": 9,
+    "pct": 69.2
+   },
+   {
+    "column": "legacy_code",
+    "type": "text",
+    "nullish": 10,
+    "pct": 76.9
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "production_orders",
+  "rows": 71078,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "order_no",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sku_code",
+    "type": "text",
+    "nullish": 530,
+    "pct": 0.7
+   },
+   {
+    "column": "recipe_id",
+    "type": "integer",
+    "nullish": 7770,
+    "pct": 10.9
+   },
+   {
+    "column": "planned_qty",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "std_rate_per_hour",
+    "type": "numeric",
+    "nullish": 12,
+    "pct": 0.0
+   },
+   {
+    "column": "sched_start",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sched_end",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "notes",
+    "type": "text",
+    "nullish": 71066,
+    "pct": 100.0
+   }
+  ]
+ },
+ {
+  "table": "products",
+  "rows": 397,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "sku_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "description",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "brand",
+    "type": "text",
+    "nullish": 4,
+    "pct": 1.0
+   },
+   {
+    "column": "family",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "pack_size",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "net_weight",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "units_per_case",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "launch_date",
+    "type": "date",
+    "nullish": 135,
+    "pct": 34.0
+   },
+   {
+    "column": "discontinued_date",
+    "type": "date",
+    "nullish": 297,
+    "pct": 74.8
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "is_active",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "allergens",
+    "type": "text",
+    "nullish": 140,
+    "pct": 35.3
+   },
+   {
+    "column": "shelf_life_days",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "updated_at",
+    "type": "timestamp without time zone",
+    "nullish": 390,
+    "pct": 98.2
+   }
+  ]
+ },
+ {
+  "table": "purchase_order_lines",
+  "rows": 20480,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "po_number",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_no",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "material_code",
+    "type": "text",
+    "nullish": 2943,
+    "pct": 14.4
+   },
+   {
+    "column": "item_text",
+    "type": "text",
+    "nullish": 17537,
+    "pct": 85.6
+   },
+   {
+    "column": "qty_ordered",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unit_price",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "promised_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "purchase_orders",
+  "rows": 18187,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "po_number",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "supplier_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "order_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "buyer_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "currency",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "po_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "quality_tests",
+  "rows": 244040,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "test_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sample_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "batch_id",
+    "type": "integer",
+    "nullish": 26260,
+    "pct": 10.8
+   },
+   {
+    "column": "lot_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "receipt_id",
+    "type": "integer",
+    "nullish": 217780,
+    "pct": 89.2
+   },
+   {
+    "column": "material_code",
+    "type": "text",
+    "nullish": 217780,
+    "pct": 89.2
+   },
+   {
+    "column": "test_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "result",
+    "type": "text",
+    "nullish": 36986,
+    "pct": 15.2
+   },
+   {
+    "column": "unit",
+    "type": "text",
+    "nullish": 50820,
+    "pct": 20.8
+   },
+   {
+    "column": "spec_min",
+    "type": "numeric",
+    "nullish": 181069,
+    "pct": 74.2
+   },
+   {
+    "column": "spec_max",
+    "type": "numeric",
+    "nullish": 50820,
+    "pct": 20.8
+   },
+   {
+    "column": "passed",
+    "type": "boolean",
+    "nullish": 36986,
+    "pct": 15.2
+   },
+   {
+    "column": "result_json",
+    "type": "text",
+    "nullish": 207054,
+    "pct": 84.8
+   },
+   {
+    "column": "tested_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "raw_materials",
+  "rows": 84,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "material_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "description",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "category",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "base_uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "storage_condition",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "shelf_life",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "std_cost",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "std_cost_currency",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "is_active",
+    "type": "boolean",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "contiene_gluten",
+    "type": "text",
+    "nullish": 78,
+    "pct": 92.9
+   },
+   {
+    "column": "contiene_leche",
+    "type": "text",
+    "nullish": 76,
+    "pct": 90.5
+   },
+   {
+    "column": "contiene_huevo",
+    "type": "text",
+    "nullish": 83,
+    "pct": 98.8
+   },
+   {
+    "column": "contiene_soja",
+    "type": "text",
+    "nullish": 82,
+    "pct": 97.6
+   },
+   {
+    "column": "contiene_sesamo",
+    "type": "text",
+    "nullish": 83,
+    "pct": 98.8
+   },
+   {
+    "column": "contiene_mani",
+    "type": "text",
+    "nullish": 83,
+    "pct": 98.8
+   },
+   {
+    "column": "contiene_mostaza",
+    "type": "text",
+    "nullish": 83,
+    "pct": 98.8
+   },
+   {
+    "column": "contiene_pescado",
+    "type": "text",
+    "nullish": 82,
+    "pct": 97.6
+   },
+   {
+    "column": "contiene_frutos_secos",
+    "type": "text",
+    "nullish": 83,
+    "pct": 98.8
+   }
+  ]
+ },
+ {
+  "table": "recalls",
+  "rows": 52,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "recall_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "recall_date",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sku",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "lot_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "qty_produced",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "customers_notified",
+    "type": "integer",
+    "nullish": 3,
+    "pct": 5.8
+   },
+   {
+    "column": "reason",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "notes",
+    "type": "text",
+    "nullish": 49,
+    "pct": 94.2
+   }
+  ]
+ },
+ {
+  "table": "recipe_lines",
+  "rows": 1498,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "recipe_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_no",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "material_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "quantity",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "scrap_pct",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "recipes",
+  "rows": 225,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "recipe_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "product_code",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "version",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "effective_from",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "effective_to",
+    "type": "date",
+    "nullish": 121,
+    "pct": 53.8
+   },
+   {
+    "column": "batch_size_kg",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "approved_by",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "notes",
+    "type": "text",
+    "nullish": 223,
+    "pct": 99.1
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "returns",
+  "rows": 4789,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "credit_note_number",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "issue_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "customer_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "order_number",
+    "type": "integer",
+    "nullish": 1925,
+    "pct": 40.2
+   },
+   {
+    "column": "sku_code",
+    "type": "text",
+    "nullish": 10,
+    "pct": 0.2
+   },
+   {
+    "column": "lot_code",
+    "type": "text",
+    "nullish": 4034,
+    "pct": 84.2
+   },
+   {
+    "column": "qty_units",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "amount",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "currency",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reason",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "physical_return",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "sales_order_lines",
+  "rows": 633257,
+  "dup_rows": 0,
+  "near_dup_rows": 7200,
+  "near_dup_ignoring": [
+   "_loaded_at"
+  ],
+  "columns": [
+   {
+    "column": "order_number",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_no",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sku_code",
+    "type": "text",
+    "nullish": 1756,
+    "pct": 0.3
+   },
+   {
+    "column": "item_description",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "qty_ordered",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "qty_shipped",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unit_price",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "discount_pct",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "net_amount",
+    "type": "numeric",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "currency",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "invoice_date",
+    "type": "date",
+    "nullish": 12993,
+    "pct": 2.1
+   },
+   {
+    "column": "_loaded_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "sales_orders",
+  "rows": 168431,
+  "dup_rows": 0,
+  "near_dup_rows": 1607,
+  "near_dup_ignoring": [
+   "order_number",
+   "status",
+   "created_at"
+  ],
+  "columns": [
+   {
+    "column": "order_number",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "customer_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "order_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "order_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "currency",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sales_rep_id",
+    "type": "integer",
+    "nullish": 4619,
+    "pct": 2.7
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "is_deleted",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "shipments",
+  "rows": 687150,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "shipment_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "shipment_line",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "order_number",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "order_line",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "customer_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "sku",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "lot_code",
+    "type": "text",
+    "nullish": 27679,
+    "pct": 4.0
+   },
+   {
+    "column": "qty_units",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "ship_date",
+    "type": "date",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "warehouse",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "carrier",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "sku_mapping_p3",
+  "rows": 26,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "p3_code",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "erp_sku",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "mapped_by",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "mapped_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "confidence",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "notes",
+    "type": "text",
+    "nullish": 18,
+    "pct": 69.2
+   }
+  ]
+ },
+ {
+  "table": "storage_locations",
+  "rows": 17,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "location_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "warehouse",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "zone",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "unit_id",
+    "type": "text",
+    "nullish": 9,
+    "pct": 52.9
+   },
+   {
+    "column": "location_type",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ },
+ {
+  "table": "suppliers",
+  "rows": 180,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "supplier_id",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "supplier_name",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "tax_id",
+    "type": "text",
+    "nullish": 3,
+    "pct": 1.7
+   },
+   {
+    "column": "country",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "province",
+    "type": "text",
+    "nullish": 4,
+    "pct": 2.2
+   },
+   {
+    "column": "city",
+    "type": "text",
+    "nullish": 4,
+    "pct": 2.2
+   },
+   {
+    "column": "category",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "payment_terms_days",
+    "type": "integer",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "created_at",
+    "type": "timestamp without time zone",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "status",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "is_deleted",
+    "type": "boolean",
+    "nullish": 62,
+    "pct": 34.4
+   }
+  ]
+ },
+ {
+  "table": "timeclock_punches",
+  "rows": 661708,
+  "dup_rows": 256,
+  "near_dup_rows": 256,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "legajo",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "fecha_hora",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "tipo",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "reloj",
+    "type": "text",
+    "nullish": 2758,
+    "pct": 0.4
+   },
+   {
+    "column": "origen",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "autorizado_por",
+    "type": "text",
+    "nullish": 639696,
+    "pct": 96.7
+   },
+   {
+    "column": "horas_extra",
+    "type": "text",
+    "nullish": 642178,
+    "pct": 97.0
+   }
+  ]
+ },
+ {
+  "table": "waste_log",
+  "rows": 90813,
+  "dup_rows": 0,
+  "near_dup_rows": 0,
+  "near_dup_ignoring": [],
+  "columns": [
+   {
+    "column": "waste_date",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "plant_id",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "line_id",
+    "type": "text",
+    "nullish": 741,
+    "pct": 0.8
+   },
+   {
+    "column": "item",
+    "type": "text",
+    "nullish": 914,
+    "pct": 1.0
+   },
+   {
+    "column": "lot",
+    "type": "text",
+    "nullish": 58,
+    "pct": 0.1
+   },
+   {
+    "column": "quantity",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "uom",
+    "type": "text",
+    "nullish": 37861,
+    "pct": 41.7
+   },
+   {
+    "column": "reason",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   },
+   {
+    "column": "source",
+    "type": "text",
+    "nullish": 0,
+    "pct": 0.0
+   }
+  ]
+ }
+]

@@ -56,6 +56,20 @@
       ]
     },
     {
+      "label": "Tres Ríos (GATR)",
+      "description": "Grupo Alimentario Tres Ríos, the lab's synthetic food manufacturer (lab/gatr/): schema gatr of the analytics database, its ERP, MES, LIMS, CMMS, WMS, CRM, time clock, sensor and Planta Delta legacy tables.",
+      "match": [
+        "\\bgatr\\b",
+        "tres[ _-]?r[ií]os",
+        "\\b(batch_consumption|goods_receipts|mes_oee_daily|timeclock_punches|cold_storage_sensor_readings|sku_mapping_p3)\\b",
+        "\\bp3_(produccion_diaria|articulos|clientes|ventas)\\b"
+      ],
+      "instances": [
+        "gatr\\d*",
+        "tres-rios\\d*"
+      ]
+    },
+    {
       "label": "Contrast",
       "description": "Contrast event and registration data in ClickHouse, raw_contrast (event, registration, live_view, replay_view, poll_vote); built into contrast_rde_v*.",
       "match": [

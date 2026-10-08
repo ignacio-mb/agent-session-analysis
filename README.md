@@ -58,8 +58,9 @@ make lab                         # then open http://localhost:4000
    with `baseline:` in front. It is shared like an rde session and matched to that run.
 
 5. **The lab** (if you run it): after pulling, restart it (`make lab`) and **Reset** each instance to get the
-   `analytics` database (Stack Exchange and US flights of 2015). The first create or Reset builds the new Postgres
-   image, which downloads about 500 MB and takes a few minutes. Instances you don't reset keep their old data.
+   `analytics` database (Stack Exchange, US flights of 2015, and GATR, a synthetic food manufacturer). The first
+   create or Reset builds the new Postgres image, which downloads about 500 MB and takes a few minutes. Instances you
+   don't reset keep their old data; `make gatr-load INSTANCE=<name>` adds GATR to one without resetting it.
 
 ## Useful commands
 
@@ -124,4 +125,5 @@ make render-check                                # render the newest dashboard i
 - [Warehouse and sharing](docs/warehouse.md)
 - [Every field](docs/metrics.md)
 - [The lab](lab/README.md): the throwaway Metabase instances and their data
+- [GATR](lab/gatr/README.md): the lab's synthetic, deliberately messy food manufacturer, and how it's generated
 - [Development](docs/development.md)

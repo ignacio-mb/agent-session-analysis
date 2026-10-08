@@ -1,0 +1,164 @@
+metric_id,metric,dimension,true_value,naive_value,gap_pct,unit,naive_method
+M01,"Revenue in ARS, domestic, net of credit notes",2022-01,377906731.592,323976015.68,-14.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-01,3980402.7885,3091613.6669,-22.3,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-02,477997518.0999,390139805.98,-18.4,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-02,5034283.2572,3619674.0818,-28.1,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-03,552618855.2182,460346584.96,-16.7,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-03,5579405.1705,4117733.3055,-26.2,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-04,548829139.0754,415840760.99,-24.2,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-04,5543582.5599,3614213.1959,-34.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-05,556323712.8227,453928959.53,-18.4,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-05,5443933.0736,3814496.2587,-29.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-06,581196948.3281,502487393.04,-13.5,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-06,5307973.9244,4082300.2292,-23.1,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-07,578045735.5052,499649214.3,-13.6,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-07,5160416.1036,3848950.8099,-25.4,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-08,677698041.4573,553528207.9,-18.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-08,5685857.6078,3990890.5927,-29.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-09,728311006.9161,638677419.32,-12.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-09,5598873.3203,4346682.9718,-22.4,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-10,805009939.0451,598075850.91,-25.7,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-10,5810722.2349,3856626.122,-33.6,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-11,882056602.9635,825667093.37,-6.4,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-11,6451569.0998,5036425.334,-21.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2022-12,1261807434.5551,1012138940.55,-19.8,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2022-12,7959665.6941,5845168.2036,-26.6,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-01,847050732.1001,755726616.79,-10.8,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-01,5346576.9738,4137538.2729,-22.6,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-02,912043110.0081,704029243.02,-22.8,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-02,5528089.387,3623805.7454,-34.4,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-03,1216112750.1885,1060719083.42,-12.8,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-03,6917772.7855,5136993.6972,-25.7,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-04,1106602455.8161,873848837.44,-21.0,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-04,6010848.8377,4006671.2406,-33.3,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-05,1255565079.9769,1007977170.65,-19.7,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-05,6020033.4009,3966944.8435,-34.1,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-06,1212710131.8207,1050910610.55,-13.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-06,5790340.1905,4165002.5166,-28.1,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-07,1290824041.7825,1081879337.2,-16.2,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-07,5450159.3423,3986163.1181,-26.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-08,1417806618.216,1188368572.97,-16.2,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-08,4995298.5161,3603413.2137,-27.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-09,1498876255.8099,1234061235.39,-17.7,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-09,5124632.0507,3351067.423,-34.6,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-10,1688079423.7019,1464451368.55,-13.2,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-10,5750119.6243,3975765.6423,-30.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-11,2371132350.9731,1960078417.6,-17.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-11,7587959.6863,5296910.4031,-30.2,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2023-12,3498720100.954,2679965615.5,-23.4,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2023-12,6001528.9769,3803383.8175,-36.6,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-01,3661704462.2816,3058946208.49,-16.5,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-01,6119541.9238,3689099.9602,-39.7,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-02,3982685296.7199,3295336707.39,-17.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-02,5621638.2685,3890519.8887,-30.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-03,5522883150.6795,3223565998.22,-41.6,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-03,7668386.2678,3728459.4723,-51.4,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-04,5561424601.8208,3570468671.04,-35.8,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-04,7443995.9897,4051967.9587,-45.6,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-05,6569713200.1555,3617840864.3,-44.9,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-05,8922131.3952,4047716.4818,-54.6,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-06,6247343215.1636,3620580552.24,-42.0,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-06,7435402.8326,3979239.2694,-46.5,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-07,7117252129.293,7269535872.5,2.1,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-07,8759745.5163,7813463.8614,-10.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-08,7260699712.8075,4321716752.24,-40.5,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-08,8731590.5378,4535652.274,-48.1,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-09,6755509430.4999,4083812217.55,-39.5,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-09,8017897.9358,6576986.1312,-18.0,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-10,9165399825.7385,6130501990.26,-33.1,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-10,10202637.5413,6206420.0962,-39.2,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-11,7903299749.4999,4338311106.26,-45.1,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-11,8910477.122,4297478.4005,-51.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2024-12,9791527518.9248,5542249749.31,-43.4,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2024-12,10533977.2447,5340586.0455,-49.3,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-01,9331317568.8731,5777949252.13,-38.1,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-01,10058463.6649,5454765.7038,-45.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-02,7747062976.8065,4953423378.17,-36.1,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-02,8702564.8281,4622820.083,-46.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-03,9278113729.0176,4903409951.4,-47.2,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-03,9349314.3381,4494375.9218,-51.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-04,8742184325.9457,4830375145.83,-44.7,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-04,8256191.6361,3934511.5459,-52.3,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-05,10193299017.4084,8418284262.31,-17.4,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-05,8729753.8429,6329201.9735,-27.5,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-06,9338320933.6773,7657221215.63,-18.0,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-06,7842153.358,5455740.471,-30.4,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-07,10424505453.0566,8104942801.46,-22.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-07,7985409.9442,5662557.379,-29.1,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-08,9672584982.1579,8330117877.82,-13.9,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-08,7628451.4153,5636710.0158,-26.1,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-09,10322650225.8997,9069414048.37,-12.1,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-09,7649882.0777,6003545.2116,-21.5,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-10,11278191705.7505,10123260997.99,-10.2,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-10,8474224.1607,6617804.6865,-21.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-11,10665180929.9967,8968263488.33,-15.9,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-11,8046934.5879,5766666.8675,-28.3,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2025-12,14442662955.6583,11553510627.78,-20.0,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2025-12,10498330.8714,7635582.2335,-27.3,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-01,12241984243.0717,10378901393.71,-15.2,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-01,9494228.6162,6960919.7386,-26.7,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-02,10916529588.6312,8812210859.26,-19.3,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-02,8415865.7266,5896743.3895,-29.9,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-03,12045779316.2577,10403465805.24,-13.6,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-03,8947682.0472,6915394.3622,-22.7,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-04,12718342028.7415,10465007076.49,-17.7,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-04,9768415.4413,6865284.6037,-29.7,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-05,12192563700.9714,9567054092.16,-21.5,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-05,8448585.7308,6153153.0192,-27.2,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-06,12301693895.1404,10649961118.05,-13.4,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-06,9053654.8562,6809235.4318,-24.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-07,14076946666.4809,12303959994.07,-12.6,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-07,9797654.3523,7740629.0974,-21.0,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-08,12997812672.1417,10666218885.78,-17.9,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-08,9086003.1294,6742071.7138,-25.8,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M01,"Revenue in ARS, domestic, net of credit notes",2026-09,14016866672.2164,12397868481.57,-11.6,ARS,"SUM(net_amount) of ARS lines by invoice month: every line, duplicates, test orders, credit-note lines and annulled copies included"
+M02,"Revenue in USD, net of credit notes",2026-09,10340493.119,7856129.4812,-24.0,USD,"SUM(net_amount / rate) joining fx_rates on the invoice date (weekends and holidays drop out, fat-fingered rates kept, USD lines divided by the rate too)"
+M03,"Revenue in ARS 2025, net of credit notes",,121436074804.2483,112843833285.9,-7.1,ARS,SUM(net_amount) of ARS lines invoiced in 2025
+M04,Export revenue 2024,,13636596.2243,14406037.28,5.6,USD,SUM(net_amount) of lines with currency USD
+M05,OEE by line,SUR-04,42.6512,70.4943,65.3,%,AVG(oee_pct) from the MES report
+M05,OEE by line,L1-05,61.2697,73.7085,20.3,%,AVG(oee_pct) from the MES report
+M05,OEE by line,L1-01,57.1299,76.0256,33.1,%,AVG(oee_pct) from the MES report
+M05,OEE by line,SUR-01,36.9517,70.4517,90.7,%,AVG(oee_pct) from the MES report
+M05,OEE by line,L1-06,56.7507,74.1482,30.7,%,AVG(oee_pct) from the MES report
+M05,OEE by line,SUR-02,59.0785,76.0055,28.7,%,AVG(oee_pct) from the MES report
+M05,OEE by line,L1-04,51.9766,86.0193,65.5,%,AVG(oee_pct) from the MES report
+M05,OEE by line,L1-02,60.0262,74.9312,24.8,%,AVG(oee_pct) from the MES report
+M05,OEE by line,L1-03,56.3937,80.963,43.6,%,AVG(oee_pct) from the MES report
+M05,OEE by line,SUR-03,51.1415,71.3592,39.5,%,AVG(oee_pct) from the MES report
+M06,"OEE, P1 and P2 lines",,55.3393,75.4107,36.3,%,AVG of the MES report's oee_pct
+M07,Sesame recall blast radius: lots,,90.0,49.0,-45.6,lots,COUNT of lots in the recall table
+M08,Sesame recall blast radius: customers,,423.0,284.0,-32.9,customers,distinct customers in shipments of the recalled lots
+M09,"P1 sunflower oil received but never delivered, since 2023-06",,208554.419,0.0,-100.0,kg,receipts taken at face value
+M10,P1 sunflower oil physical losses (true shrink),,0.0,207876.039,,kg,cycle-count write-offs read as shrink (the oil was never there)
+M11,"Yield (good / planned, kg)",P1 CHIPS,86.5388,86.754,0.2,%,"AVG(good_qty / planned_qty), impossible rows included"
+M11,"Yield (good / planned, kg)",P1 CRACKERS,89.5499,89.7104,0.2,%,"AVG(good_qty / planned_qty), impossible rows included"
+M11,"Yield (good / planned, kg)",P1 FROZEN,93.0518,93.2093,0.2,%,"AVG(good_qty / planned_qty), impossible rows included"
+M11,"Yield (good / planned, kg)",P1 SAUCE_JAR,98.5737,98.8785,0.3,%,"AVG(good_qty / planned_qty), impossible rows included"
+M11,"Yield (good / planned, kg)",P2 CHIPS,84.7707,84.9184,0.2,%,"AVG(good_qty / planned_qty), impossible rows included"
+M11,"Yield (good / planned, kg)",P2 CRACKERS,88.4642,88.8445,0.4,%,"AVG(good_qty / planned_qty), impossible rows included"
+M11,"Yield (good / planned, kg)",P2 FROZEN,92.3057,93.5125,1.3,%,"AVG(good_qty / planned_qty), impossible rows included"
+M11,"Yield (good / planned, kg)",P2 SAUCE_JAR,97.4836,97.711,0.2,%,"AVG(good_qty / planned_qty), impossible rows included"
+M12,Yield by plant,P1,93.188,92.341,-0.9,%,AVG(good_qty / planned_qty)
+M12,Yield by plant,P2,95.3908,92.5551,-3.0,%,AVG(good_qty / planned_qty)
+M13,"Units produced, Mar 2024 - Feb 2025",P1,109714570.0,109865217.0,0.1,units,SUM of the quantity column of each plant's production records
+M13,"Units produced, Mar 2024 - Feb 2025",P2,19201448.0,1143715.85,-94.0,units,SUM of the quantity column of each plant's production records
+M13,"Units produced, Mar 2024 - Feb 2025",P3,18101973.0,22331472.2,23.4,units,SUM of the quantity column of each plant's production records
+M14,Top customer group's share of 2025 domestic revenue,,4.6231,2.2897,-50.5,%,group by the store's current parent in customer_hierarchy
+M15,Customers buying in 2025,,1902.0,2018.0,6.1,customers,"COUNT(DISTINCT customer_id) in sales_orders (re-created stores, duplicates, test customers)"
+M16,Customers of 2024 not buying in 2025-H2,,129.0,131.0,1.6,customers,customer_ids of 2024 orders without an order in 2025-H2
+M17,Food-service revenue lost to the mis-keyed price list,,3848591.735,0.0,-100.0,ARS,not noticed
+M18,Credit notes issued in 2024,,261914697.98,308819345.46,17.9,ARS,"NC order lines plus returns, both in full"
+M19,"Complaint rate ratio, cost-cut mayonnaise lots vs other mayonnaise lots",,3.8692,2.6883,-30.5,x,complaints mentioning mayonesa per month during the cost-cut window over per month outside it
+M20,"Spice supplier's incoming micro failure rate, Oct 2025 - Sep 2026",,1.5625,0.0,-100.0,%,failure rate of the supplier_id over its whole life
+M21,L1-04 unplanned downtime per production day,,499.9994,92.8171,-81.4,minutes,SUM(duration_min) of logged events
+M22,Overtime hours with no production behind them,,4622.1167,0.0,-100.0,hours,all approved overtime treated as needed
+M23,"FRZ-N2 readings over alarm between 02:00 and 04:59 local, 2025",,1322.0,357.0,-73.0,readings,the same filter on the recorded clock
+M24,P3 chiller CH-D1 mean temperature 2024,,3.0736,37.5324,1121.1,°C,AVG(value)
+M25,Headcount on 2026-09-30,,616.0,674.0,9.4,people,employees with no termination date or a future one
+M26,Units shipped in 2025,,146979607.0,6361171.53,-95.7,units,"SUM(qty_shipped), cases and units mixed"
+M27,Fill rate 2025 (units shipped / ordered),,97.9579,99.3257,1.4,%,SUM(qty_shipped) / SUM(qty_ordered) of invoiced lines (unfilled lines have no invoice date)
+M28,Food service growth 2022 -> 2025,,0.7025,7.2345,929.9,x,"revenue in pesos, 2025 over 2022"
+M29,Waste in 2024,,975698.62,177824.4,-81.8,kg,rows whose date is ISO and whose quantity is a plain number
+M30,"P3 electricity, 2025-05-05 to year end",,4881597.9,8692451350.7,177965.7,kWh,SUM(value) of the meter's readings
+M31,Suppliers (legal entities),,164.0,180.0,9.8,suppliers,COUNT(*) of suppliers
+M32,Products sold in 2025,,314.0,491.0,56.4,SKUs,COUNT(DISTINCT sku_code) of 2025 lines

@@ -44,11 +44,14 @@ const DATABASES = [
     dbname: "analytics",
     name: "Analytics",
     description:
-      "Two real datasets, complete, one per schema. dba: dba.stackexchange.com, the Database Administrators Q&A " +
+      "Three datasets, one per schema. dba: dba.stackexchange.com, the Database Administrators Q&A " +
       "site: its users, questions and answers, tags, comments, votes, badges and edit history, from the site's " +
       "launch in January 2011 to March 2024 (Stack Exchange's data dump of 2024-04-06, licensed CC BY-SA). " +
       "flight_delays: every domestic flight of 14 US airlines in 2015, with its delays, cancellations and " +
-      "diversions (the US Department of Transportation's on-time reports, public domain).",
+      "diversions (the US Department of Transportation's on-time reports, public domain). " +
+      "gatr: Grupo Alimentario Tres Ríos, a food manufacturer with three plants in Argentina, January 2022 to " +
+      "September 2026: purchasing, production, quality, maintenance, people, inventory, sales, complaints and " +
+      "cold storage, as its ERP, MES, LIMS, CMMS, WMS, CRM, time clock and sensors export them.",
   },
 ];
 // Postgres containers built before the analytics database hold Stack Exchange as a database of its own.
@@ -91,15 +94,21 @@ const readOnlyRole = (dbname: string) => `
   ALTER DEFAULT PRIVILEGES FOR ROLE ${PG.owner} GRANT USAGE ON SCHEMAS TO ${PG.reader};
 `;
 
-// The build context, the files in db/, and the image tag it gives: its content, so changing db/ builds a new image.
+// The build context, the files in db/ and its subdirectories (db/gatr/ holds GATR's tables), and the image tag it
+// gives: its content, so changing db/ builds a new image.
 const DB_DIR = `${import.meta.dir}/db`;
-const DB_CONTEXT = Object.fromEntries(
-  readdirSync(DB_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && !entry.name.startsWith("."))
-    .map((entry) => entry.name)
-    .sort()
-    .map((file) => [file, readFileSync(`${DB_DIR}/${file}`)]),
-);
+const filesIn = (dir: string, prefix = ""): [string, Buffer][] =>
+  readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => !entry.name.startsWith("."))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .flatMap((entry): [string, Buffer][] =>
+      entry.isDirectory()
+        ? filesIn(`${dir}/${entry.name}`, `${prefix}${entry.name}/`)
+        : entry.isFile()
+          ? [[`${prefix}${entry.name}`, readFileSync(`${dir}/${entry.name}`)]]
+          : [],
+    );
+const DB_CONTEXT = Object.fromEntries(filesIn(DB_DIR));
 const contextHash = new Bun.CryptoHasher("sha256");
 for (const [file, bytes] of Object.entries(DB_CONTEXT)) contextHash.update(file).update(bytes);
 const PG_IMAGE = `mbo-postgres:${contextHash.digest("hex").slice(0, 12)}`;

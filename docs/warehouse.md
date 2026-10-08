@@ -147,7 +147,7 @@ The dataset each session and run was on is placed again on the importer's side t
 ## Which dataset a session ran on
 
 rde is tested on a few standard datasets — Stripe, Airline Flight Delays, Toy Store (Maven Fuzzy Factory), DBA Stack
-Exchange, and Contrast — and `sessions.dataset` and `skill_runs.dataset` say which, so a dashboard can show it on its
+Exchange, Tres Ríos (GATR, the lab's synthetic food manufacturer), and Contrast — and `sessions.dataset` and `skill_runs.dataset` say which, so a dashboard can show it on its
 cards and filter by it; NULL when nothing settles it. `dataset_by` says what decided, so each label can be checked.
 Both are placed from the warehouse rows alone (`src/session_analytics/datasets.py`, rules in
 `semantics/datasets.json`), so a session gets the same dataset when it is loaded, when a share file of it is

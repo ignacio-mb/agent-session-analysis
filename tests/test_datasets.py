@@ -266,3 +266,25 @@ def test_the_rules_never_take_a_word_datasets_share(tmp_path):
     other = tmp_path / "datasets.json"  # the file is the rules: edited, they change
     other.write_text(json.dumps(dict(spec, min_calls=3)))
     assert datasets.load(other).dominant(["raw_stripe"] * 3)[0] == "Stripe"
+
+
+def test_a_run_on_the_labs_gatr_schema_is_placed_on_tres_rios():
+    # the lab's analytics database holds three schemas; a run told about gatr is on Tres Ríos, whatever its instance
+    sid, rid = "9c41e2aa-0b1d", "9c41e2aa:1"
+    t = tables(sessions=[{"session_id": sid, "title": "Plant OEE"}],
+               skill_runs=[{"session_id": sid, "run_id": rid, "prompt": "model the gatr schema: real OEE by line"}],
+               run_instances=[{"session_id": sid, "run_id": rid, "host": "airline-flight-delays11.localhost:3216",
+                               "profile": "airline-flight-delays11"}])
+    datasets.fill(t)
+    assert (t["skill_runs"][0]["dataset"], t["skill_runs"][0]["dataset_by"]) == ("Tres Ríos (GATR)", "prompt")
+    # a silent prompt: its tool calls name GATR's tables, and outvote the instance's name
+    t = tables(sessions=[{"session_id": sid, "title": "Plant OEE"}],
+               skill_runs=[{"session_id": sid, "run_id": rid, "prompt": "now build the dashboard"}],
+               tool_calls=calls(sid, rid, *["mb query 'select * from analytics.gatr.mes_oee_daily'"] * 6,
+                                *["mb query 'select lot from batch_consumption'"] * 6),
+               run_instances=[{"session_id": sid, "run_id": rid, "host": "airline-flight-delays11.localhost:3216",
+                               "profile": "airline-flight-delays11"}])
+    datasets.fill(t)
+    assert (t["skill_runs"][0]["dataset"], t["skill_runs"][0]["dataset_by"]) == \
+        ("Tres Ríos (GATR)", "tool calls: Tres Ríos (GATR) 12")
+    assert datasets.load().hosted([{"host": "gatr2.localhost:3201", "profile": None}]) == ["Tres Ríos (GATR)"]
