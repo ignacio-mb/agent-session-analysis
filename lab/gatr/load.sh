@@ -35,17 +35,22 @@ if [ -n "$(psql --dbname analytics -tAc "SELECT 1 FROM pg_namespace WHERE nspnam
     echo "$container already has the gatr schema; run again with --replace to load it afresh" >&2
     exit 1
   fi
-  psql --dbname analytics -c 'DROP SCHEMA gatr CASCADE'
+  psql --dbname analytics -c 'SET client_min_messages = warning' -c 'DROP SCHEMA gatr CASCADE'
 fi
 
 echo "copying GATR's tables into $container"
-docker exec "$container" mkdir -p /seed/gatr
+seed() { docker exec "$container" rm -rf /seed/gatr /seed/gatr.sql; }
+trap 'seed || true' EXIT # 64 MB the container shouldn't keep, even when the load fails
+seed # what a load cut short left
+docker exec "$container" mkdir -p /seed
 docker cp "$db_dir/gatr.sql" "$container:/seed/gatr.sql"
-for f in "$db_dir"/gatr/*.csv.gz; do docker cp "$f" "$container:/seed/gatr/"; done
+docker cp "$db_dir/gatr" "$container:/seed/"
 echo "loading (a few minutes)"
 psql --dbname analytics --single-transaction -f /seed/gatr.sql
-psql --dbname analytics -c 'VACUUM (ANALYZE) ' >/dev/null
-docker exec "$container" rm -rf /seed/gatr /seed/gatr.sql
+# Frozen and analyzed like the image's tables, so reading one doesn't write to it: GATR's tables only, and without
+# parallel workers, whose shared memory (as much as maintenance_work_mem) a container's 64 MB /dev/shm can't hold.
+tables="$(psql --dbname analytics -tAc "SELECT string_agg(format('%I.%I', schemaname, tablename), ', ') FROM pg_tables WHERE schemaname = 'gatr'")"
+psql --dbname analytics -c "VACUUM (FREEZE, ANALYZE, PARALLEL 0) $tables" >/dev/null
 # what the lab's read-only role (Metabase's main connection) may read, as setup grants it
 psql --dbname analytics <<'SQL'
 DO $$ BEGIN

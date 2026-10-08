@@ -95,7 +95,8 @@ const readOnlyRole = (dbname: string) => `
 `;
 
 // The build context, the files in db/ and its subdirectories (db/gatr/ holds GATR's tables), and the image tag it
-// gives: its content, so changing db/ builds a new image.
+// gives: its content, so changing db/ builds a new image. Read whenever an instance needs the image, not once at
+// startup, so a checkout, pull or regeneration reaches the next create or Reset without restarting the app.
 const DB_DIR = `${import.meta.dir}/db`;
 const filesIn = (dir: string, prefix = ""): [string, Buffer][] =>
   readdirSync(dir, { withFileTypes: true })
@@ -108,10 +109,12 @@ const filesIn = (dir: string, prefix = ""): [string, Buffer][] =>
           ? [[`${prefix}${entry.name}`, readFileSync(`${dir}/${entry.name}`)]]
           : [],
     );
-const DB_CONTEXT = Object.fromEntries(filesIn(DB_DIR));
-const contextHash = new Bun.CryptoHasher("sha256");
-for (const [file, bytes] of Object.entries(DB_CONTEXT)) contextHash.update(file).update(bytes);
-const PG_IMAGE = `mbo-postgres:${contextHash.digest("hex").slice(0, 12)}`;
+function dbContext() {
+  const files = Object.fromEntries(filesIn(DB_DIR));
+  const hash = new Bun.CryptoHasher("sha256");
+  for (const [file, bytes] of Object.entries(files)) hash.update(file).update(bytes);
+  return { files, image: `mbo-postgres:${hash.digest("hex").slice(0, 12)}` };
+}
 
 const SOCKET = [
   process.env.DOCKER_HOST?.replace(/^unix:\/\//, ""),
@@ -195,8 +198,10 @@ async function mustFind(name: string) {
   return container;
 }
 
+const hasImage = async (image: string) => (await fetch(`http://docker/images/${image}/json`, { unix: SOCKET })).ok;
+
 async function ensureImage(task: Task, image: string) {
-  if ((await fetch(`http://docker/images/${image}/json`, { unix: SOCKET })).ok) return;
+  if (await hasImage(image)) return;
   step(task, `pulling ${image}`);
   const at = image.lastIndexOf("@");
   const colon = image.lastIndexOf(":");
@@ -221,33 +226,41 @@ async function ensureImage(task: Task, image: string) {
 }
 
 // The Postgres image is built here, from db/, the first time an instance needs it: a few minutes, most of them
-// downloading and loading the datasets. Instances created meanwhile wait for the same build.
-let building: Promise<void> | undefined;
+// downloading and loading the datasets. Instances created meanwhile wait for the same build, or, when db/ changed
+// since it started, for the next one. Returns the image's tag.
+let building: { image: string; done: Promise<void> } | undefined;
 let buildStep = "";
 
 async function ensurePostgresImage(task: Task) {
-  if ((await fetch(`http://docker/images/${PG_IMAGE}/json`, { unix: SOCKET })).ok) return;
+  const { files, image } = dbContext();
+  if (await hasImage(image)) return image;
   step(task, "building the Postgres image, first time only");
-  if (!building) {
-    building = buildPostgresImage().finally(() => (building = undefined));
-    building.catch(() => {}); // a failure reaches the tasks waiting below, if any are left
-  }
-  const build = building;
   for (;;) {
-    task.abort.signal.throwIfAborted();
-    task.step = `building the Postgres image, first time only: ${buildStep}`; // keeping the step's start time
-    if (await Promise.race([build.then(() => true), Bun.sleep(1000).then(() => false)])) return;
+    if (!building) {
+      const done = buildPostgresImage(image, files).finally(() => (building = undefined));
+      done.catch(() => {}); // a failure reaches the tasks waiting below, if any are left
+      building = { image, done };
+    }
+    const build = building;
+    // Another db/'s build failing is not this task's failure: it builds its own next.
+    const settled = build.image === image ? build.done : build.done.catch(() => {});
+    for (;;) {
+      task.abort.signal.throwIfAborted();
+      task.step = `building the Postgres image, first time only: ${buildStep}`; // keeping the step's start time
+      if (await Promise.race([settled.then(() => true), Bun.sleep(1000).then(() => false)])) break;
+    }
+    if (build.image === image) return image;
   }
 }
 
-async function buildPostgresImage() {
+async function buildPostgresImage(image: string, files: Record<string, Buffer>) {
   buildStep = "starting";
-  const context = await new Bun.Archive(DB_CONTEXT).bytes();
-  const res = await docker("POST", `/build?t=${encodeURIComponent(PG_IMAGE)}&rm=1&forcerm=1`, context);
+  const context = await new Bun.Archive(files).bytes();
+  const res = await docker("POST", `/build?t=${encodeURIComponent(image)}&rm=1&forcerm=1`, context);
   // The output streams as JSON lines. A failed build still answers 200: its error is a line of the stream.
   let output = "";
   const failed = (error: string) =>
-    new Error(`Building ${PG_IMAGE}: ${error}\n${output.trim().split("\n").slice(-10).join("\n")}`);
+    new Error(`Building ${image}: ${error}\n${output.trim().split("\n").slice(-10).join("\n")}`);
   let pending = "";
   for await (const chunk of res.body!.pipeThrough(new TextDecoderStream())) {
     const lines = (pending + chunk).split("\n");
@@ -261,7 +274,7 @@ async function buildPostgresImage() {
       if (at) buildStep = `step ${at[1]}, ${at[2].slice(0, 60)}`;
     }
   }
-  if (!(await fetch(`http://docker/images/${PG_IMAGE}/json`, { unix: SOCKET })).ok) throw failed("no image came out");
+  if (!(await hasImage(image))) throw failed("no image came out");
 }
 
 function metabaseSpec(name: string, image: string, port: number) {
@@ -293,10 +306,10 @@ function metabaseSpec(name: string, image: string, port: number) {
   };
 }
 
-function postgresSpec(name: string, port: number) {
+function postgresSpec(name: string, port: number, image: string) {
   const dbPort = String(dbPortOf(port));
   return {
-    Image: PG_IMAGE,
+    Image: image,
     Labels: { [LABEL.db]: name, [LABEL.port]: dbPort, [LABEL.databases]: DATABASES.map((d) => d.dbname).join(",") },
     ExposedPorts: { "5432/tcp": {} },
     HostConfig: { PortBindings: { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: dbPort }] } },
@@ -320,9 +333,9 @@ async function createAndStart(containerName: string, spec: object): Promise<stri
 }
 
 async function launchPostgres(task: Task, name: string, port: number) {
-  await ensurePostgresImage(task);
+  const image = await ensurePostgresImage(task);
   step(task, "creating containers");
-  return createAndStart(`mbo-${name}.postgres`, postgresSpec(name, port));
+  return createAndStart(`mbo-${name}.postgres`, postgresSpec(name, port, image));
 }
 
 // A fresh pair: Postgres first, with the application database, then Metabase. Returns the Metabase container id.
